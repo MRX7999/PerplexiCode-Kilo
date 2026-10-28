@@ -27,21 +27,21 @@ export class ModelFetcher {
 
   private _filterAndSort(account?: AccountSession): ModelInfo[] {
     const plan = account?.capabilities?.plan || 'unknown';
+    // Live config from the account wins; otherwise use the bundled snapshot of the current
+    // Perplexity model list (the old ID-based template matching only knew 2025 models).
     const accountCatalog = account?.capabilities?.modelsConfig
       ? buildModelsFromConfig(account.capabilities.modelsConfig, plan)
-      : account?.capabilities?.availableModelIds?.length
-        ? buildModelsFromAvailableIds(account.capabilities.availableModelIds, plan)
-        : getFallbackModelCatalog();
+      : getFallbackModelCatalog();
     const catalog = account
       ? this._mergeVisibleModels(accountCatalog, getFallbackModelCatalog())
       : accountCatalog;
+    void buildModelsFromAvailableIds;
 
     return catalog
       .map((model) => {
         const selectable = this._isSelectable(model, account, plan);
         return { ...model, selectable };
       })
-      .filter((model) => account ? true : model.requiredPlan !== 'max')
       .sort((left, right) => {
         return compareModels(left, right);
       });
@@ -49,7 +49,7 @@ export class ModelFetcher {
 
   private _isSelectable(model: ModelInfo, account: AccountSession | undefined, plan: AccountPlan): boolean {
     if (!account) {
-      return model.requiredPlan !== 'max';
+      return true;
     }
 
     if (!planSatisfiesRequirement(plan, model.requiredPlan)) {

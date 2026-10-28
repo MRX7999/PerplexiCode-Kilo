@@ -9,7 +9,9 @@ import {
 
 const PERPLEXITY_HOST = 'www.perplexity.ai';
 const API_VERSION = '2.18';
-const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0';
+const USER_AGENT = process.platform === 'darwin'
+  ? 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36 Edg/146.0.0.0'
+  : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36 Edg/146.0.0.0';
 const MAX_RETRIES = 2;
 
 // Chrome-like TLS cipher suite ordering to avoid Cloudflare JA3 fingerprint detection
@@ -135,23 +137,30 @@ export class PerplexityWebClient {
   ): void {
     const sources = options?.sources ?? ['web'];
     const language = options?.language ?? 'en-US';
-    const body = JSON.stringify({
-      query_str: query,
-      params: {
-        attachments: [],
-        frontend_context_uuid: this._uuid(),
-        frontend_uuid: this._uuid(),
-        is_incognito: false,
-        language,
-        last_backend_uuid: null,
-        mode: meta.mode,
-        model_preference: meta.resolvedModel,
-        search_mode: meta.searchMode,
-        source: 'default',
-        sources,
-        version: API_VERSION,
-      },
-    });
+    const followUp = options?.followUp;
+    const contextUuid = followUp?.contextUuid || meta.contextUuid || this._uuid();
+    meta.contextUuid = contextUuid;
+    const params: Record<string, unknown> = {
+      attachments: [],
+      frontend_context_uuid: contextUuid,
+      frontend_uuid: this._uuid(),
+      is_incognito: false,
+      language,
+      last_backend_uuid: followUp?.lastBackendUuid ?? null,
+      mode: meta.mode,
+      model_preference: meta.resolvedModel,
+      search_mode: meta.searchMode,
+      source: 'default',
+      sources,
+      version: API_VERSION,
+    };
+    if (followUp) {
+      params.query_source = 'followup';
+      if (followUp.readWriteToken) {
+        params.read_write_token = followUp.readWriteToken;
+      }
+    }
+    const body = JSON.stringify({ query_str: query, params });
 
     const cookie = this._buildCookie();
 
@@ -344,6 +353,21 @@ export class PerplexityWebClient {
     const nextMeta = { ...currentMeta };
     const metaChanged: Partial<StreamResponseMeta> = {};
 
+    const backendUuid = firstString(data?.backend_uuid, data?.backendUuid);
+    if (backendUuid && backendUuid !== nextMeta.backendUuid) {
+      nextMeta.backendUuid = backendUuid;
+      metaChanged.backendUuid = backendUuid;
+    }
+    const readWriteToken = firstString(data?.read_write_token, data?.readWriteToken);
+    if (readWriteToken && readWriteToken !== nextMeta.readWriteToken) {
+      nextMeta.readWriteToken = readWriteToken;
+      metaChanged.readWriteToken = readWriteToken;
+    }
+    const contextUuid = firstString(data?.context_uuid, data?.frontend_context_uuid);
+    if (contextUuid && contextUuid !== nextMeta.contextUuid) {
+      nextMeta.contextUuid = contextUuid;
+    }
+
     const displayModel = firstString(data?.display_model, data?.displayModel);
     const resolvedModel = firstString(data?.model_preference, data?.modelPreference);
     const searchMode = firstString(data?.search_mode, data?.searchMode);
@@ -381,6 +405,12 @@ export class PerplexityWebClient {
     } else if (typeof data?.choices?.[0]?.delta?.content === 'string') {
       delta = data.choices[0].delta.content;
       content += delta;
+    } else if (Array.isArray(data?.blocks)) {
+      const blockText = extractMarkdownBlockText(data.blocks, content);
+      if (blockText !== undefined && blockText !== content) {
+        delta = blockText.startsWith(content) ? blockText.slice(content.length) : blockText;
+        content = blockText;
+      }
     }
 
     return {
@@ -511,6 +541,30 @@ function extractTextFromPayload(rawText: string): string {
   }
 
   return rawText;
+}
+
+/**
+ * Newer Perplexity SSE payloads stream the answer as markdown blocks, either as a full
+ * `answer` string or as `chunks` patched in at `chunk_starting_offset`.
+ */
+function extractMarkdownBlockText(blocks: any[], current: string): string | undefined {
+  const block = blocks.find((entry) => entry?.markdown_block && (entry?.intended_usage === 'ask_text' || !entry?.intended_usage))
+    || blocks.find((entry) => entry?.markdown_block);
+  const markdown = block?.markdown_block;
+  if (!markdown) {
+    return undefined;
+  }
+  if (typeof markdown.answer === 'string' && markdown.answer.length >= current.length) {
+    return markdown.answer;
+  }
+  if (Array.isArray(markdown.chunks)) {
+    const joined = markdown.chunks.filter((chunk: unknown) => typeof chunk === 'string').join('');
+    if (typeof markdown.chunk_starting_offset === 'number') {
+      return current.slice(0, markdown.chunk_starting_offset) + joined;
+    }
+    return joined.length >= current.length ? joined : current + joined;
+  }
+  return undefined;
 }
 
 function collectCitations(data: any): string[] {

@@ -1,299 +1,401 @@
 import * as vscode from 'vscode';
+import { AgentController } from './agent/controller';
+import { getModeBySlug, MODES } from './agent/modes';
+import { TaskStore } from './agent/taskStore';
+import { PerplexityTransport } from './agent/transport';
 import { CapabilityFetcher } from './api/capabilityFetcher';
-import { setRuntimeModelCatalog } from './api/modelCatalog';
+import { getModelLabel, setRuntimeModelCatalog } from './api/modelCatalog';
 import { ModelFetcher } from './api/modelFetcher';
 import { RotationEngine } from './api/rotationEngine';
-import { TaskModeFetcher } from './api/taskModeCatalog';
 import { RotationStrategy } from './api/types';
-import { ContextBuilder } from './context/contextBuilder';
-import { FileReader } from './context/fileReader';
-import { ChatViewProvider } from './providers/chatViewProvider';
 import { LoginProvider } from './providers/loginProvider';
 import { AccountManager } from './storage/accountManager';
 import { StatusBarManager } from './ui/statusBar';
 
-let statusBar: StatusBarManager;
+const ROTATION_KEY = 'perplexicode.rotationStrategy';
+const VIEW_TYPE = 'perplexicode.chatView';
+
+let taskStore: TaskStore | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  const output = vscode.window.createOutputChannel('PerplexiCode');
+  context.subscriptions.push(output);
+  const version = String(context.extension.packageJSON.version);
+
+  // Accounts are stored under the same globalState / SecretStorage keys as PerplexiCode 1.x,
+  // so updating in place keeps every signed-in account.
   const accountManager = new AccountManager(context.globalState, context.secrets);
   await accountManager.initialize();
 
   const rotationEngine = new RotationEngine();
+  const storedStrategy = context.globalState.get<RotationStrategy>(ROTATION_KEY);
+  if (storedStrategy === 'round-robin' || storedStrategy === 'least-used' || storedStrategy === 'failover-only') {
+    rotationEngine.setStrategy(storedStrategy);
+  }
+
   const capabilityFetcher = new CapabilityFetcher();
   const modelFetcher = new ModelFetcher();
-  const taskModeFetcher = new TaskModeFetcher();
-  const fileReader = new FileReader();
-  const contextBuilder = new ContextBuilder(fileReader);
   const loginProvider = new LoginProvider();
-  statusBar = new StatusBarManager();
+  const statusBar = new StatusBarManager();
+  context.subscriptions.push(statusBar);
 
-  const getConfiguredDefaultModel = () => vscode.workspace
-    .getConfiguration('perplexicode')
-    .get<string>('defaultModel', 'turbo');
+  taskStore = new TaskStore(context.globalStorageUri.fsPath, context.globalState);
+  const transport = new PerplexityTransport(accountManager, rotationEngine, capabilityFetcher);
+  const controller = new AgentController(context, accountManager, rotationEngine, modelFetcher, transport, taskStore, output);
+  context.subscriptions.push(controller);
+
+  const updateStatusBar = () => {
+    const selection = controller.getSelection();
+    statusBar.update({
+      modelLabel: getModelLabel(selection.baseModelId, selection.thinking),
+      modeName: getModeBySlug(controller.getModeSlug()).name,
+      accountCount: accountManager.getAccounts().length,
+      activeAccountCount: accountManager.getActiveCount(),
+      busy: controller.isBusy,
+    });
+  };
+  context.subscriptions.push(controller.onDidChangeState(updateStatusBar));
 
   const initializeModels = async (force = false) => {
     const accounts = accountManager.getAccounts();
-    await capabilityFetcher.refreshAccounts(accounts, force);
-    await accountManager.saveMetas();
-
+    try {
+      await capabilityFetcher.refreshAccounts(accounts, force);
+      await accountManager.saveMetas();
+    } catch (error) {
+      output.appendLine(`[models] capability refresh failed: ${(error as Error).message}`);
+    }
     const activeAccount = rotationEngine.selectAccount(accounts) || accounts.find((account) => account.status === 'active');
-    const models = activeAccount
-      ? await modelFetcher.getModels(activeAccount)
-      : modelFetcher.getFallbackModels();
-    const taskModes = activeAccount
-      ? taskModeFetcher.getModes(activeAccount)
-      : taskModeFetcher.getFallbackModes();
-
+    const models = activeAccount ? await modelFetcher.getModels(activeAccount) : modelFetcher.getFallbackModels();
     setRuntimeModelCatalog(models);
-    statusBar.setTaskModes(taskModes);
-    statusBar.setModels(models);
-    statusBar.setModel(getConfiguredDefaultModel());
-    statusBar.setAccountInfo(accounts.length, accountManager.getActiveCount());
+    await controller.reloadModels();
+    updateStatusBar();
   };
 
-  await initializeModels();
+  // Do not block activation on network calls: the UI comes up with the bundled catalog first.
+  setRuntimeModelCatalog(modelFetcher.getFallbackModels());
+  void controller.reloadModels().then(updateStatusBar);
+  void initializeModels().catch((error) => output.appendLine(`[models] ${(error as Error).stack || error}`));
 
-  const chatProvider = new ChatViewProvider(
-    context.extensionUri,
-    accountManager,
-    rotationEngine,
-    modelFetcher,
-    taskModeFetcher,
-    capabilityFetcher,
-    fileReader,
-    contextBuilder,
-    statusBar
+  // Sidebar view.
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(VIEW_TYPE, {
+      resolveWebviewView(view) {
+        controller.attachWebview(view.webview, (listener) => {
+          view.onDidDispose(listener);
+        });
+      },
+    }, { webviewOptions: { retainContextWhenHidden: true } })
   );
 
-  context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(
-      ChatViewProvider.viewType,
-      chatProvider,
-      { webviewOptions: { retainContextWhenHidden: true } }
-    )
-  );
+  const focusSidebar = async () => {
+    await vscode.commands.executeCommand(`${VIEW_TYPE}.focus`);
+  };
 
-  context.subscriptions.push(
-    vscode.commands.registerCommand('perplexicode.addAccount', async () => {
+  const register = (command: string, callback: (...args: any[]) => unknown) => {
+    context.subscriptions.push(vscode.commands.registerCommand(command, async (...args: any[]) => {
+      try {
+        await callback(...args);
+      } catch (error) {
+        output.appendLine(`[${command}] ${(error as Error).stack || error}`);
+        void vscode.window.showErrorMessage(`PerplexiCode: ${(error as Error).message}`);
+      }
+    }));
+  };
+
+  // ------------------------------------------------------------------------------------------
+  // Accounts
+  // ------------------------------------------------------------------------------------------
+
+  register('perplexicode.addAccount', async () => {
+    const tokens = await loginProvider.login();
+    if (!tokens) {
+      return;
+    }
+    const alias = await vscode.window.showInputBox({
+      title: 'Account Alias',
+      prompt: 'Give this account a name (for example Personal or Work)',
+      value: `Account ${accountManager.getAccounts().length + 1}`,
+    });
+    const result = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'PerplexiCode: Adding account...' },
+      async () => accountManager.addAccount(alias || 'Account', tokens.sessionToken, tokens.csrfToken, { fullCookies: tokens.fullCookies })
+    );
+    if (!result.success || !result.account) {
+      void vscode.window.showErrorMessage(`PerplexiCode: ${result.error}`);
+      return;
+    }
+    await capabilityFetcher.refreshAccount(result.account, true).catch(() => undefined);
+    await accountManager.saveMetas();
+    await initializeModels(true);
+    void vscode.window.showInformationMessage(`PerplexiCode: Account "${result.account.alias}" added successfully.`);
+  });
+
+  register('perplexicode.manageAccounts', async () => {
+    const accounts = accountManager.getAccounts();
+    if (accounts.length === 0) {
+      const action = await vscode.window.showInformationMessage('PerplexiCode: No accounts configured.', 'Add Account');
+      if (action === 'Add Account') {
+        void vscode.commands.executeCommand('perplexicode.addAccount');
+      }
+      return;
+    }
+    const items = accounts.map((account) => ({
+      label: `[${formatAccountStatus(account.status)}] ${account.alias}`,
+      description: `${account.capabilities?.plan || 'unknown'} - ${account.queriestoday} today - ${account.queriesTotalLifetime} total`,
+      accountId: account.id,
+    }));
+    items.push({ label: '$(add) Add New Account', description: '', accountId: '__add__' });
+    const selected = await vscode.window.showQuickPick(items, { title: 'PerplexiCode: Manage Accounts', placeHolder: 'Select an account to manage' });
+    if (!selected) {
+      return;
+    }
+    if (selected.accountId === '__add__') {
+      void vscode.commands.executeCommand('perplexicode.addAccount');
+      return;
+    }
+    const account = accounts.find((entry) => entry.id === selected.accountId);
+    if (!account) {
+      return;
+    }
+    const action = await vscode.window.showQuickPick([
+      { label: '$(refresh) Refresh Session', action: 'refresh' },
+      { label: account.status === 'disabled' ? '$(check) Enable' : '$(close) Disable', action: 'toggle' },
+      { label: '$(trash) Remove', action: 'remove' },
+    ], { title: `Manage: ${account.alias}` });
+    if (!action) {
+      return;
+    }
+    if (action.action === 'refresh') {
       const tokens = await loginProvider.login();
       if (!tokens) {
         return;
       }
-
-      const alias = await vscode.window.showInputBox({
-        title: 'Account Alias',
-        prompt: 'Give this account a name (for example Personal or Work)',
-        value: `Account ${accountManager.getAccounts().length + 1}`,
-      });
-
-      const result = await vscode.window.withProgress(
-        {
-          location: vscode.ProgressLocation.Notification,
-          title: 'PerplexiCode: Adding account...',
-        },
-        async () => accountManager.addAccount(alias || 'Account', tokens.sessionToken, tokens.csrfToken, {
-          fullCookies: tokens.fullCookies,
-        })
-      );
-
-      if (!result.success || !result.account) {
-        vscode.window.showErrorMessage(`PerplexiCode: ${result.error}`);
+      const success = await accountManager.updateTokens(account.id, tokens.sessionToken, tokens.csrfToken, tokens.fullCookies);
+      if (!success) {
+        void vscode.window.showErrorMessage('PerplexiCode: Could not update session tokens.');
         return;
       }
-
-      await capabilityFetcher.refreshAccount(result.account, true).catch(() => undefined);
-      await accountManager.saveMetas();
+      await capabilityFetcher.refreshAccount(account, true).catch(() => undefined);
       await initializeModels(true);
-      await chatProvider.refreshModels(true);
+      void vscode.window.showInformationMessage(`PerplexiCode: "${account.alias}" refreshed successfully.`);
+      return;
+    }
+    if (action.action === 'toggle') {
+      await accountManager.toggleAccount(account.id);
+      await initializeModels(true);
+      return;
+    }
+    const confirm = await vscode.window.showWarningMessage(`Remove account "${account.alias}"?`, { modal: true }, 'Remove');
+    if (confirm === 'Remove') {
+      await accountManager.removeAccount(account.id);
+      await initializeModels(true);
+    }
+  });
 
-      vscode.window.showInformationMessage(`PerplexiCode: Account "${result.account.alias}" added successfully.`);
-    })
-  );
+  register('perplexicode.refreshModels', async () => {
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'PerplexiCode: Refreshing models and quotas...' },
+      async () => initializeModels(true)
+    );
+  });
 
-  context.subscriptions.push(
-    vscode.commands.registerCommand('perplexicode.manageAccounts', async () => {
-      const accounts = accountManager.getAccounts();
-      if (accounts.length === 0) {
-        const action = await vscode.window.showInformationMessage('PerplexiCode: No accounts configured.', 'Add Account');
-        if (action === 'Add Account') {
-          void vscode.commands.executeCommand('perplexicode.addAccount');
+  register('perplexicode.setRotationStrategy', async () => {
+    const strategies: { label: string; description: string; strategy: RotationStrategy }[] = [
+      { label: '$(sync) Round Robin', description: 'Cycle through available accounts', strategy: 'round-robin' },
+      { label: '$(graph-line) Least Used', description: 'Prefer the account with the fewest queries today', strategy: 'least-used' },
+      { label: '$(shield) Failover Only', description: 'Stick to the primary account until it fails', strategy: 'failover-only' },
+    ];
+    const current = rotationEngine.getStrategy();
+    const selected = await vscode.window.showQuickPick(
+      strategies.map((strategy) => ({ ...strategy, label: strategy.strategy === current ? `$(check) ${strategy.label}` : `     ${strategy.label}` })),
+      { title: 'PerplexiCode: Rotation Strategy', placeHolder: 'Select how requests are distributed across accounts' }
+    );
+    if (selected) {
+      rotationEngine.setStrategy(selected.strategy);
+      await context.globalState.update(ROTATION_KEY, selected.strategy);
+      controller.postState();
+    }
+  });
+
+  // ------------------------------------------------------------------------------------------
+  // Model and mode selection
+  // ------------------------------------------------------------------------------------------
+
+  register('perplexicode.selectModel', async () => {
+    const models = controller.getModels();
+    const selection = controller.getSelection();
+    type Item = vscode.QuickPickItem & { modelId?: string; thinking?: boolean };
+    const items: Item[] = [];
+    const surfaced = models.filter((model) => model.surfaced !== false);
+    const more = models.filter((model) => model.surfaced === false);
+    const pushModels = (list: typeof models) => {
+      for (const model of list) {
+        const locked = model.selectable === false;
+        const isCurrent = model.id === selection.baseModelId;
+        items.push({
+          label: `${locked ? '$(lock)' : isCurrent && !selection.thinking ? '$(check)' : '$(blank)'} ${model.label}`,
+          description: [model.requiredPlan === 'max' ? 'Max' : '', model.isNew ? 'New' : '', locked ? `requires ${model.requiredPlan.toUpperCase()}` : ''].filter(Boolean).join(' · '),
+          detail: model.description || undefined,
+          modelId: model.id,
+          thinking: false,
+        });
+        if (model.supportsThinking) {
+          items.push({
+            label: `${locked ? '$(lock)' : isCurrent && selection.thinking ? '$(check)' : '$(blank)'} ${model.label} · Thinking`,
+            description: 'reasoning',
+            modelId: model.id,
+            thinking: true,
+          });
         }
-        return;
       }
-
-      const items = accounts.map((account) => ({
-        label: `[${formatAccountStatus(account.status)}] ${account.alias}`,
-        description: `${account.capabilities?.plan || 'unknown'} - ${account.queriestoday} today - ${account.queriesTotalLifetime} total`,
-        accountId: account.id,
-      }));
-      items.push({ label: '$(add) Add New Account', description: '', accountId: '__add__' });
-
-      const selected = await vscode.window.showQuickPick(items, {
-        title: 'PerplexiCode: Manage Accounts',
-        placeHolder: 'Select an account to manage',
+    };
+    items.push({ label: 'Models', kind: vscode.QuickPickItemKind.Separator });
+    pushModels(surfaced);
+    if (more.length > 0) {
+      items.push({ label: 'More models', kind: vscode.QuickPickItemKind.Separator });
+      pushModels(more);
+    }
+    items.push({ label: 'Modes', kind: vscode.QuickPickItemKind.Separator });
+    for (const mode of MODES) {
+      items.push({
+        label: `${mode.slug === controller.getModeSlug() ? '$(check)' : '$(blank)'} ${mode.name} mode`,
+        description: mode.description,
+        modelId: `mode:${mode.slug}`,
       });
+    }
+    const picked = await vscode.window.showQuickPick(items, { title: 'PerplexiCode: Model and Mode', placeHolder: 'Choose a Perplexity model or an agent mode', matchOnDescription: true });
+    if (!picked?.modelId) {
+      return;
+    }
+    if (picked.modelId.startsWith('mode:')) {
+      await controller.setMode(picked.modelId.slice(5));
+      return;
+    }
+    await controller.setModel(picked.modelId, picked.thinking);
+  });
 
-      if (!selected) {
-        return;
-      }
+  register('perplexicode.cycleMode', async () => {
+    const index = MODES.findIndex((mode) => mode.slug === controller.getModeSlug());
+    await controller.setMode(MODES[(index + 1) % MODES.length].slug);
+  });
 
-      if (selected.accountId === '__add__') {
-        void vscode.commands.executeCommand('perplexicode.addAccount');
-        return;
-      }
+  // ------------------------------------------------------------------------------------------
+  // Views and tasks
+  // ------------------------------------------------------------------------------------------
 
-      const account = accounts.find((entry) => entry.id === selected.accountId);
-      if (!account) {
-        return;
-      }
+  register('perplexicode.openChat', focusSidebar);
+  register('perplexicode.newTask', async () => {
+    await controller.clearTask();
+    await focusSidebar();
+    controller.showView('chat');
+  });
+  register('perplexicode.history', async () => {
+    await focusSidebar();
+    controller.showView('history');
+  });
+  register('perplexicode.settings', async () => {
+    await focusSidebar();
+    controller.showView('settings');
+  });
+  register('perplexicode.openInTab', async () => {
+    const panel = vscode.window.createWebviewPanel('perplexicode.tab', 'PerplexiCode', vscode.ViewColumn.Beside, {
+      enableScripts: true,
+      retainContextWhenHidden: true,
+      localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'out'), vscode.Uri.joinPath(context.extensionUri, 'media')],
+    });
+    panel.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'icon.png');
+    controller.attachWebview(panel.webview, (listener) => {
+      panel.onDidDispose(listener);
+    });
+  });
 
-      const action = await vscode.window.showQuickPick([
-        { label: '$(refresh) Refresh Session', action: 'refresh' },
-        { label: account.status === 'disabled' ? '$(check) Enable' : '$(close) Disable', action: 'toggle' },
-        { label: '$(trash) Remove', action: 'remove' },
-      ], {
-        title: `Manage: ${account.alias}`,
-      });
+  // ------------------------------------------------------------------------------------------
+  // Editor actions (Kilo-style code actions)
+  // ------------------------------------------------------------------------------------------
 
-      if (!action) {
-        return;
-      }
+  register('perplexicode.explainCode', () => controller.runCodeAction('explain'));
+  register('perplexicode.fixCode', () => controller.runCodeAction('fix'));
+  register('perplexicode.improveCode', () => controller.runCodeAction('improve'));
+  register('perplexicode.addToContext', () => controller.runCodeAction('add'));
+  register('perplexicode.askAboutSelection', async () => {
+    const editor = vscode.window.activeTextEditor;
+    if (editor && !editor.selection.isEmpty) {
+      await controller.runCodeAction('add', editor);
+      return;
+    }
+    await focusSidebar();
+  });
+  register('perplexicode.askAboutFile', async () => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      void vscode.window.showWarningMessage('PerplexiCode: No file is currently open.');
+      return;
+    }
+    const relative = vscode.workspace.asRelativePath(editor.document.uri, false);
+    await focusSidebar();
+    const mention = /\s/.test(relative) ? `"${relative}" (read it with read_file)` : `@/${relative}`;
+    await controller.newTask(await controller.expandMentions(`Analyze and explain the file ${mention}`), [], 'ask');
+  });
+  register('perplexicode.addTerminalOutput', async () => {
+    const before = await vscode.env.clipboard.readText();
+    await vscode.commands.executeCommand('workbench.action.terminal.copySelection');
+    const selection = await vscode.env.clipboard.readText();
+    await vscode.env.clipboard.writeText(before);
+    if (!selection.trim() || selection === before) {
+      void vscode.window.showInformationMessage('PerplexiCode: select some text in the terminal first.');
+      return;
+    }
+    await controller.addToContext(`Terminal output:\n\`\`\`\n${selection.trim()}\n\`\`\``);
+  });
+  register('perplexicode.generateCommitMessage', () => controller.generateCommitMessage());
 
-      if (action.action === 'refresh') {
-        const tokens = await loginProvider.login();
-        if (!tokens) {
-          return;
-        }
-
-        const success = await accountManager.updateTokens(account.id, tokens.sessionToken, tokens.csrfToken, tokens.fullCookies);
-        if (!success) {
-          vscode.window.showErrorMessage('PerplexiCode: Could not update session tokens.');
-          return;
-        }
-
-        await capabilityFetcher.refreshAccount(account, true).catch(() => undefined);
-        await initializeModels(true);
-        await chatProvider.refreshModels(true);
-        vscode.window.showInformationMessage(`PerplexiCode: "${account.alias}" refreshed successfully.`);
-        return;
-      }
-
-      if (action.action === 'toggle') {
-        await accountManager.toggleAccount(account.id);
-        await initializeModels(true);
-        await chatProvider.refreshModels(true);
-        return;
-      }
-
-      if (action.action === 'remove') {
-        const confirm = await vscode.window.showWarningMessage(
-          `Remove account "${account.alias}"?`,
-          { modal: true },
-          'Remove'
-        );
-        if (confirm === 'Remove') {
-          await accountManager.removeAccount(account.id);
-          await initializeModels(true);
-          await chatProvider.refreshModels(true);
-        }
-      }
+  context.subscriptions.push(
+    vscode.languages.registerCodeActionsProvider([{ scheme: 'file' }, { scheme: 'untitled' }], new PerplexiCodeActionProvider(), {
+      providedCodeActionKinds: [vscode.CodeActionKind.QuickFix, vscode.CodeActionKind.RefactorRewrite],
     })
   );
 
   context.subscriptions.push(
-    vscode.workspace.onDidChangeConfiguration(async (event) => {
-      if (!event.affectsConfiguration('perplexicode.defaultModel')) {
-        return;
-      }
-
-      statusBar.setModel(getConfiguredDefaultModel());
-      await chatProvider.refreshModels();
-    })
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand('perplexicode.selectModel', async () => {
-      await statusBar.showModelPicker();
-      await chatProvider.refreshModels();
-    })
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand('perplexicode.refreshModels', async () => {
-      await vscode.window.withProgress(
-        {
-          location: vscode.ProgressLocation.Notification,
-          title: 'PerplexiCode: Refreshing models and quotas...',
-        },
-        async () => {
-          await initializeModels(true);
-          await chatProvider.refreshModels(true);
-        }
-      );
-    })
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand('perplexicode.openChat', () => {
-      void vscode.commands.executeCommand('perplexicode.chatView.focus');
-    })
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand('perplexicode.askAboutSelection', async () => {
-      await chatProvider.sendSelectionQuery();
-    })
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand('perplexicode.askAboutFile', async () => {
-      const currentFile = fileReader.readCurrentFile();
-      if (!currentFile) {
-        vscode.window.showWarningMessage('PerplexiCode: No file is currently open.');
-        return;
-      }
-
-      const query = `Analyze and explain this file (${currentFile.relativePath || currentFile.fileName}):\n\n\`\`\`${currentFile.language}\n${currentFile.content}\n\`\`\``;
-      await chatProvider.sendSelectionQuery(query);
-    })
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand('perplexicode.setRotationStrategy', async () => {
-      const strategies: { label: string; description: string; strategy: RotationStrategy }[] = [
-        { label: '$(sync) Round Robin', description: 'Cycle through available accounts', strategy: 'round-robin' },
-        { label: '$(graph-line) Least Used', description: 'Prefer the account with the fewest queries today', strategy: 'least-used' },
-        { label: '$(shield) Failover Only', description: 'Stick to the primary account until it fails', strategy: 'failover-only' },
-      ];
-
-      const current = rotationEngine.getStrategy();
-      const items = strategies.map((strategy) => ({
-        ...strategy,
-        label: strategy.strategy === current ? `$(check) ${strategy.label}` : `     ${strategy.label}`,
-      }));
-
-      const selected = await vscode.window.showQuickPick(items, {
-        title: 'PerplexiCode: Rotation Strategy',
-        placeHolder: 'Select how queries are distributed across accounts',
-      });
-
-      if (selected) {
-        rotationEngine.setStrategy(selected.strategy);
-        vscode.window.showInformationMessage(`Rotation strategy: ${selected.strategy}`);
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration('perplexicode.subscriptionPlan')) {
+        void initializeModels(false);
       }
     })
   );
 
-  context.subscriptions.push(statusBar);
-
-  const output = vscode.window.createOutputChannel('PerplexiCode');
-  output.appendLine(`PerplexiCode v1.0.3 activated at ${new Date().toISOString()}`);
-  output.appendLine(`Accounts: ${accountManager.getAccounts().length} configured`);
-  context.subscriptions.push(output);
+  output.appendLine(`PerplexiCode ${version} (Kilo edition) activated at ${new Date().toISOString()}`);
+  output.appendLine(`Accounts: ${accountManager.getAccounts().length} configured (${accountManager.getActiveCount()} active)`);
+  updateStatusBar();
 }
 
-export function deactivate(): void {
-  // No-op.
+export async function deactivate(): Promise<void> {
+  await taskStore?.flush();
+}
+
+class PerplexiCodeActionProvider implements vscode.CodeActionProvider {
+  provideCodeActions(document: vscode.TextDocument, range: vscode.Range | vscode.Selection, context: vscode.CodeActionContext): vscode.CodeAction[] {
+    const actions: vscode.CodeAction[] = [];
+    const hasProblems = context.diagnostics.length > 0;
+    if (range.isEmpty && !hasProblems) {
+      return actions;
+    }
+    const make = (title: string, command: string, kind: vscode.CodeActionKind, preferred = false) => {
+      const action = new vscode.CodeAction(title, kind);
+      action.command = { command, title };
+      action.isPreferred = preferred;
+      actions.push(action);
+    };
+    if (hasProblems) {
+      make('PerplexiCode: Fix with agent', 'perplexicode.fixCode', vscode.CodeActionKind.QuickFix, true);
+    }
+    if (!range.isEmpty) {
+      make('PerplexiCode: Explain code', 'perplexicode.explainCode', vscode.CodeActionKind.QuickFix);
+      make('PerplexiCode: Improve code', 'perplexicode.improveCode', vscode.CodeActionKind.RefactorRewrite);
+      make('PerplexiCode: Add to context', 'perplexicode.addToContext', vscode.CodeActionKind.QuickFix);
+    }
+    void document;
+    return actions;
+  }
 }
 
 function formatAccountStatus(status: string): string {

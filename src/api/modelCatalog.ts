@@ -5,6 +5,8 @@ import {
   PerplexitySearchMode,
   QuotaBucket,
 } from './types';
+import { normalizeModelsConfigPayload } from './modelsConfigFetcher';
+import bundledModelsConfig from './bundledModelsConfig.json';
 
 export interface ModelInfo {
   id: string;
@@ -41,149 +43,167 @@ const MODEL_TEMPLATES: ModelTemplate[] = [
     quotaBucket: 'free_queries',
     requiredPlan: 'free',
     supportsThinking: false,
-    aliases: ['default', 'best', 'baseline', 'turbo'],
+    aliases: ['default', 'best', 'baseline', 'turbo', 'pplx_pro'],
+  },
+  {
+    id: 'gpt6_1_sol',
+    label: 'GPT-6.1 Sol',
+    category: 'OpenAI',
+    description: "OpenAI's versatile model",
+    searchMode: 'search',
+    requestMode: 'COPILOT',
+    quotaBucket: 'pro_search',
+    requiredPlan: 'pro',
+    supportsThinking: true,
+    thinkingModelId: 'gpt6_1_sol_thinking',
+    aliases: ['gpt61sol', 'gpt-6.1-sol', 'gpt 6.1 sol', 'gpt61'],
+    thinkingAliases: ['gpt6_1_sol_thinking', 'gpt61solthinking'],
+  },
+  {
+    id: 'gpt6_astra',
+    label: 'GPT-6 Astra',
+    category: 'OpenAI',
+    description: "OpenAI's most capable model",
+    searchMode: 'search',
+    requestMode: 'COPILOT',
+    quotaBucket: 'pro_search',
+    requiredPlan: 'max',
+    supportsThinking: true,
+    thinkingModelId: 'gpt6_astra_thinking',
+    aliases: ['gpt6astra', 'gpt-6-astra', 'gpt 6 astra'],
+    thinkingAliases: ['gpt6_astra_thinking', 'gpt6astrathinking'],
+  },
+  {
+    id: 'gemini4argon',
+    label: 'Gemini 4 Argon',
+    category: 'Google',
+    description: "Google's most powerful model",
+    searchMode: 'search',
+    requestMode: 'COPILOT',
+    quotaBucket: 'pro_search',
+    requiredPlan: 'max',
+    supportsThinking: true,
+    thinkingModelId: 'gemini4argonthinking',
+    aliases: ['gemini-4-argon', 'gemini 4 argon'],
+    thinkingAliases: ['gemini4argonthinking', 'gemini4argon_thinking'],
+  },
+  {
+    id: 'gemini38flash',
+    label: 'Gemini 3.8 Flash',
+    category: 'Google',
+    description: "Google's fast model",
+    searchMode: 'search',
+    requestMode: 'COPILOT',
+    quotaBucket: 'pro_search',
+    requiredPlan: 'pro',
+    supportsThinking: true,
+    thinkingModelId: 'gemini38flashthinking',
+    aliases: ['gemini-3.8-flash', 'gemini 3.8 flash'],
+    thinkingAliases: ['gemini38flashthinking', 'gemini38flash_thinking'],
+  },
+  {
+    id: 'claude55sonnet',
+    label: 'Claude Sonnet 5.5',
+    category: 'Anthropic',
+    description: "Anthropic's fast model",
+    searchMode: 'search',
+    requestMode: 'COPILOT',
+    quotaBucket: 'pro_search',
+    requiredPlan: 'pro',
+    supportsThinking: true,
+    thinkingModelId: 'claude55sonnetthinking',
+    aliases: ['claude-sonnet-5.5', 'claude sonnet 5.5', 'claudesonnet55'],
+    thinkingAliases: ['claude55sonnetthinking', 'claude55sonnet_thinking'],
+  },
+  {
+    id: 'claude55opus',
+    label: 'Claude Opus 5.5',
+    category: 'Anthropic',
+    description: "Anthropic's latest model",
+    searchMode: 'search',
+    requestMode: 'COPILOT',
+    quotaBucket: 'pro_search',
+    requiredPlan: 'max',
+    supportsThinking: true,
+    thinkingModelId: 'claude55opusthinking',
+    aliases: ['claude-opus-5.5', 'claude opus 5.5', 'claudeopus55'],
+    thinkingAliases: ['claude55opusthinking', 'claude55opus_thinking'],
+  },
+  {
+    id: 'claudefable51',
+    label: 'Claude Fable 5.1',
+    category: 'Anthropic',
+    description: "Anthropic's most capable model",
+    searchMode: 'search',
+    requestMode: 'COPILOT',
+    quotaBucket: 'pro_search',
+    requiredPlan: 'max',
+    supportsThinking: true,
+    thinkingModelId: 'claudefable51thinking',
+    aliases: ['claude-fable-5.1', 'claude fable 5.1', 'claudefable'],
+    thinkingAliases: ['claudefable51thinking', 'claudefable51_thinking'],
+  },
+  {
+    id: 'kimik3thinking',
+    label: 'Kimi K3',
+    category: 'Moonshot AI',
+    description: "Moonshot AI's latest model. Hosted in the US.",
+    searchMode: 'search',
+    requestMode: 'COPILOT',
+    quotaBucket: 'pro_search',
+    requiredPlan: 'pro',
+    supportsThinking: false,
+    aliases: ['kimi-k3', 'kimi k3', 'kimik3'],
+  },
+  {
+    id: 'glm_5_3_thinking',
+    label: 'GLM 5.3',
+    category: 'Z.ai',
+    description: "Z.ai's most advanced model. Hosted in the US.",
+    searchMode: 'search',
+    requestMode: 'COPILOT',
+    quotaBucket: 'pro_search',
+    requiredPlan: 'pro',
+    supportsThinking: false,
+    aliases: ['glm-5.3', 'glm 5.3', 'glm53'],
+  },
+  {
+    id: 'grok47',
+    label: 'Grok 4.7',
+    category: 'xAI',
+    description: "xAI's most advanced model",
+    searchMode: 'search',
+    requestMode: 'COPILOT',
+    quotaBucket: 'pro_search',
+    requiredPlan: 'pro',
+    supportsThinking: true,
+    thinkingModelId: 'grok47thinking',
+    aliases: ['grok-4.7', 'grok 4.7'],
+    thinkingAliases: ['grok47thinking', 'grok47_thinking'],
+  },
+  {
+    id: 'nv_nemotron_3_5_super',
+    label: 'Nemotron 3.5 Super VL',
+    category: 'NVIDIA',
+    description: "NVIDIA's Nemotron 3.5 Super VL model",
+    searchMode: 'search',
+    requestMode: 'COPILOT',
+    quotaBucket: 'pro_search',
+    requiredPlan: 'pro',
+    supportsThinking: false,
+    aliases: ['nemotron-3.5-super', 'nemotron 3.5 super', 'nemotron35super'],
   },
   {
     id: 'experimental',
-    label: 'Sonar',
-    category: 'Search Models',
+    label: 'Sonar 2',
+    category: 'Perplexity',
     description: 'Perplexity Sonar for fast web search and summarization.',
     searchMode: 'search',
     requestMode: 'COPILOT',
     quotaBucket: 'pro_search',
     requiredPlan: 'pro',
     supportsThinking: false,
-    aliases: ['experimental', 'sonar'],
-  },
-  {
-    id: 'gpt54',
-    label: 'GPT-5.4',
-    category: 'Search Models',
-    description: 'OpenAI GPT-5.4 with an optional thinking variant.',
-    searchMode: 'search',
-    requestMode: 'COPILOT',
-    quotaBucket: 'pro_search',
-    requiredPlan: 'pro',
-    supportsThinking: true,
-    thinkingModelId: 'gpt54_thinking',
-    aliases: ['gpt5', 'gpt52', 'gpt54', 'gpt-5', 'gpt-5.2', 'gpt-5.4'],
-    thinkingAliases: [
-      'gpt52_thinking',
-      'gpt54_thinking',
-      'gpt52thinking',
-      'gpt54thinking',
-      'gpt-5.2-thinking',
-      'gpt-5.4-thinking',
-    ],
-  },
-  {
-    id: 'gemini31pro_high',
-    label: 'Gemini 3.1 Pro',
-    category: 'Search Models',
-    description: 'Gemini 3.1 Pro with reasoning always enabled.',
-    searchMode: 'search',
-    requestMode: 'COPILOT',
-    quotaBucket: 'pro_search',
-    requiredPlan: 'pro',
-    supportsThinking: false,
-    aliases: ['gemini31prohigh', 'gemini31pro', 'gemini-3.1-pro', 'gemini 3.1 pro'],
-  },
-  {
-    id: 'claude46sonnet',
-    label: 'Claude Sonnet 4.6',
-    category: 'Search Models',
-    description: 'Claude Sonnet 4.6 with an optional thinking variant for technical work.',
-    searchMode: 'search',
-    requestMode: 'COPILOT',
-    quotaBucket: 'pro_search',
-    requiredPlan: 'pro',
-    supportsThinking: true,
-    thinkingModelId: 'claude46sonnetthinking',
-    aliases: ['claude46sonnet', 'claude4.6sonnet', 'claudesonnet46', 'claude-4.6-sonnet', 'claude sonnet 4.6'],
-    thinkingAliases: [
-      'claude46sonnetthinking',
-      'claude46sonnet_thinking',
-      'claudesonnet46thinking',
-      'claude-4.6-sonnet-thinking',
-      'claude sonnet 4.6 thinking',
-    ],
-  },
-  {
-    id: 'nemotron_3_super',
-    label: 'Nemotron 3 Super',
-    category: 'Search Models',
-    description: 'NVIDIA Nemotron 3 Super for advanced coding and analysis.',
-    searchMode: 'search',
-    requestMode: 'COPILOT',
-    quotaBucket: 'pro_search',
-    requiredPlan: 'pro',
-    supportsThinking: false,
-    aliases: ['nemotron_3_super', 'nemotron3super', 'nemotron-3-super', 'nemotron 3 super'],
-    fallbackVisible: false,
-  },
-  {
-    id: 'kimi_k2_5_thinking',
-    label: 'Kimi K2.5 Thinking',
-    category: 'Search Models',
-    description: 'Kimi K2.5 with reasoning always enabled.',
-    searchMode: 'search',
-    requestMode: 'COPILOT',
-    quotaBucket: 'pro_search',
-    requiredPlan: 'pro',
-    supportsThinking: false,
-    aliases: [
-      'kimi_k2_5_thinking',
-      'kimi-k2.5-thinking',
-      'kimi k2.5 thinking',
-      'kimik25thinking',
-      'k2.5thinking',
-    ],
-    fallbackVisible: false,
-  },
-  {
-    id: 'claude46opus',
-    label: 'Claude Opus 4.6',
-    category: 'Max Models',
-    description: 'Anthropic Claude Opus. Max or Enterprise only.',
-    searchMode: 'search',
-    requestMode: 'COPILOT',
-    quotaBucket: 'pro_search',
-    requiredPlan: 'max',
-    supportsThinking: true,
-    thinkingModelId: 'claude46opusthinking',
-    aliases: ['claude46opus', 'claudeopus46', 'claude-opus-4.6', 'claude 4.6 opus'],
-    thinkingAliases: [
-      'claude46opusthinking',
-      'claude46opus_thinking',
-      'claudeopus46thinking',
-      'claude-4.6-opus-thinking',
-      'claude opus 4.6 thinking',
-    ],
-  },
-  {
-    id: 'grok_4',
-    label: 'Grok 4',
-    category: 'Max Models',
-    description: 'Grok with advanced search and reasoning for Max-tier accounts.',
-    searchMode: 'search',
-    requestMode: 'COPILOT',
-    quotaBucket: 'pro_search',
-    requiredPlan: 'max',
-    supportsThinking: false,
-    aliases: ['grok4', 'grok41', 'grok-4', 'grok-4.1', 'grok 4', 'grok 4.1'],
-    fallbackVisible: false,
-  },
-  {
-    id: 'o3_pro',
-    label: 'o3-Pro',
-    category: 'Max Models',
-    description: 'OpenAI o3-Pro for complex analytical tasks on Max-tier accounts.',
-    searchMode: 'search',
-    requestMode: 'COPILOT',
-    quotaBucket: 'pro_search',
-    requiredPlan: 'max',
-    supportsThinking: false,
-    aliases: ['o3', 'o3pro', 'o3-pro', 'o3 pro'],
+    aliases: ['experimental', 'sonar', 'sonar2'],
     fallbackVisible: false,
   },
 ];
@@ -194,10 +214,47 @@ export function setRuntimeModelCatalog(models: ModelInfo[]): void {
   runtimeCatalog = new Map(models.map((model) => [model.id, { ...model }]));
 }
 
+let bundledCatalogCache: ModelInfo[] | undefined;
+let buildingBundledCatalog = false;
+
+/**
+ * Snapshot of https://www.perplexity.ai/rest/models/config shipped with the extension.
+ * Used when the live config cannot be fetched (for example, Cloudflare blocks Node on macOS).
+ */
+export function getBundledModelsConfig(): PerplexityModelsConfigSnapshot | undefined {
+  return normalizeModelsConfigPayload(bundledModelsConfig);
+}
+
+export function getBundledSnapshotDate(): string {
+  return (bundledModelsConfig as { snapshot_date?: string }).snapshot_date || 'unknown';
+}
+
 export function getFallbackModelCatalog(): ModelInfo[] {
-  return MODEL_TEMPLATES
+  if (bundledCatalogCache) {
+    return bundledCatalogCache.map((model) => ({ ...model }));
+  }
+
+  const templates = MODEL_TEMPLATES
     .filter((template) => template.fallbackVisible !== false)
     .map(stripTemplateMetadata);
+
+  if (buildingBundledCatalog) {
+    return templates;
+  }
+
+  const bundled = getBundledModelsConfig();
+  if (!bundled) {
+    return templates;
+  }
+
+  buildingBundledCatalog = true;
+  try {
+    const built = buildModelsFromConfig(bundled, 'unknown');
+    bundledCatalogCache = built.length > 0 ? built : templates;
+  } finally {
+    buildingBundledCatalog = false;
+  }
+  return bundledCatalogCache.map((model) => ({ ...model }));
 }
 
 export function buildModelsFromAvailableIds(
@@ -529,6 +586,7 @@ export function getCategoryOrder(category: string): number {
     'Moonshot AI',
     'xAI',
     'NVIDIA',
+    'Z.ai',
     'Additional Search Models',
     'Search Models',
     'Max Models',
@@ -744,14 +802,30 @@ function getAdditionalCategory(provider: string | null | undefined): string {
       return 'xAI';
     case 'NVIDIA':
       return 'NVIDIA';
+    case 'ZAI':
+      return 'Z.ai';
     default:
       return 'Additional Search Models';
   }
 }
 
+const NON_CHAT_MODEL_IDS = new Set([
+  'pplx_pro',
+  'pplx_pro_upgraded',
+  'chatgpt_tools',
+  'claudecode',
+  'codex',
+  'nanobananapro',
+  'nanobanana2',
+  'sora2',
+  'sora2pro',
+  'veo31',
+  'veo31fast',
+]);
+
 function looksLikeInternalModel(modelId: string): boolean {
   const lowered = modelId.toLowerCase();
-  return lowered.includes('internal_testing');
+  return lowered.includes('internal_testing') || NON_CHAT_MODEL_IDS.has(lowered);
 }
 
 function buildBestModelFromConfig(

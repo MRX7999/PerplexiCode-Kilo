@@ -11,7 +11,9 @@ import {
 } from './types';
 
 const PERPLEXITY_HOST = 'www.perplexity.ai';
-const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36';
+const USER_AGENT = process.platform === 'darwin'
+  ? 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36'
+  : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36';
 const CONFIG_PATH = '/rest/models/config?config_schema=v1&version=2.18&source=default';
 
 /**
@@ -127,9 +129,7 @@ export class ModelsConfigFetcher {
         Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
         window.chrome = { runtime: {} };
       `);
-      await page.setUserAgent(
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-      );
+      await page.setUserAgent(USER_AGENT);
       await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
       await page.goto('https://www.perplexity.ai/', {
         waitUntil: 'domcontentloaded',
@@ -163,6 +163,33 @@ export class ModelsConfigFetcher {
   }
 
   private _detectBrowserPath(): string | undefined {
+    if (process.platform === 'darwin') {
+      const home = os.homedir();
+      const apps = [
+        'Google Chrome.app/Contents/MacOS/Google Chrome',
+        'Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+        'Brave Browser.app/Contents/MacOS/Brave Browser',
+        'Comet.app/Contents/MacOS/Comet',
+        'Chromium.app/Contents/MacOS/Chromium',
+      ];
+      const macCandidates = apps.flatMap((app) => [
+        path.join('/Applications', app),
+        path.join(home, 'Applications', app),
+      ]);
+      return macCandidates.find((candidate) => fs.existsSync(candidate));
+    }
+
+    if (process.platform === 'linux') {
+      return [
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser',
+        '/usr/bin/microsoft-edge',
+        '/usr/bin/brave-browser',
+      ].find((candidate) => fs.existsSync(candidate));
+    }
+
     const pf = process.env['ProgramFiles'] || 'C:\\Program Files';
     const pfx = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
     const la = process.env['LOCALAPPDATA'] || '';

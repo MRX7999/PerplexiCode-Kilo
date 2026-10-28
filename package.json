@@ -1,8 +1,8 @@
 {
   "name": "perplexicode",
-  "displayName": "PerplexiCode",
-  "description": "Perplexity AI-powered coding agent for Visual Studio Code",
-  "version": "1.0.5",
+  "displayName": "PerplexiCode (Kilo Edition)",
+  "description": "Kilo Code-style autonomous coding agent (Code / Architect / Ask / Debug / Orchestrator / Review modes, tools, diffs, checkpoints, auto-approve) powered by your Perplexity Pro/Max subscription and its latest models.",
+  "version": "2.0.0",
   "publisher": "perplexicode",
   "engines": {
     "vscode": "^1.85.0"
@@ -16,8 +16,13 @@
     "perplexity",
     "ai",
     "coding-agent",
-    "sonar",
-    "search"
+    "kilo",
+    "agent",
+    "claude",
+    "gpt",
+    "gemini",
+    "grok",
+    "autonomous"
   ],
   "activationEvents": [
     "onStartupFinished"
@@ -26,7 +31,7 @@
   "icon": "media/icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yuki-20/PerplexiCode.git"
+    "url": "https://github.com/MRX7999/PerplexiCode-Kilo.git"
   },
   "contributes": {
     "viewsContainers": {
@@ -43,42 +48,114 @@
         {
           "type": "webview",
           "id": "perplexicode.chatView",
-          "name": "Chat"
+          "name": "Agent"
         }
       ]
     },
     "commands": [
       {
+        "command": "perplexicode.newTask",
+        "title": "New Task",
+        "category": "PerplexiCode",
+        "icon": "$(add)"
+      },
+      {
+        "command": "perplexicode.history",
+        "title": "Task History",
+        "category": "PerplexiCode",
+        "icon": "$(history)"
+      },
+      {
+        "command": "perplexicode.settings",
+        "title": "Settings",
+        "category": "PerplexiCode",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "perplexicode.openInTab",
+        "title": "Open in Editor Tab",
+        "category": "PerplexiCode",
+        "icon": "$(link-external)"
+      },
+      {
         "command": "perplexicode.openChat",
-        "title": "PerplexiCode: Open Chat"
+        "title": "Open Agent",
+        "category": "PerplexiCode"
       },
       {
         "command": "perplexicode.addAccount",
-        "title": "PerplexiCode: Add Account"
+        "title": "Add Perplexity Account",
+        "category": "PerplexiCode",
+        "icon": "$(person-add)"
       },
       {
         "command": "perplexicode.manageAccounts",
-        "title": "PerplexiCode: Manage Accounts"
+        "title": "Manage Accounts",
+        "category": "PerplexiCode",
+        "icon": "$(account)"
       },
       {
         "command": "perplexicode.selectModel",
-        "title": "PerplexiCode: Select Mode / Model"
+        "title": "Select Model / Mode",
+        "category": "PerplexiCode",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "perplexicode.cycleMode",
+        "title": "Switch to Next Mode",
+        "category": "PerplexiCode"
       },
       {
         "command": "perplexicode.setRotationStrategy",
-        "title": "PerplexiCode: Set Rotation Strategy"
-      },
-      {
-        "command": "perplexicode.askAboutSelection",
-        "title": "PerplexiCode: Ask About Selection"
-      },
-      {
-        "command": "perplexicode.askAboutFile",
-        "title": "PerplexiCode: Ask About Current File"
+        "title": "Set Account Rotation Strategy",
+        "category": "PerplexiCode"
       },
       {
         "command": "perplexicode.refreshModels",
-        "title": "PerplexiCode: Refresh Model List"
+        "title": "Refresh Models and Quotas",
+        "category": "PerplexiCode",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "perplexicode.explainCode",
+        "title": "Explain Code",
+        "category": "PerplexiCode"
+      },
+      {
+        "command": "perplexicode.fixCode",
+        "title": "Fix Code",
+        "category": "PerplexiCode"
+      },
+      {
+        "command": "perplexicode.improveCode",
+        "title": "Improve Code",
+        "category": "PerplexiCode"
+      },
+      {
+        "command": "perplexicode.addToContext",
+        "title": "Add to Context",
+        "category": "PerplexiCode"
+      },
+      {
+        "command": "perplexicode.askAboutSelection",
+        "title": "Add Selection to Chat",
+        "category": "PerplexiCode"
+      },
+      {
+        "command": "perplexicode.askAboutFile",
+        "title": "Explain Current File",
+        "category": "PerplexiCode"
+      },
+      {
+        "command": "perplexicode.addTerminalOutput",
+        "title": "Add Terminal Selection to Context",
+        "category": "PerplexiCode"
+      },
+      {
+        "command": "perplexicode.generateCommitMessage",
+        "title": "Generate Commit Message",
+        "category": "PerplexiCode",
+        "icon": "$(sparkle)"
       }
     ],
     "keybindings": [
@@ -87,14 +164,100 @@
         "key": "ctrl+shift+i",
         "mac": "cmd+shift+i",
         "when": "editorTextFocus && editorHasSelection"
+      },
+      {
+        "command": "perplexicode.addToContext",
+        "key": "ctrl+k ctrl+a",
+        "mac": "cmd+k cmd+a",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "perplexicode.newTask",
+        "key": "ctrl+alt+n",
+        "mac": "cmd+alt+n"
+      },
+      {
+        "command": "perplexicode.openChat",
+        "key": "ctrl+alt+k",
+        "mac": "cmd+alt+k"
+      },
+      {
+        "command": "perplexicode.cycleMode",
+        "key": "ctrl+.",
+        "mac": "cmd+.",
+        "when": "focusedView == perplexicode.chatView || activeWebviewPanelId == perplexicode.tab"
       }
     ],
     "menus": {
+      "view/title": [
+        {
+          "command": "perplexicode.newTask",
+          "when": "view == perplexicode.chatView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "perplexicode.history",
+          "when": "view == perplexicode.chatView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "perplexicode.settings",
+          "when": "view == perplexicode.chatView",
+          "group": "navigation@3"
+        },
+        {
+          "command": "perplexicode.openInTab",
+          "when": "view == perplexicode.chatView",
+          "group": "navigation@4"
+        }
+      ],
       "editor/context": [
         {
-          "command": "perplexicode.askAboutSelection",
+          "submenu": "perplexicode.editorMenu",
+          "group": "1_perplexicode@1"
+        }
+      ],
+      "perplexicode.editorMenu": [
+        {
+          "command": "perplexicode.addToContext",
+          "group": "1@1"
+        },
+        {
+          "command": "perplexicode.explainCode",
           "when": "editorHasSelection",
+          "group": "1@2"
+        },
+        {
+          "command": "perplexicode.fixCode",
+          "group": "1@3"
+        },
+        {
+          "command": "perplexicode.improveCode",
+          "when": "editorHasSelection",
+          "group": "1@4"
+        },
+        {
+          "command": "perplexicode.askAboutFile",
+          "group": "2@1"
+        }
+      ],
+      "terminal/context": [
+        {
+          "command": "perplexicode.addTerminalOutput",
           "group": "perplexicode@1"
+        }
+      ],
+      "scm/title": [
+        {
+          "command": "perplexicode.generateCommitMessage",
+          "when": "scmProvider == git",
+          "group": "navigation@99"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "perplexicode.addTerminalOutput",
+          "when": "terminalFocus"
         }
       ]
     },
@@ -106,19 +269,218 @@
           "default": "turbo",
           "enum": [
             "turbo",
-            "experimental",
-            "gpt54",
-            "gemini31pro_high",
-            "claude46sonnet",
-            "nemotron_3_super",
-            "claude46opus"
+            "gpt6_1_sol",
+            "gpt6_astra",
+            "gemini4argon",
+            "gemini38flash",
+            "claude55sonnet",
+            "claude55opus",
+            "claudefable51",
+            "kimik3thinking",
+            "glm_5_3_thinking",
+            "grok47",
+            "nv_nemotron_3_5_super",
+            "experimental"
           ],
-          "description": "Default Perplexity AI model to use in the selector"
+          "enumDescriptions": [
+            "Best (Perplexity auto)",
+            "GPT-6.1 Sol",
+            "GPT-6 Astra (Max)",
+            "Gemini 4 Argon (Max)",
+            "Gemini 3.8 Flash",
+            "Claude Sonnet 5.5",
+            "Claude Opus 5.5 (Max)",
+            "Claude Fable 5.1 (Max)",
+            "Kimi K3",
+            "GLM 5.3",
+            "Grok 4.7",
+            "Nemotron 3.5 Super VL",
+            "Sonar"
+          ],
+          "markdownDescription": "Model used for new sessions. Any model from the in-chat picker (including the 77 under **More models**) can be chosen there."
         },
-        "perplexicode.maxContextTokens": {
+        "perplexicode.subscriptionPlan": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "pro",
+            "max"
+          ],
+          "enumDescriptions": [
+            "Detect from the account",
+            "Treat accounts as Perplexity Pro",
+            "Treat accounts as Perplexity Max (unlocks Max-only models in the picker)"
+          ],
+          "description": "Override the detected subscription plan when Perplexity does not report it correctly."
+        },
+        "perplexicode.agent.autoApprove.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Master switch for auto-approval."
+        },
+        "perplexicode.agent.autoApprove.read": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-approve reading files and listing/searching inside the workspace."
+        },
+        "perplexicode.agent.autoApprove.readOutsideWorkspace": {
+          "type": "boolean",
+          "default": false,
+          "description": "Auto-approve reads outside the workspace."
+        },
+        "perplexicode.agent.autoApprove.write": {
+          "type": "boolean",
+          "default": false,
+          "description": "Auto-approve creating and editing files."
+        },
+        "perplexicode.agent.autoApprove.execute": {
+          "type": "boolean",
+          "default": false,
+          "description": "Auto-approve terminal commands that match perplexicode.agent.allowedCommands."
+        },
+        "perplexicode.agent.autoApprove.modeSwitch": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-approve mode switches requested by the agent."
+        },
+        "perplexicode.agent.autoApprove.subtasks": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-approve subtasks created by the Orchestrator."
+        },
+        "perplexicode.agent.autoApprove.todo": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-approve todo list updates."
+        },
+        "perplexicode.agent.autoApprove.retry": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically retry failed Perplexity requests."
+        },
+        "perplexicode.agent.allowedCommands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "npm test",
+            "npm run",
+            "git status",
+            "git diff",
+            "git log",
+            "ls",
+            "cat",
+            "pwd"
+          ],
+          "description": "Command prefixes that can run without approval when command auto-approval is enabled. Use * to allow everything."
+        },
+        "perplexicode.agent.deniedCommands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "rm -rf",
+            "sudo",
+            "git push --force"
+          ],
+          "description": "Command prefixes that always require approval."
+        },
+        "perplexicode.agent.maxRequestsPerTask": {
           "type": "number",
-          "default": 8000,
-          "description": "Maximum number of tokens to include in file context"
+          "default": 40,
+          "minimum": 1,
+          "description": "Ask before continuing after this many consecutive requests."
+        },
+        "perplexicode.agent.maxReadFileLines": {
+          "type": "number",
+          "default": 500,
+          "minimum": 50,
+          "description": "Maximum lines returned by one read_file call."
+        },
+        "perplexicode.agent.commandTimeoutSeconds": {
+          "type": "number",
+          "default": 120,
+          "minimum": 0,
+          "description": "Terminal command timeout (0 = no timeout)."
+        },
+        "perplexicode.agent.terminalOutputLineLimit": {
+          "type": "number",
+          "default": 300,
+          "minimum": 20,
+          "description": "Maximum terminal output lines sent to the model."
+        },
+        "perplexicode.agent.webSearch": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "always",
+            "never"
+          ],
+          "enumDescriptions": [
+            "Mode decides (Ask/Architect search the web)",
+            "Always search the web",
+            "Never search the web"
+          ],
+          "description": "Whether Perplexity may search the web for agent requests."
+        },
+        "perplexicode.agent.contextStrategy": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "full",
+            "thread"
+          ],
+          "enumDescriptions": [
+            "Continue the Perplexity thread when possible, resend full context on failure",
+            "Always send the full task context",
+            "Prefer Perplexity thread follow-ups"
+          ],
+          "description": "How the conversation is sent to Perplexity."
+        },
+        "perplexicode.agent.maxPromptChars": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 8000,
+          "description": "Upper bound for the prompt size; older turns are condensed beyond it."
+        },
+        "perplexicode.agent.language": {
+          "type": "string",
+          "default": "auto",
+          "description": "Language the agent replies in (auto = language of your latest message), for example \"ru\" or \"en\"."
+        },
+        "perplexicode.agent.customInstructions": {
+          "type": "string",
+          "default": "",
+          "editPresentation": "multilineText",
+          "description": "Custom instructions added to every mode (like Kilo Code custom instructions). Workspace rules from .kilocode/rules, .roo/rules, .clinerules, AGENTS.md are also loaded."
+        },
+        "perplexicode.agent.modeInstructions": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Per-mode custom instructions, keyed by mode slug (code, architect, ask, debug, orchestrator, review)."
+        },
+        "perplexicode.agent.diffEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Let the agent use apply_diff (SEARCH/REPLACE) edits instead of rewriting whole files."
+        },
+        "perplexicode.agent.includeFileListOnStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include the workspace file list in the first request of a task."
+        },
+        "perplexicode.agent.revealEditedFiles": {
+          "type": "boolean",
+          "default": true,
+          "description": "Open files in the editor after the agent edits them."
         },
         "perplexicode.excludePatterns": {
           "type": "array",
@@ -132,14 +494,22 @@
           "description": "Glob patterns for files to exclude from context"
         }
       }
-    }
+    },
+    "submenus": [
+      {
+        "id": "perplexicode.editorMenu",
+        "label": "PerplexiCode"
+      }
+    ]
   },
   "scripts": {
     "build": "node esbuild.js",
     "watch": "node esbuild.js --watch",
     "package": "vsce package",
-    "lint": "tsc --noEmit",
-    "test:smoke": "node ./test/run-smoke.mjs"
+    "lint": "tsc --noEmit && tsc -p webview-ui/tsconfig.json",
+    "test": "node ./test/run-tests.mjs",
+    "test:webview": "node ./test/webview-render.mjs",
+    "vscode:prepublish": "node esbuild.js"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
@@ -153,5 +523,6 @@
     "marked": "^12.0.0",
     "puppeteer-core": "^24.39.0",
     "sql.js": "^1.14.1"
-  }
+  },
+  "license": "MIT"
 }

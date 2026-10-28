@@ -18,14 +18,15 @@ const extensionConfig = {
 
 /** @type {import('esbuild').BuildOptions} */
 const webviewConfig = {
-  entryPoints: ['webview-ui/main.ts'],
+  entryPoints: { 'agent-webview': 'webview-ui/agent/main.ts' },
   bundle: true,
-  outfile: 'out/webview.js',
+  outdir: 'out',
+  loader: { '.svg': 'text' },
   format: 'iife',
   platform: 'browser',
   target: 'es2020',
   sourcemap: true,
-  minify: false,
+  minify: !isWatch,
 };
 
 async function build() {

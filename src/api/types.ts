@@ -119,6 +119,16 @@ export interface StreamResponseMeta {
   displayModel: string;
   searchMode: PerplexitySearchMode;
   mode: PerplexityRequestMode;
+  /** Thread identifiers returned by Perplexity; used for follow-up turns. */
+  backendUuid?: string;
+  readWriteToken?: string;
+  contextUuid?: string;
+}
+
+export interface FollowUpThread {
+  lastBackendUuid: string;
+  readWriteToken?: string;
+  contextUuid?: string;
 }
 
 export interface StreamCallbacks {
@@ -130,6 +140,7 @@ export interface StreamCallbacks {
 }
 
 export interface QueryRequestOptions {
+  followUp?: FollowUpThread;
   sources?: QuerySource[];
   language?: string;
   searchMode?: PerplexitySearchMode;

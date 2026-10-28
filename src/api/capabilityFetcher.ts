@@ -251,8 +251,27 @@ export function markModelUnavailable(account: AccountSession, modelId: string): 
   account.capabilities.blockedModelIds = [...blocked];
 }
 
+let planOverride: AccountPlan | undefined;
+
+/**
+ * Lets the user pin the subscription tier when Perplexity's session payload is ambiguous
+ * (setting perplexicode.subscriptionPlan). 'unknown' plans are treated permissively:
+ * Perplexity itself rejects a model the account cannot use and the transport falls back.
+ */
+export function setPlanOverride(plan: AccountPlan | undefined): void {
+  planOverride = plan && plan !== 'unknown' ? plan : undefined;
+}
+
+export function getEffectivePlan(plan: AccountPlan | undefined): AccountPlan {
+  return planOverride || plan || 'unknown';
+}
+
 export function planSatisfiesRequirement(plan: AccountPlan, requiredPlan: AccountPlan): boolean {
-  return planRank(plan) >= planRank(requiredPlan);
+  const effective = getEffectivePlan(plan);
+  if (effective === 'unknown') {
+    return true;
+  }
+  return planRank(effective) >= planRank(requiredPlan);
 }
 
 export function getQuotaItem(account: AccountSession, bucket: QuotaBucket): QuotaSnapshotItem | undefined {
