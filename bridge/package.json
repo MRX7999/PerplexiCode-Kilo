@@ -1,0 +1,21 @@
+{
+  "name": "perplexicode",
+  "displayName": "PerplexiCode (moved to PerplexiCode Kilo)",
+  "description": "Migration bridge: hands your PerplexiCode 1.x/2.0 accounts over to PerplexiCode Kilo (MRX7999.perplexicode-kilo), then can be uninstalled.",
+  "version": "2.9.0",
+  "publisher": "perplexicode",
+  "license": "MIT",
+  "icon": "icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MRX7999/PerplexiCode-Kilo"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "perplexicodeMigrationBridge": true,
+  "contributes": {}
+}

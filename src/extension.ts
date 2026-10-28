@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import { initSettingsStore, onDidChangeFallbackSetting } from './config/settingsStore';
+import { migrateLegacySettings, runLegacyMigration } from './migration/legacyImport';
 import { AgentController } from './agent/controller';
 import { getModeBySlug, MODES } from './agent/modes';
 import { TaskStore } from './agent/taskStore';
@@ -13,7 +15,7 @@ import { AccountManager } from './storage/accountManager';
 import { StatusBarManager } from './ui/statusBar';
 
 const ROTATION_KEY = 'perplexicode.rotationStrategy';
-const VIEW_TYPE = 'perplexicode.chatView';
+const VIEW_TYPE = 'perplexicodeKilo.chatView';
 
 let taskStore: TaskStore | undefined;
 
@@ -21,6 +23,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const output = vscode.window.createOutputChannel('PerplexiCode');
   context.subscriptions.push(output);
   const version = String(context.extension.packageJSON.version);
+  initSettingsStore(context, (line) => output.appendLine(line));
 
   // Accounts are stored under the same globalState / SecretStorage keys as PerplexiCode 1.x,
   // so updating in place keeps every signed-in account.
@@ -106,7 +109,31 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Accounts
   // ------------------------------------------------------------------------------------------
 
-  register('perplexicode.addAccount', async () => {
+  // Accounts saved by the old extension ID (perplexicode.perplexicode) live in its own SecretStorage;
+  // the bundled migration bridge hands them over after the user confirms.
+  const migrateLegacy = (force: boolean) => runLegacyMigration({
+    context,
+    accountManager,
+    output,
+    force,
+    // Only integration tests set this variable; the bridge checks it as well before skipping its modal.
+    skipBridgeConfirmation: process.env.PERPLEXICODE_BRIDGE_TEST_AUTOCONFIRM === '1',
+    applyRotationStrategy: (strategy) => rotationEngine.setStrategy(strategy),
+    onImported: async () => {
+      await initializeModels(true);
+      controller.postState();
+      updateStatusBar();
+    },
+  });
+  register('perplexicodeKilo.importLegacyAccounts', async () => {
+    await migrateLegacy(true);
+  });
+  void migrateLegacySettings(context, output)
+    .catch((error) => output.appendLine(`[migration] settings: ${(error as Error).message}`))
+    .then(() => migrateLegacy(false))
+    .catch((error) => output.appendLine(`[migration] ${(error as Error).stack || error}`));
+
+  register('perplexicodeKilo.addAccount', async () => {
     const tokens = await loginProvider.login();
     if (!tokens) {
       return;
@@ -130,12 +157,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     void vscode.window.showInformationMessage(`PerplexiCode: Account "${result.account.alias}" added successfully.`);
   });
 
-  register('perplexicode.manageAccounts', async () => {
+  register('perplexicodeKilo.manageAccounts', async () => {
     const accounts = accountManager.getAccounts();
     if (accounts.length === 0) {
       const action = await vscode.window.showInformationMessage('PerplexiCode: No accounts configured.', 'Add Account');
       if (action === 'Add Account') {
-        void vscode.commands.executeCommand('perplexicode.addAccount');
+        void vscode.commands.executeCommand('perplexicodeKilo.addAccount');
       }
       return;
     }
@@ -150,7 +177,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
     if (selected.accountId === '__add__') {
-      void vscode.commands.executeCommand('perplexicode.addAccount');
+      void vscode.commands.executeCommand('perplexicodeKilo.addAccount');
       return;
     }
     const account = accounts.find((entry) => entry.id === selected.accountId);
@@ -192,14 +219,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   });
 
-  register('perplexicode.refreshModels', async () => {
+  register('perplexicodeKilo.refreshModels', async () => {
     await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: 'PerplexiCode: Refreshing models and quotas...' },
       async () => initializeModels(true)
     );
   });
 
-  register('perplexicode.setRotationStrategy', async () => {
+  register('perplexicodeKilo.setRotationStrategy', async () => {
     const strategies: { label: string; description: string; strategy: RotationStrategy }[] = [
       { label: '$(sync) Round Robin', description: 'Cycle through available accounts', strategy: 'round-robin' },
       { label: '$(graph-line) Least Used', description: 'Prefer the account with the fewest queries today', strategy: 'least-used' },
@@ -221,7 +248,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Model and mode selection
   // ------------------------------------------------------------------------------------------
 
-  register('perplexicode.selectModel', async () => {
+  register('perplexicodeKilo.selectModel', async () => {
     const models = controller.getModels();
     const selection = controller.getSelection();
     type Item = vscode.QuickPickItem & { modelId?: string; thinking?: boolean };
@@ -274,7 +301,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     await controller.setModel(picked.modelId, picked.thinking);
   });
 
-  register('perplexicode.cycleMode', async () => {
+  register('perplexicodeKilo.cycleMode', async () => {
     const index = MODES.findIndex((mode) => mode.slug === controller.getModeSlug());
     await controller.setMode(MODES[(index + 1) % MODES.length].slug);
   });
@@ -283,22 +310,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Views and tasks
   // ------------------------------------------------------------------------------------------
 
-  register('perplexicode.openChat', focusSidebar);
-  register('perplexicode.newTask', async () => {
+  register('perplexicodeKilo.openChat', focusSidebar);
+  register('perplexicodeKilo.newTask', async () => {
     await controller.clearTask();
     await focusSidebar();
     controller.showView('chat');
   });
-  register('perplexicode.history', async () => {
+  register('perplexicodeKilo.history', async () => {
     await focusSidebar();
     controller.showView('history');
   });
-  register('perplexicode.settings', async () => {
+  register('perplexicodeKilo.settings', async () => {
     await focusSidebar();
     controller.showView('settings');
   });
-  register('perplexicode.openInTab', async () => {
-    const panel = vscode.window.createWebviewPanel('perplexicode.tab', 'PerplexiCode', vscode.ViewColumn.Beside, {
+  register('perplexicodeKilo.openInTab', async () => {
+    const panel = vscode.window.createWebviewPanel('perplexicodeKilo.tab', 'PerplexiCode', vscode.ViewColumn.Beside, {
       enableScripts: true,
       retainContextWhenHidden: true,
       localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'out'), vscode.Uri.joinPath(context.extensionUri, 'media')],
@@ -313,11 +340,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Editor actions (Kilo-style code actions)
   // ------------------------------------------------------------------------------------------
 
-  register('perplexicode.explainCode', () => controller.runCodeAction('explain'));
-  register('perplexicode.fixCode', () => controller.runCodeAction('fix'));
-  register('perplexicode.improveCode', () => controller.runCodeAction('improve'));
-  register('perplexicode.addToContext', () => controller.runCodeAction('add'));
-  register('perplexicode.askAboutSelection', async () => {
+  register('perplexicodeKilo.explainCode', () => controller.runCodeAction('explain'));
+  register('perplexicodeKilo.fixCode', () => controller.runCodeAction('fix'));
+  register('perplexicodeKilo.improveCode', () => controller.runCodeAction('improve'));
+  register('perplexicodeKilo.addToContext', () => controller.runCodeAction('add'));
+  register('perplexicodeKilo.askAboutSelection', async () => {
     const editor = vscode.window.activeTextEditor;
     if (editor && !editor.selection.isEmpty) {
       await controller.runCodeAction('add', editor);
@@ -325,7 +352,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     await focusSidebar();
   });
-  register('perplexicode.askAboutFile', async () => {
+  register('perplexicodeKilo.askAboutFile', async () => {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
       void vscode.window.showWarningMessage('PerplexiCode: No file is currently open.');
@@ -336,7 +363,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const mention = /\s/.test(relative) ? `"${relative}" (read it with read_file)` : `@/${relative}`;
     await controller.newTask(await controller.expandMentions(`Analyze and explain the file ${mention}`), [], 'ask');
   });
-  register('perplexicode.addTerminalOutput', async () => {
+  register('perplexicodeKilo.addTerminalOutput', async () => {
     const before = await vscode.env.clipboard.readText();
     await vscode.commands.executeCommand('workbench.action.terminal.copySelection');
     const selection = await vscode.env.clipboard.readText();
@@ -347,7 +374,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     await controller.addToContext(`Terminal output:\n\`\`\`\n${selection.trim()}\n\`\`\``);
   });
-  register('perplexicode.generateCommitMessage', () => controller.generateCommitMessage());
+  register('perplexicodeKilo.generateCommitMessage', () => controller.generateCommitMessage());
 
   context.subscriptions.push(
     vscode.languages.registerCodeActionsProvider([{ scheme: 'file' }, { scheme: 'untitled' }], new PerplexiCodeActionProvider(), {
@@ -357,7 +384,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration('perplexicode.subscriptionPlan')) {
+      if (event.affectsConfiguration('perplexicodeKilo.subscriptionPlan')) {
+        void initializeModels(false);
+      }
+    }),
+    onDidChangeFallbackSetting((key) => {
+      if (key === 'perplexicodeKilo.subscriptionPlan') {
         void initializeModels(false);
       }
     })
@@ -386,12 +418,12 @@ class PerplexiCodeActionProvider implements vscode.CodeActionProvider {
       actions.push(action);
     };
     if (hasProblems) {
-      make('PerplexiCode: Fix with agent', 'perplexicode.fixCode', vscode.CodeActionKind.QuickFix, true);
+      make('PerplexiCode: Fix with agent', 'perplexicodeKilo.fixCode', vscode.CodeActionKind.QuickFix, true);
     }
     if (!range.isEmpty) {
-      make('PerplexiCode: Explain code', 'perplexicode.explainCode', vscode.CodeActionKind.QuickFix);
-      make('PerplexiCode: Improve code', 'perplexicode.improveCode', vscode.CodeActionKind.RefactorRewrite);
-      make('PerplexiCode: Add to context', 'perplexicode.addToContext', vscode.CodeActionKind.QuickFix);
+      make('PerplexiCode: Explain code', 'perplexicodeKilo.explainCode', vscode.CodeActionKind.QuickFix);
+      make('PerplexiCode: Improve code', 'perplexicodeKilo.improveCode', vscode.CodeActionKind.RefactorRewrite);
+      make('PerplexiCode: Add to context', 'perplexicodeKilo.addToContext', vscode.CodeActionKind.QuickFix);
     }
     void document;
     return actions;

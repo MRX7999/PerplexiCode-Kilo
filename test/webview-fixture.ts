@@ -73,7 +73,7 @@ async function main() {
   void task.start('Fix the add function in math.ts and make sure tests pass');
   await followupReached;
   const base = {
-    type: 'state', version: '2.0.0', includeMessages: true,
+    type: 'state', version: '2.1.0', includeMessages: true,
     mode: 'code',
     modes: MODES.map((mode) => ({ slug: mode.slug, name: mode.name, description: mode.description, icon: mode.icon })),
     models: models.map((model) => ({ id: model.id, label: model.label, description: model.description, category: model.category, supportsThinking: model.supportsThinking, requiredPlan: model.requiredPlan, isNew: model.isNew === true, surfaced: model.surfaced !== false, selectable: model.selectable !== false, provider: model.provider || null })),

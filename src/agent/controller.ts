@@ -21,6 +21,7 @@ import { AgentSettings, ModelSelection, PersistedTask, UiMessage } from './types
 import type { TodoItem } from './toolParser';
 import * as os from 'os';
 import { VsCodeAgentHost } from './vscodeHost';
+import { onDidChangeFallbackSetting, readSetting, writeSetting } from '../config/settingsStore';
 
 type WebviewTarget = vscode.Webview;
 
@@ -61,7 +62,7 @@ export class AgentController implements vscode.Disposable {
   ) {
     this.output = output;
     const stored = context.globalState.get<StoredSelection>(SELECTION_KEY);
-    const configuredDefault = vscode.workspace.getConfiguration('perplexicode').get<string>('defaultModel', 'turbo');
+    const configuredDefault = readSetting<string>('perplexicodeKilo.defaultModel', 'turbo');
     this.selection = {
       modelId: stored?.modelId || configuredDefault || 'turbo',
       thinking: stored?.thinking ?? false,
@@ -69,10 +70,14 @@ export class AgentController implements vscode.Disposable {
       mode: stored?.mode || DEFAULT_MODE_SLUG,
     };
     this.disposables.push(vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration('perplexicode')) {
+      if (event.affectsConfiguration('perplexicodeKilo')) {
         this.applyPlanOverride();
         this.postState();
       }
+    }));
+    this.disposables.push(onDidChangeFallbackSetting(() => {
+      this.applyPlanOverride();
+      this.postState();
     }));
     this.applyPlanOverride();
   }
@@ -146,7 +151,7 @@ export class AgentController implements vscode.Disposable {
   // ---------------------------------------------------------------------------------------------
 
   getSettings(): AgentSettings {
-    const config = vscode.workspace.getConfiguration('perplexicode.agent');
+    const config = { get: <T>(key: string, defaultValue: T): T => readSetting<T>(`perplexicodeKilo.agent.${key}`, defaultValue) };
     return {
       autoApprove: {
         enabled: config.get<boolean>('autoApprove.enabled', true),
@@ -178,15 +183,15 @@ export class AgentController implements vscode.Disposable {
 
   private async updateSetting(key: string, value: unknown): Promise<void> {
     const [section, ...rest] = key.split('.');
-    if (section === 'root') {
-      await vscode.workspace.getConfiguration('perplexicode').update(rest.join('.'), value, vscode.ConfigurationTarget.Global);
-      return;
+    const fullKey = section === 'root' ? `perplexicodeKilo.${rest.join('.')}` : `perplexicodeKilo.agent.${key}`;
+    const target = await writeSetting(fullKey, value);
+    if (target === 'fallback') {
+      this.output.appendLine(`Saved ${fullKey} in the fallback store (setting not registered in this window yet; reload to finish the update).`);
     }
-    await vscode.workspace.getConfiguration('perplexicode.agent').update(key, value, vscode.ConfigurationTarget.Global);
   }
 
   private applyPlanOverride(): void {
-    const plan = vscode.workspace.getConfiguration('perplexicode').get<string>('subscriptionPlan', 'auto');
+    const plan = readSetting<string>('perplexicodeKilo.subscriptionPlan', 'auto');
     setPlanOverride(plan === 'auto' ? undefined : (plan as AccountPlan));
   }
 
@@ -266,7 +271,7 @@ export class AgentController implements vscode.Disposable {
 
   private buildTask(options: { mode: string; parentId?: string; restore?: PersistedTask; cwd?: string }): AgentTask {
     const cwd = options.restore?.workspace || options.cwd || this.workspaceRoot() || os.homedir();
-    const host = new VsCodeAgentHost(cwd, () => vscode.workspace.getConfiguration('perplexicode.agent').get<boolean>('revealEditedFiles', true));
+    const host = new VsCodeAgentHost(cwd, () => readSetting<boolean>('perplexicodeKilo.agent.revealEditedFiles', true));
     const task = new AgentTask({
       host,
       provider: this.transport,
@@ -461,7 +466,7 @@ export class AgentController implements vscode.Disposable {
   }
 
   async addToContext(text: string): Promise<void> {
-    await vscode.commands.executeCommand('perplexicode.chatView.focus');
+    await vscode.commands.executeCommand('perplexicodeKilo.chatView.focus');
     this.post({ type: 'addToInput', text });
   }
 
@@ -491,7 +496,7 @@ export class AgentController implements vscode.Disposable {
       fix: `Fix any issues in the following code from file path ${rel}:${lines}\n${diagnostics ? `\nCurrent problems detected:\n${diagnostics}\n` : ''}\n${block.replace(/^@\/\S+ \(lines [^)]+\):\n/, '')}\n\nPlease address all detected problems and explain the fix.`,
       improve: `Improve the following code from file path ${rel}:${lines}\n\n${block.replace(/^@\/\S+ \(lines [^)]+\):\n/, '')}\n\nSuggest improvements for readability, performance, best practices and error handling, then apply them.`,
     } as const;
-    await vscode.commands.executeCommand('perplexicode.chatView.focus');
+    await vscode.commands.executeCommand('perplexicodeKilo.chatView.focus');
     await this.newTask(prompts[kind], [], kind === 'explain' ? 'ask' : 'code');
   }
 
@@ -628,17 +633,21 @@ export class AgentController implements vscode.Disposable {
         break;
       }
       case 'updateSetting':
-        await this.updateSetting(String(message.key), message.value);
-        this.postState();
+        try {
+          await this.updateSetting(String(message.key), message.value);
+        } finally {
+          // Always resync, so the checkboxes never show a value that was not saved.
+          this.postState();
+        }
         break;
       case 'openSettingsJson':
-        await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:perplexicode.perplexicode');
+        await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:MRX7999.perplexicode-kilo');
         break;
       case 'addAccount':
-        await vscode.commands.executeCommand('perplexicode.addAccount');
+        await vscode.commands.executeCommand('perplexicodeKilo.addAccount');
         break;
       case 'manageAccounts':
-        await vscode.commands.executeCommand('perplexicode.manageAccounts');
+        await vscode.commands.executeCommand('perplexicodeKilo.manageAccounts');
         break;
       case 'removeAccount': {
         const account = this.accountManager.getAccounts().find((entry) => entry.id === message.id);
@@ -646,17 +655,17 @@ export class AgentController implements vscode.Disposable {
           const confirm = await vscode.window.showWarningMessage(`Remove account "${account.alias}"?`, { modal: true }, 'Remove');
           if (confirm === 'Remove') {
             await this.accountManager.removeAccount(account.id);
-            await vscode.commands.executeCommand('perplexicode.refreshModels');
+            await vscode.commands.executeCommand('perplexicodeKilo.refreshModels');
           }
         }
         break;
       }
       case 'toggleAccount':
         await this.accountManager.toggleAccount(String(message.id));
-        await vscode.commands.executeCommand('perplexicode.refreshModels');
+        await vscode.commands.executeCommand('perplexicodeKilo.refreshModels');
         break;
       case 'refreshAccounts':
-        await vscode.commands.executeCommand('perplexicode.refreshModels');
+        await vscode.commands.executeCommand('perplexicodeKilo.refreshModels');
         break;
       case 'setRotation':
         this.rotationEngine.setStrategy(message.strategy as RotationStrategy);
@@ -714,7 +723,7 @@ export class AgentController implements vscode.Disposable {
         break;
       }
       case 'openInTab':
-        await vscode.commands.executeCommand('perplexicode.openInTab');
+        await vscode.commands.executeCommand('perplexicodeKilo.openInTab');
         break;
       case 'runCompletionCommand': {
         const terminal = vscode.window.createTerminal({ name: 'PerplexiCode', cwd: this.currentTask?.toJSON().workspace });
@@ -770,7 +779,7 @@ export class AgentController implements vscode.Disposable {
   postState(includeMessages = false, target?: WebviewTarget): void {
     const task = this.currentTask;
     const accounts = this.accountManager.getAccounts();
-    const planSetting = vscode.workspace.getConfiguration('perplexicode').get<string>('subscriptionPlan', 'auto');
+    const planSetting = readSetting<string>('perplexicodeKilo.subscriptionPlan', 'auto');
     const state = {
       type: 'state',
       version: this.context.extension.packageJSON.version,
@@ -812,7 +821,7 @@ export class AgentController implements vscode.Disposable {
       general: {
         subscriptionPlan: planSetting,
         rotationStrategy: this.rotationEngine.getStrategy(),
-        revealEditedFiles: vscode.workspace.getConfiguration('perplexicode.agent').get<boolean>('revealEditedFiles', true),
+        revealEditedFiles: readSetting<boolean>('perplexicodeKilo.agent.revealEditedFiles', true),
         modelsSnapshot: getBundledSnapshotDate(),
       },
       accounts: accounts.map((account) => ({

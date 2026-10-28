@@ -1,6 +1,18 @@
 # Changelog
 
-All notable changes to PerplexiCode — Kilo Edition. Versions follow [Semantic Versioning](https://semver.org/).
+All notable changes to PerplexiCode Kilo. Versions follow [Semantic Versioning](https://semver.org/).
+
+## [2.1.0] - 2026-10-28
+
+### Changed
+- New extension ID `MRX7999.perplexicode-kilo` and name **PerplexiCode Kilo**, published to [Open VSX](https://open-vsx.org/extension/MRX7999/perplexicode-kilo) under the `MRX7999` namespace. Commands, views and settings moved from `perplexicode.*` to `perplexicodeKilo.*`.
+- New logo (extension icon, activity bar icon, welcome and About screens).
+
+### Added
+- Account import from the old `perplexicode.perplexicode` extension. A bundled helper ([bridge](bridge/extension.js)) takes over the old ID and copies sessions, CSRF tokens, cookies and the rotation strategy after a confirmation dialog. User settings `perplexicode.*` are copied to `perplexicodeKilo.*`. Command: **PerplexiCode: Import Accounts from PerplexiCode 1.x**.
+
+### Fixed
+- Auto-approve checkboxes and other settings failed with `Unable to write to User Settings because … is not a registered configuration` when the extension was updated without reloading the window. The value is now kept by the extension, applied immediately and moved into User Settings after the reload. The UI always resyncs to the saved value.
 
 ## [2.0.1] - 2026-10-28
 

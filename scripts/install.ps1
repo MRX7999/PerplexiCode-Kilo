@@ -19,7 +19,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $Repo = 'MRX7999/PerplexiCode-Kilo'
 $Asset = 'perplexicode-kilo.vsix'
-$ExtensionId = 'perplexicode.perplexicode'
+$ExtensionId = 'MRX7999.perplexicode-kilo'
 
 function Write-Info([string]$Message) { Write-Host "[perplexicode] $Message" -ForegroundColor Cyan }
 function Write-Warn([string]$Message) { Write-Host "[perplexicode] $Message" -ForegroundColor Yellow }
@@ -114,7 +114,7 @@ try {
 
   if ($installed -eq 0) { throw 'Nothing was installed.' }
   Write-Info 'Done. Reload the editor window: Ctrl+Shift+P > Developer: Reload Window.'
-  Write-Info 'Accounts from PerplexiCode 1.x are kept (same extension ID and storage).'
+  Write-Info 'If the old PerplexiCode (perplexicode.perplexicode) is installed, PerplexiCode Kilo offers to import its accounts after the reload.'
 }
 finally {
   Remove-Item -Recurse -Force $WorkDir -ErrorAction SilentlyContinue

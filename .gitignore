@@ -24,3 +24,5 @@ Thumbs.db
 # Gemini/AI agent artifacts
 .gemini/
 .agents/
+media/migration/
+bridge/icon.png

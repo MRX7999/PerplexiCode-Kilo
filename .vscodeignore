@@ -23,3 +23,5 @@ docs/**
 scripts/**
 .github/**
 SHA256SUMS.txt
+bridge/**
+!media/migration/perplexicode-migration-bridge.vsix

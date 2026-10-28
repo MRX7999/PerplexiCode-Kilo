@@ -78,3 +78,6 @@ export function providerIcon(provider: string | null | undefined, modelId: strin
 export function modeIcon(slug: string): string {
   return icons[slug] || icons.code;
 }
+
+/** Brand mark: code chevrons around a four-point spark with an amber accent (matches media/icon.png). */
+export const BRAND_MARK = `<svg class="brand-mark" viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="pk-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0d2a3a"/><stop offset="1" stop-color="#0a4d55"/></linearGradient><linearGradient id="pk-fg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#14b8c6"/><stop offset="1" stop-color="#5eead4"/></linearGradient></defs><rect x="0" y="0" width="64" height="64" rx="15" fill="url(#pk-bg)"/><path d="M22 20 L11 32 L22 44" fill="none" stroke="url(#pk-fg)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M42 20 L53 32 L42 44" fill="none" stroke="url(#pk-fg)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M32 18 C33 27 35 30 43 32 C35 34 33 37 32 46 C31 37 29 34 21 32 C29 30 31 27 32 18 Z" fill="#e6fffb"/><path d="M44.5 15 L47 17.5 L44.5 20 L42 17.5 Z" fill="#f5b544"/></svg>`;

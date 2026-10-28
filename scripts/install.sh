@@ -12,7 +12,7 @@ set -euo pipefail
 
 REPO="MRX7999/PerplexiCode-Kilo"
 ASSET="perplexicode-kilo.vsix"
-EXTENSION_ID="perplexicode.perplexicode"
+EXTENSION_ID="MRX7999.perplexicode-kilo"
 IDE="antigravity"
 VERSION="latest"
 VSIX=""
@@ -109,7 +109,9 @@ else
   fi
   FILE="$WORKDIR/$ASSET"
   log "Downloading $URL"
-  curl -fL --retry 3 --progress-bar -o "$FILE" "$URL" || die "Download failed: $URL"
+  if [ -t 2 ]; then progress="--progress-bar"; else progress="--silent --show-error"; fi
+  # shellcheck disable=SC2086
+  curl -fL --retry 3 $progress -o "$FILE" "$URL" || die "Download failed: $URL"
 fi
 
 # A VSIX is a zip that starts with "PK"; catches HTML error pages early.
@@ -148,4 +150,4 @@ done
 
 [ "$installed" -gt 0 ] || die "Nothing was installed."
 log "Done. Reload the editor window: Cmd/Ctrl+Shift+P > Developer: Reload Window."
-log "Accounts from PerplexiCode 1.x are kept (same extension ID and storage)."
+log "If the old PerplexiCode (perplexicode.perplexicode) is installed, PerplexiCode Kilo offers to import its accounts after the reload."

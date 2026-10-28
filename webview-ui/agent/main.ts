@@ -1,6 +1,6 @@
 import hljs from 'highlight.js/lib/common';
 import { Marked, Renderer } from 'marked';
-import { icons, modeIcon, providerIcon } from './icons';
+import { BRAND_MARK, icons, modeIcon, providerIcon } from './icons';
 import './styles.css';
 
 // -------------------------------------------------------------------------------------------------
@@ -544,8 +544,8 @@ function renderWelcome(): void {
   const noAccounts = state.accounts.length === 0;
   el.innerHTML = `
     <div class="hero">
-      <div class="logo">${icons.sparkle}</div>
-      <h2>PerplexiCode</h2>
+      <div class="logo">${BRAND_MARK}</div>
+      <h2>PerplexiCode Kilo</h2>
       <p class="muted">Kilo-style coding agent powered by your Perplexity subscription. Plan, write and debug code with ${state.models.filter((model) => model.surfaced).length} Perplexity models.</p>
       ${noAccounts ? `<div class="notice warn">${icons.key}<div>No Perplexity account connected.<br><button class="btn primary small" data-action="addAccount">Add account</button></div></div>` : ''}
       ${!state.workspace ? `<div class="notice info">${icons.folder}<div>Open a folder to let the agent read and edit files.</div></div>` : ''}
@@ -944,7 +944,7 @@ function renderSettings(): void {
       break;
     default:
       body = `
-        <div class="about"><div class="logo">${icons.sparkle}</div><h3>PerplexiCode ${escapeHtml(state.version)}</h3>
+        <div class="about"><div class="logo">${BRAND_MARK}</div><h3>PerplexiCode Kilo ${escapeHtml(state.version)}</h3>
         <p class="muted">Kilo Code-style agent for Perplexity. Fork of yuki-20/PerplexiCode.</p>
         <p class="muted small">Model snapshot: ${escapeHtml(state.general.modelsSnapshot)} · ${state.models.length} models</p>
         <button class="btn ghost small" data-action="openSettingsJson">${icons.gear} Open all settings</button></div>`;

@@ -1,14 +1,16 @@
 <div align="center">
 
-<img src="media/icon.png" width="96" alt="PerplexiCode logo" />
+<img src="docs/images/logo.png" width="120" alt="PerplexiCode Kilo logo" />
 
-# PerplexiCode — Kilo Edition
+# PerplexiCode Kilo
 
 **A Kilo Code-style autonomous coding agent for Antigravity IDE and VS Code, powered by your Perplexity Pro / Max subscription.**
 
 Plan, write, run and debug code with GPT-6.1 Sol, Claude Opus 5.5, Gemini 4 Argon, Grok 4.7 and 85 more Perplexity models. No API keys.
 
 [![Release](https://img.shields.io/github/v/release/MRX7999/PerplexiCode-Kilo?label=release&color=20b8cd)](https://github.com/MRX7999/PerplexiCode-Kilo/releases/latest)
+[![Open VSX](https://img.shields.io/open-vsx/v/MRX7999/perplexicode-kilo?label=Open%20VSX&color=a60ee5)](https://open-vsx.org/extension/MRX7999/perplexicode-kilo)
+[![Open VSX downloads](https://img.shields.io/open-vsx/dt/MRX7999/perplexicode-kilo?label=installs&color=5eead4)](https://open-vsx.org/extension/MRX7999/perplexicode-kilo)
 [![CI](https://img.shields.io/github/actions/workflow/status/MRX7999/PerplexiCode-Kilo/ci.yml?branch=master&label=CI)](https://github.com/MRX7999/PerplexiCode-Kilo/actions/workflows/ci.yml)
 [![Downloads](https://img.shields.io/github/downloads/MRX7999/PerplexiCode-Kilo/total?color=8a63d2)](https://github.com/MRX7999/PerplexiCode-Kilo/releases)
 [![VS Code](https://img.shields.io/badge/VS%20Code-%E2%89%A51.85-007acc)](https://code.visualstudio.com/)
@@ -25,7 +27,17 @@ Plan, write, run and debug code with GPT-6.1 Sol, Claude Opus 5.5, Gemini 4 Argo
 
 ## Install
 
-### One-line install (recommended)
+Extension ID: **`MRX7999.perplexicode-kilo`**
+
+### From the Extensions view (Open VSX)
+
+Antigravity IDE, Cursor, Windsurf and VSCodium use [Open VSX](https://open-vsx.org/extension/MRX7999/perplexicode-kilo). Open the Extensions view (`Cmd/Ctrl+Shift+X`), search for **PerplexiCode Kilo** and click **Install**, or run:
+
+```bash
+antigravity-ide --install-extension MRX7999.perplexicode-kilo
+```
+
+### One-line install from GitHub Releases
 
 **macOS / Linux** — installs the latest release into Antigravity IDE:
 
@@ -75,7 +87,16 @@ Extensions view (`Cmd/Ctrl+Shift+X`) → `…` menu → **Install from VSIX…**
 2. Open the **PerplexiCode** icon in the activity bar.
 3. Sign in (see below) and start a task.
 
-> **Upgrading from PerplexiCode 1.x?** Install over it. The extension ID (`perplexicode.perplexicode`) and storage keys are unchanged, so your signed-in Perplexity accounts and rotation settings carry over.
+### Moving from PerplexiCode 1.x / 2.0
+
+Since 2.1.0 the extension has its own ID, `MRX7999.perplexicode-kilo` (it was `perplexicode.perplexicode`). Editors keep each extension's secrets separate, so accounts are moved once, with your confirmation:
+
+1. Install PerplexiCode Kilo next to the old extension and reload the window.
+2. Click **Import accounts** in the notification. A small bundled helper ([source](bridge/extension.js)) takes over the old ID — it has no UI and makes no network requests.
+3. Reload again and confirm **Copy accounts** in the dialog. Sessions, CSRF tokens, cookies and the rotation strategy are copied locally; duplicates are skipped.
+4. Click **Uninstall old extension**.
+
+User settings `perplexicode.*` are copied to `perplexicodeKilo.*` automatically. You can rerun the import with **PerplexiCode: Import Accounts from PerplexiCode 1.x**.
 
 ### Sign in
 
@@ -152,7 +173,7 @@ The model list matches the current Perplexity picker. It is loaded live from you
 | Nemotron 3.5 Super VL | NVIDIA | Pro | — |
 | **More models** (77) | Anthropic, OpenAI, Google, xAI, Perplexity Sonar… | Pro / Max | per model |
 
-Max models unlock automatically for Max accounts. If a Max model is picked on a Pro-only account pool, the request falls back to **Best**. Override plan detection with `perplexicode.subscriptionPlan` if needed, and use **PerplexiCode: Refresh Models and Quotas** after Perplexity adds new models.
+Max models unlock automatically for Max accounts. If a Max model is picked on a Pro-only account pool, the request falls back to **Best**. Override plan detection with `perplexicodeKilo.subscriptionPlan` if needed, and use **PerplexiCode: Refresh Models and Quotas** after Perplexity adds new models.
 
 ---
 
@@ -197,33 +218,33 @@ Agent tools: `read_file`, `list_files`, `search_files`, `list_code_definition_na
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| `perplexicode.defaultModel` | `turbo` (Best) | Model for new tasks. |
-| `perplexicode.subscriptionPlan` | `auto` | Force `pro` or `max` when detection is wrong. |
-| `perplexicode.agent.autoApprove.enabled` | `true` | Master switch for auto-approval. |
-| `perplexicode.agent.autoApprove.read` | `true` | Reading, listing and searching inside the workspace. |
-| `perplexicode.agent.autoApprove.readOutsideWorkspace` | `false` | Reads outside the workspace. |
-| `perplexicode.agent.autoApprove.write` | `false` | Creating and editing files. |
-| `perplexicode.agent.autoApprove.execute` | `false` | Commands matching `allowedCommands`. |
-| `perplexicode.agent.autoApprove.modeSwitch` | `true` | Mode switches requested by the agent. |
-| `perplexicode.agent.autoApprove.subtasks` | `true` | Orchestrator subtasks. |
-| `perplexicode.agent.autoApprove.todo` | `true` | Todo list updates. |
-| `perplexicode.agent.autoApprove.retry` | `true` | Retry failed Perplexity requests. |
-| `perplexicode.agent.allowedCommands` | `npm test`, `npm run`, `git status`, `git diff`, `git log`, `ls`, `cat`, `pwd` | Command prefixes that may run without approval (`*` = all). |
-| `perplexicode.agent.deniedCommands` | `rm -rf`, `sudo`, `git push --force` | Prefixes that always need approval. |
-| `perplexicode.agent.maxRequestsPerTask` | `40` | Ask before continuing after this many requests. |
-| `perplexicode.agent.maxReadFileLines` | `500` | Lines per `read_file` call. |
-| `perplexicode.agent.commandTimeoutSeconds` | `120` | Command timeout, `0` = none. |
-| `perplexicode.agent.terminalOutputLineLimit` | `300` | Terminal lines sent to the model. |
-| `perplexicode.agent.webSearch` | `auto` | Whether Perplexity may search the web for agent requests. |
-| `perplexicode.agent.contextStrategy` | `auto` | Thread follow-ups or full self-contained prompts. |
-| `perplexicode.agent.maxPromptChars` | `60000` | Prompt size limit; older turns are condensed. |
-| `perplexicode.agent.language` | `auto` | Reply language, e.g. `en`, `ru`. |
-| `perplexicode.agent.customInstructions` | — | Instructions added to every mode. |
-| `perplexicode.agent.modeInstructions` | `{}` | Per-mode instructions keyed by mode slug. |
-| `perplexicode.agent.diffEnabled` | `true` | Use `apply_diff` instead of full rewrites. |
-| `perplexicode.agent.includeFileListOnStart` | `true` | Send the workspace file list with the first request. |
-| `perplexicode.agent.revealEditedFiles` | `true` | Open files after the agent edits them. |
-| `perplexicode.excludePatterns` | `node_modules`, `.git`, `dist`, `out`, `.next` | Globs excluded from context. |
+| `perplexicodeKilo.defaultModel` | `turbo` (Best) | Model for new tasks. |
+| `perplexicodeKilo.subscriptionPlan` | `auto` | Force `pro` or `max` when detection is wrong. |
+| `perplexicodeKilo.agent.autoApprove.enabled` | `true` | Master switch for auto-approval. |
+| `perplexicodeKilo.agent.autoApprove.read` | `true` | Reading, listing and searching inside the workspace. |
+| `perplexicodeKilo.agent.autoApprove.readOutsideWorkspace` | `false` | Reads outside the workspace. |
+| `perplexicodeKilo.agent.autoApprove.write` | `false` | Creating and editing files. |
+| `perplexicodeKilo.agent.autoApprove.execute` | `false` | Commands matching `allowedCommands`. |
+| `perplexicodeKilo.agent.autoApprove.modeSwitch` | `true` | Mode switches requested by the agent. |
+| `perplexicodeKilo.agent.autoApprove.subtasks` | `true` | Orchestrator subtasks. |
+| `perplexicodeKilo.agent.autoApprove.todo` | `true` | Todo list updates. |
+| `perplexicodeKilo.agent.autoApprove.retry` | `true` | Retry failed Perplexity requests. |
+| `perplexicodeKilo.agent.allowedCommands` | `npm test`, `npm run`, `git status`, `git diff`, `git log`, `ls`, `cat`, `pwd` | Command prefixes that may run without approval (`*` = all). |
+| `perplexicodeKilo.agent.deniedCommands` | `rm -rf`, `sudo`, `git push --force` | Prefixes that always need approval. |
+| `perplexicodeKilo.agent.maxRequestsPerTask` | `40` | Ask before continuing after this many requests. |
+| `perplexicodeKilo.agent.maxReadFileLines` | `500` | Lines per `read_file` call. |
+| `perplexicodeKilo.agent.commandTimeoutSeconds` | `120` | Command timeout, `0` = none. |
+| `perplexicodeKilo.agent.terminalOutputLineLimit` | `300` | Terminal lines sent to the model. |
+| `perplexicodeKilo.agent.webSearch` | `auto` | Whether Perplexity may search the web for agent requests. |
+| `perplexicodeKilo.agent.contextStrategy` | `auto` | Thread follow-ups or full self-contained prompts. |
+| `perplexicodeKilo.agent.maxPromptChars` | `60000` | Prompt size limit; older turns are condensed. |
+| `perplexicodeKilo.agent.language` | `auto` | Reply language, e.g. `en`, `ru`. |
+| `perplexicodeKilo.agent.customInstructions` | — | Instructions added to every mode. |
+| `perplexicodeKilo.agent.modeInstructions` | `{}` | Per-mode instructions keyed by mode slug. |
+| `perplexicodeKilo.agent.diffEnabled` | `true` | Use `apply_diff` instead of full rewrites. |
+| `perplexicodeKilo.agent.includeFileListOnStart` | `true` | Send the workspace file list with the first request. |
+| `perplexicodeKilo.agent.revealEditedFiles` | `true` | Open files after the agent edits them. |
+| `perplexicodeKilo.excludePatterns` | `node_modules`, `.git`, `dist`, `out`, `.next` | Globs excluded from context. |
 
 </details>
 
@@ -276,11 +297,12 @@ scripts/                install.sh, install.ps1
 
 | Problem | Fix |
 | --- | --- |
-| Max models are locked on a Max account | Run **Refresh Models and Quotas**, or set `perplexicode.subscriptionPlan` to `max`. |
+| Max models are locked on a Max account | Run **Refresh Models and Quotas**, or set `perplexicodeKilo.subscriptionPlan` to `max`. |
 | `401` / session expired | **Manage Accounts** → refresh session, or add the account again. |
 | The CLI says `NOT registered` | Harmless Antigravity warning; check `--list-extensions --show-versions`. |
 | Install script cannot find the editor | Pass `--vsix` with a downloaded file, or use **Install from VSIX…**. |
-| Agent stops after many steps | Raise `perplexicode.agent.maxRequestsPerTask`. |
+| Agent stops after many steps | Raise `perplexicodeKilo.agent.maxRequestsPerTask`. |
+| `Unable to write to User Settings … is not a registered configuration` | The extension was updated while the window stayed open. Run **Developer: Reload Window**. Since 2.1.0 the change is saved anyway and moved into settings after the reload. |
 | Anything else | Open **Output → PerplexiCode** and attach the log to an [issue](https://github.com/MRX7999/PerplexiCode-Kilo/issues). |
 
 ## Credits
@@ -294,4 +316,4 @@ PerplexiCode is an unofficial community project and is not affiliated with or en
 
 ## License
 
-[MIT](LICENSE). Original work © yuki-20; Kilo Edition changes © MRX7999.
+[MIT](LICENSE). Original work © yuki-20; PerplexiCode Kilo changes © MRX7999.

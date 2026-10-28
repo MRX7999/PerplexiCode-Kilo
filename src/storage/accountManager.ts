@@ -110,6 +110,50 @@ export class AccountManager {
   }
 
   /**
+   * Import an account exported by PerplexiCode 1.x (through the migration bridge).
+   * Keeps the original id, alias and counters; skips accounts whose session token already exists.
+   */
+  async importAccount(
+    meta: AccountMeta,
+    sessionToken: string,
+    csrfToken: string,
+    fullCookies?: string
+  ): Promise<'imported' | 'duplicate' | 'invalid'> {
+    if (!meta || typeof meta.id !== 'string' || !sessionToken) {
+      return 'invalid';
+    }
+    if (this.accounts.some((account) => account.sessionToken === sessionToken)) {
+      return 'duplicate';
+    }
+    let id = meta.id;
+    if (!/^[a-z0-9]{4,64}$/i.test(id) || this.accounts.some((account) => account.id === id)) {
+      id = this._generateId();
+    }
+    const account: AccountSession = {
+      ...meta,
+      id,
+      alias: meta.alias || `Account ${this.accounts.length + 1}`,
+      status: 'active',
+      errorCount: 0,
+      cooldownUntil: undefined,
+      queriestoday: Number(meta.queriestoday) || 0,
+      queriesTotalLifetime: Number(meta.queriesTotalLifetime) || 0,
+      addedAt: meta.addedAt || new Date().toISOString(),
+      sessionToken,
+      csrfToken: csrfToken || 'auto',
+      fullCookies: fullCookies || undefined,
+    };
+    this.accounts.push(account);
+    await this.secretStorage.store(SESSION_KEY_PREFIX + id, sessionToken);
+    await this.secretStorage.store(CSRF_KEY_PREFIX + id, account.csrfToken);
+    if (fullCookies) {
+      await this.secretStorage.store(COOKIES_KEY_PREFIX + id, fullCookies);
+    }
+    await this._saveMetas();
+    return 'imported';
+  }
+
+  /**
    * Remove an account by ID.
    */
   async removeAccount(id: string): Promise<void> {

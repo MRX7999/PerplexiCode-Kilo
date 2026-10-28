@@ -255,7 +255,7 @@ let planOverride: AccountPlan | undefined;
 
 /**
  * Lets the user pin the subscription tier when Perplexity's session payload is ambiguous
- * (setting perplexicode.subscriptionPlan). 'unknown' plans are treated permissively:
+ * (setting perplexicodeKilo.subscriptionPlan). 'unknown' plans are treated permissively:
  * Perplexity itself rejects a model the account cannot use and the transport falls back.
  */
 export function setPlanOverride(plan: AccountPlan | undefined): void {

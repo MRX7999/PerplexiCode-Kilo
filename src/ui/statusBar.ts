@@ -39,13 +39,13 @@ export class StatusBarManager implements vscode.Disposable {
     if (accountCount === 0) {
       this.item.text = '$(account) PerplexiCode: no account';
       this.item.tooltip = 'Click to sign in to Perplexity';
-      this.item.command = 'perplexicode.addAccount';
+      this.item.command = 'perplexicodeKilo.addAccount';
       this.item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
       return;
     }
     this.item.backgroundColor = undefined;
     this.item.text = `${busy ? '$(sync~spin)' : '$(sparkle)'} ${modeName} · ${modelLabel} | ${activeAccountCount}/${accountCount}`;
     this.item.tooltip = `PerplexiCode\nMode: ${modeName}\nModel: ${modelLabel}\nAccounts: ${activeAccountCount}/${accountCount} active\nClick to change the model`;
-    this.item.command = 'perplexicode.selectModel';
+    this.item.command = 'perplexicodeKilo.selectModel';
   }
 }

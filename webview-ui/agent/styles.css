@@ -198,8 +198,8 @@ a:hover { text-decoration: underline; }
 .hero h2 { margin: 6px 0 4px; font-size: 1.35em; }
 .hero p { margin: 0 auto 10px; max-width: 420px; line-height: 1.45; }
 .hero .notice { text-align: left; margin: 8px auto; max-width: 420px; }
-.logo { width: 42px; height: 42px; margin: 0 auto; border-radius: 10px; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #20808d, #1fb8cd); color: white; }
-.logo .icon { width: 24px; height: 24px; }
+.logo { width: 48px; height: 48px; margin: 0 auto; display: flex; align-items: center; justify-content: center; filter: drop-shadow(0 3px 10px rgba(20, 184, 198, 0.28)); }
+.logo .brand-mark { width: 48px; height: 48px; display: block; }
 .tips { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 6px; }
 .tip { display: flex; gap: 8px; align-items: flex-start; text-align: left; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius); }
 .tip:hover, .tip.active { background: var(--secondary); }
