@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Type check
+        run: npm run lint
+      - name: Unit and agent tests
+        run: npm test
+      - name: Package VSIX
+        run: npx vsce package --out perplexicode-kilo.vsix
+      - uses: actions/upload-artifact@v4
+        with:
+          name: perplexicode-kilo-vsix
+          path: perplexicode-kilo.vsix
+          retention-days: 14

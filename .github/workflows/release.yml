@@ -1,0 +1,83 @@
+name: Release
+
+# Push a tag like v2.0.1 (or run manually with a tag) to build the VSIX,
+# attach it to a GitHub release and, when the secrets are set, publish it to
+# Open VSX (OVSX_PAT) and the VS Code Marketplace (VSCE_PAT).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (must match package.json version, e.g. v2.0.1)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+
+      - name: Check tag matches package.json
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if [ "v$VERSION" != "$TAG" ]; then
+            echo "Tag $TAG does not match package.json version $VERSION" >&2
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Package VSIX
+        run: |
+          npx vsce package --out "perplexicode-$VERSION.vsix"
+          cp "perplexicode-$VERSION.vsix" perplexicode-kilo.vsix
+          sha256sum perplexicode-*.vsix > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Remove stale draft releases
+        run: |
+          gh release list --limit 50 --json tagName,isDraft \
+            --jq '.[] | select(.isDraft) | .tagName' | while read -r draft; do
+              echo "Deleting draft release $draft"
+              gh release delete "$draft" --yes || true
+            done
+
+      - name: Create or update GitHub release
+        run: |
+          NOTES="$(awk -v v="## [$VERSION]" 'index($0, v) == 1 {p=1; next} /^## \[/ {p=0} p' CHANGELOG.md)"
+          [ -n "$NOTES" ] || NOTES="PerplexiCode Kilo Edition $VERSION"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "perplexicode-$VERSION.vsix" perplexicode-kilo.vsix SHA256SUMS.txt --clobber
+            gh release edit "$TAG" --draft=false --latest --notes "$NOTES"
+          else
+            gh release create "$TAG" "perplexicode-$VERSION.vsix" perplexicode-kilo.vsix SHA256SUMS.txt \
+              --title "PerplexiCode Kilo Edition $TAG" --notes "$NOTES" --latest
+          fi
+
+      - name: Publish to Open VSX
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          if [ -z "$OVSX_PAT" ]; then echo "OVSX_PAT not set, skipping"; exit 0; fi
+          npx --yes ovsx@1.3.0 create-namespace perplexicode -p "$OVSX_PAT" || true
+          npx --yes ovsx@1.3.0 publish --packagePath "perplexicode-$VERSION.vsix" -p "$OVSX_PAT" --skip-duplicate
+
+      - name: Publish to VS Code Marketplace
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          if [ -z "$VSCE_PAT" ]; then echo "VSCE_PAT not set, skipping"; exit 0; fi
+          npx vsce publish --packagePath "perplexicode-$VERSION.vsix" --skip-duplicate

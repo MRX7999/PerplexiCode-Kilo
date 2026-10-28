@@ -411,8 +411,13 @@ export function buildModelsFromConfig(
     .filter(([modelId]) => !looksLikeInternalModel(modelId))
     .sort((left, right) => left[1].label.localeCompare(right[1].label));
 
+  // Perplexity keeps legacy aliases under the same label (e.g. two "Claude Sonnet 4.0 Thinking"
+  // ids). Suffix the id so every entry in "More models" is distinguishable.
+  const seenLabels = new Set([...models.values()].map((model) => model.label.toLowerCase()));
   for (const [modelId, definition] of additionalDefinitions) {
-    const label = firstNonEmptyString(definition.label, modelId);
+    const baseLabel = firstNonEmptyString(definition.label, modelId);
+    const label = seenLabels.has(baseLabel.toLowerCase()) ? `${baseLabel} (${modelId})` : baseLabel;
+    seenLabels.add(label.toLowerCase());
     models.set(modelId, {
       id: modelId,
       label,

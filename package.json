@@ -2,7 +2,7 @@
   "name": "perplexicode",
   "displayName": "PerplexiCode (Kilo Edition)",
   "description": "Kilo Code-style autonomous coding agent (Code / Architect / Ask / Debug / Orchestrator / Review modes, tools, diffs, checkpoints, auto-approve) powered by your Perplexity Pro/Max subscription and its latest models.",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "publisher": "perplexicode",
   "engines": {
     "vscode": "^1.85.0"
@@ -29,10 +29,20 @@
   ],
   "main": "./out/extension.js",
   "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#0d1117",
+    "theme": "dark"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/MRX7999/PerplexiCode-Kilo.git"
   },
+  "homepage": "https://github.com/MRX7999/PerplexiCode-Kilo#readme",
+  "bugs": {
+    "url": "https://github.com/MRX7999/PerplexiCode-Kilo/issues"
+  },
+  "qna": "https://github.com/MRX7999/PerplexiCode-Kilo/discussions",
+  "pricing": "Free",
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -505,7 +515,7 @@
   "scripts": {
     "build": "node esbuild.js",
     "watch": "node esbuild.js --watch",
-    "package": "vsce package",
+    "package": "vsce package --out perplexicode-kilo.vsix",
     "lint": "tsc --noEmit && tsc -p webview-ui/tsconfig.json",
     "test": "node ./test/run-tests.mjs",
     "test:webview": "node ./test/webview-render.mjs",
