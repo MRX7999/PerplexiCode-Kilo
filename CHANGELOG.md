@@ -2,6 +2,59 @@
 
 All notable changes to PerplexiCode Kilo. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.1.0] - 2026-11-03
+
+### Added
+- **Agents, Skills & Presets view** (view title button and command **PerplexiCode: Agents, Skills & Presets**). It has three tabs with a filter:
+  - Installed items, which you can open, delete or use to start a task.
+  - A built-in catalog with **Project** / **Global** install and **Install all**.
+  - Forms for creating your own subagents, skills and presets.
+- **Catalog**: 8 subagents (`code-reviewer`, `test-writer`, `debugger`, `security-auditor`, `docs-writer`, `refactorer`, `explorer`, `planner`) and 8 skills (`commit-message`, `code-review-checklist`, `write-tests`, `security-audit`, `debug-playbook`, `api-design`, `release-checklist`, `readme-writer`). They are written as standard `.perplexicode/agents/*.md` and `.perplexicode/skills/*/SKILL.md` files.
+- **Task presets**: 10 built-in presets that each set the mode, the subagent and a `{{input}}` prompt template. If a required subagent or skill is missing, it is offered for install on the first run. Your own presets are read from `~/.perplexicode/presets.json`, the `perplexicodeKilo.taskPresets` setting and `.perplexicode/presets.json`, in that order.
+- **Welcome screen**: a Quick start preset grid and a "N subagents · M skills" strip with **Install starter pack**.
+- **Mode menu**: a Subagents section. A task can now run as a subagent, using its prompt and tool list. The task header shows an `@agent` chip.
+- **Composer**: the slash commands `/presets`, `/agents`, `/skills` and `/<preset-id>`, plus Preset / Agent chips.
+- Command **PerplexiCode: Run Task Preset…**.
+- CLI: `pcode agents add|catalog`, `pcode skills add|catalog`, `pcode presets`, and the `--preset <id>`, `--agent <name>` and `-g/--global` flags.
+- Tests: 6 new core tests (33 total) and webview renders 12–20 with message assertions.
+
+### Fixed
+- **Duplicated todo list with Thinking models.** A model could draft `<update_todo_list>` inside `<thinking>` without closing it. The parser then joined the draft's opening tag to the real call's closing tag, so every item appeared twice and the text in between was lost. Tool calls inside `<thinking>` are now ignored. `parseTodos` also merges repeated items, keeping the first position and the most advanced status, and accepts numbered lists (`1. [ ] …`).
+
+## [3.0.0] - 2026-11-03
+
+### Added
+- **Headless core** (`src/core/`, no `vscode` imports). The extension and the new CLI run on the same agent loop, tools, transport and journal. See [docs/CORE-3.0.md](docs/CORE-3.0.md).
+- **`pcode` CLI** (`out/cli.js`, `bin: pcode`):
+  - Interactive REPL with diff and command approvals (`y` / `n` / `a` / feedback) and slash commands `/mode`, `/permissions`, `/model`, `/compact`, `/clear`, `/agents`, `/skills`, `/status`, `/todos`, `/resume`.
+  - Headless `-p` with `--output-format text|json|stream-json`.
+  - Flags: `--permission-mode`, `--allowedTools`, `--disallowedTools`, `--max-turns` (`0` = no limit), `-c/--continue`, `-r/--resume`, `--provider perplexity|openai`, `--trust-project`.
+  - Commands: `login` (hidden prompt, stdin, `PPLX_COOKIE` or `--browser`; tokens are never read from argv), `logout`, `accounts`, `sessions`, `models`, `agents`, `skills`, `doctor`.
+- **Claude Code compatible configuration.** Layered `~/.claude`, `~/.perplexicode`, `.claude`, `.perplexicode` and `*.local.json` settings.
+- **Permission rules and modes.**
+  - Rules: `allow` / `ask` / `deny` with `Tool(specifier)`, Bash prefix and wildcard specifiers, and gitignore-style path globs.
+  - Modes: `default`, `acceptEdits`, `plan`, `bypassPermissions`.
+  - Built-in secret protection for `.env*`, keys, `id_rsa*`, `.ssh`, WireGuard configs, symlinks resolving to them, and Bash commands that read them.
+  - VS Code: setting `perplexicodeKilo.agent.permissionMode` and command **PerplexiCode: Set Permission Mode**.
+- **Hooks** for `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `Stop`, `SubagentStop`, `SessionStart` and `SessionEnd`, using the Claude Code stdin / exit-code-2 / JSON contract. Project hooks need Workspace Trust in VS Code and trust or `--trust-project` in the CLI.
+- **Verify before done.** `verify.command` runs before `attempt_completion` is accepted, and a failing check sends the agent back to fix it. Every task gets a status: verified, needs review, failed, blocked or no changes. The CLI exit code is 2 when the status is failed.
+- **Subagents** from `.perplexicode/agents/*.md` and `.claude/agents/*.md`, each with its own prompt, model and an enforced tool list, called through `new_task`. **Skills** from `<dir>/<name>/SKILL.md`. **Memory** from `CLAUDE.md` and `PERPLEXICODE.md` with `@imports`.
+- **Session journal** in `~/.perplexicode/sessions`:
+  - Append-only JSONL (mode 0600) with redacted secrets, plus atomic snapshots.
+  - IDE tasks can be resumed with `pcode -c` / `pcode -r`.
+  - Commands with an unknown outcome after a crash are flagged, and the agent checks the real state before re-running them.
+- **Read batching.** Up to 5 consecutive read-only tool calls from one answer run in one step (`readBatchSize`).
+- **`/compact`**, also available as the VS Code command **PerplexiCode: Compact Current Task**.
+- **OpenAI-compatible transport** (`--provider openai`) for Ollama, LM Studio, vLLM and similar servers, with SSE streaming.
+- **PerplexiCode: Share Accounts with CLI** copies the extension's accounts to `~/.perplexicode/credentials.json` (mode 0600) after a confirmation.
+- `examples/claude-code-compat` with settings, a guard hook, two subagents, a skill and `CLAUDE.md`.
+- `test/core.test.ts`: 27 tests, including real `sh` hooks, a mock OpenAI server and end-to-end `pcode -p` runs. CI runs a CLI smoke test.
+
+### Changed
+- `new_task` accepts subagent names in addition to mode slugs.
+- The system prompt allows up to 5 read-only tools per answer.
+- Settings and auto-approve behave as in 2.x unless a rule or mode decides.
+
 ## [2.1.0] - 2026-10-28
 
 ### Changed

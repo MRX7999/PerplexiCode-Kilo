@@ -2,7 +2,7 @@
   "name": "perplexicode-kilo",
   "displayName": "PerplexiCode Kilo",
   "description": "Kilo Code-style autonomous coding agent (Code / Architect / Ask / Debug / Orchestrator / Review modes, tools, diffs, checkpoints, auto-approve) powered by your Perplexity Pro/Max subscription and its latest models.",
-  "version": "2.1.0",
+  "version": "3.1.0",
   "publisher": "MRX7999",
   "engines": {
     "vscode": "^1.85.0"
@@ -28,6 +28,9 @@
     "onStartupFinished"
   ],
   "main": "./out/extension.js",
+  "bin": {
+    "pcode": "./out/cli.js"
+  },
   "icon": "media/icon.png",
   "galleryBanner": {
     "color": "#0d1117",
@@ -80,6 +83,17 @@
         "title": "Settings",
         "category": "PerplexiCode",
         "icon": "$(gear)"
+      },
+      {
+        "command": "perplexicodeKilo.library",
+        "title": "Agents, Skills & Presets",
+        "category": "PerplexiCode",
+        "icon": "$(library)"
+      },
+      {
+        "command": "perplexicodeKilo.runPreset",
+        "title": "Run Task Preset…",
+        "category": "PerplexiCode"
       },
       {
         "command": "perplexicodeKilo.openInTab",
@@ -171,6 +185,21 @@
         "command": "perplexicodeKilo.importLegacyAccounts",
         "title": "Import Accounts from PerplexiCode 1.x",
         "category": "PerplexiCode"
+      },
+      {
+        "command": "perplexicodeKilo.shareAccountsWithCli",
+        "title": "Share Accounts with CLI (pcode)",
+        "category": "PerplexiCode"
+      },
+      {
+        "command": "perplexicodeKilo.compactTask",
+        "title": "Compact Current Task",
+        "category": "PerplexiCode"
+      },
+      {
+        "command": "perplexicodeKilo.setPermissionMode",
+        "title": "Set Permission Mode",
+        "category": "PerplexiCode"
       }
     ],
     "keybindings": [
@@ -216,14 +245,19 @@
           "group": "navigation@2"
         },
         {
-          "command": "perplexicodeKilo.settings",
+          "command": "perplexicodeKilo.library",
           "when": "view == perplexicodeKilo.chatView",
           "group": "navigation@3"
         },
         {
-          "command": "perplexicodeKilo.openInTab",
+          "command": "perplexicodeKilo.settings",
           "when": "view == perplexicodeKilo.chatView",
           "group": "navigation@4"
+        },
+        {
+          "command": "perplexicodeKilo.openInTab",
+          "when": "view == perplexicodeKilo.chatView",
+          "group": "navigation@5"
         }
       ],
       "editor/context": [
@@ -507,6 +541,77 @@
             "**/.next/**"
           ],
           "description": "Glob patterns for files to exclude from context"
+        },
+        "perplexicodeKilo.agent.permissionMode": {
+          "type": "string",
+          "enum": [
+            "default",
+            "acceptEdits",
+            "plan",
+            "bypassPermissions"
+          ],
+          "default": "default",
+          "description": "3.0 permission mode (Claude Code compatible). default = auto-approve settings + rules; acceptEdits = edit workspace files without asking; plan = read-only; bypassPermissions = everything except deny rules and protected secrets."
+        },
+        "perplexicodeKilo.agent.hooks.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run hooks from ~/.claude/settings.json, ~/.perplexicode/settings.json and (in trusted workspaces) the project .claude/.perplexicode settings."
+        },
+        "perplexicodeKilo.agent.journal.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Write an append-only session journal to ~/.perplexicode/sessions so `pcode --continue` / `pcode -r <id>` can resume IDE tasks."
+        },
+        "perplexicodeKilo.agent.readBatchSize": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 9,
+          "description": "Max read-only tool calls executed from one model answer (0 = use settings.json readBatchSize, default 5; 1 disables batching)."
+        },
+        "perplexicodeKilo.taskPresets": {
+          "type": "array",
+          "default": [],
+          "scope": "application",
+          "items": {
+            "type": "object",
+            "required": [
+              "title",
+              "prompt"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "code",
+                  "architect",
+                  "ask",
+                  "debug",
+                  "orchestrator",
+                  "review"
+                ]
+              },
+              "agent": {
+                "type": "string",
+                "description": "Subagent name (from .perplexicode/agents or .claude/agents)"
+              },
+              "prompt": {
+                "type": "string",
+                "description": "Prompt template; {{input}} is replaced with your text"
+              }
+            }
+          },
+          "markdownDescription": "Custom task presets shown on the welcome screen and in **Agents, Skills & Presets**. Project presets can also live in `.perplexicode/presets.json`."
         }
       }
     },
@@ -525,7 +630,8 @@
     "test": "node ./test/run-tests.mjs",
     "test:webview": "node ./test/webview-render.mjs",
     "vscode:prepublish": "node scripts/build-bridge.mjs && node esbuild.js",
-    "build:bridge": "node scripts/build-bridge.mjs"
+    "build:bridge": "node scripts/build-bridge.mjs",
+    "test:core": "node ./test/run-tests.mjs core"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

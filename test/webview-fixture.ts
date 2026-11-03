@@ -9,6 +9,7 @@ import type { AgentHost } from '../src/agent/tools';
 import type { AgentSettings } from '../src/agent/types';
 import { getBundledSnapshotDate, getFallbackModelCatalog, getModelLabel, setRuntimeModelCatalog } from '../src/api/modelCatalog';
 import { ModelFetcher } from '../src/api/modelFetcher';
+import { createCustomAgent, installAgentPreset, installSkillPreset, librarySnapshot } from '../src/core/library';
 
 const settings: AgentSettings = {
   autoApprove: { enabled: true, read: true, readOutsideWorkspace: false, write: false, execute: true, modeSwitch: true, subtasks: true, todo: true, retry: true },
@@ -72,8 +73,16 @@ async function main() {
   const models = await new ModelFetcher().getModels({ id: 'a', alias: 'Personal', sessionToken: '', csrfToken: '', status: 'active', queriestoday: 3, queriesTotalLifetime: 120, addedAt: 0, capabilities: { plan: 'max', fetchedAt: Date.now() } } as any);
   void task.start('Fix the add function in math.ts and make sure tests pass');
   await followupReached;
+  // Library state comes from the real loaders: a few presets installed into the fixture workspace and a fake home.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'pcode-ui-home-'));
+  installAgentPreset('code-reviewer', 'project', { cwd: dir, home });
+  installAgentPreset('debugger', 'project', { cwd: dir, home });
+  createCustomAgent({ name: 'go-expert', description: 'Go modules, table-driven tests and macOS builds. Use for Go code.', tools: ['Read', 'Grep', 'Glob', 'Edit', 'Bash(go test:*)', 'Bash(go build:*)'], mode: 'code', prompt: 'You are a Go expert.' }, 'user', { cwd: dir, home });
+  installSkillPreset('commit-message', 'project', { cwd: dir, home });
+  installSkillPreset('write-tests', 'user', { cwd: dir, home });
+  const library = librarySnapshot({ cwd: dir, home }, [{ title: 'Go service skeleton', description: 'cmd/, internal/, tests, Makefile', mode: 'code', agent: 'go-expert', prompt: 'Create a Go service: {{input}}' }]);
   const base = {
-    type: 'state', version: '2.1.0', includeMessages: true,
+    type: 'state', version: '3.1.0', includeMessages: true, library, permissionMode: 'default',
     mode: 'code',
     modes: MODES.map((mode) => ({ slug: mode.slug, name: mode.name, description: mode.description, icon: mode.icon })),
     models: models.map((model) => ({ id: model.id, label: model.label, description: model.description, category: model.category, supportsThinking: model.supportsThinking, requiredPlan: model.requiredPlan, isNew: model.isNew === true, surfaced: model.surfaced !== false, selectable: model.selectable !== false, provider: model.provider || null })),

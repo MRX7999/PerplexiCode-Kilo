@@ -12,6 +12,15 @@ import { RotationEngine } from './api/rotationEngine';
 import { RotationStrategy } from './api/types';
 import { LoginProvider } from './providers/loginProvider';
 import { AccountManager } from './storage/accountManager';
+import { cliStores } from './core/nodeStores';
+import { PERMISSION_MODES, PermissionMode } from './core/types';
+
+const PERMISSION_MODE_DETAILS: Record<PermissionMode, string> = {
+  default: 'Ask before edits and commands unless allowed by settings or auto-approve.',
+  acceptEdits: 'Edit workspace files without asking; commands still follow the rules.',
+  plan: 'Read-only: no edits or commands, the agent presents a plan.',
+  bypassPermissions: 'Everything allowed except deny rules and protected secrets.',
+};
 import { StatusBarManager } from './ui/statusBar';
 
 const ROTATION_KEY = 'perplexicode.rotationStrategy';
@@ -155,6 +164,55 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     await accountManager.saveMetas();
     await initializeModels(true);
     void vscode.window.showInformationMessage(`PerplexiCode: Account "${result.account.alias}" added successfully.`);
+  });
+
+  register('perplexicodeKilo.shareAccountsWithCli', async () => {
+    const accounts = accountManager.getAccounts();
+    if (accounts.length === 0) {
+      void vscode.window.showInformationMessage('PerplexiCode: no accounts to share. Add one first.');
+      return;
+    }
+    const confirm = await vscode.window.showWarningMessage(
+      `Copy ${accounts.length} account(s) to ~/.perplexicode/credentials.json (file mode 0600) so the \`pcode\` CLI can use them?`,
+      { modal: true },
+      'Copy'
+    );
+    if (confirm !== 'Copy') {
+      return;
+    }
+    const stores = cliStores();
+    const cliManager = new AccountManager(stores.state as never, stores.secrets as never);
+    await cliManager.initialize();
+    let imported = 0;
+    let duplicates = 0;
+    for (const account of accounts) {
+      const outcome = await cliManager.importAccount(account, account.sessionToken, account.csrfToken, account.fullCookies);
+      if (outcome === 'imported') imported++;
+      if (outcome === 'duplicate') duplicates++;
+    }
+    void vscode.window.showInformationMessage(`PerplexiCode: ${imported} account(s) shared with the CLI${duplicates ? `, ${duplicates} already there` : ''}. Run \`pcode doctor\` in a terminal.`);
+  });
+
+  register('perplexicodeKilo.compactTask', async () => {
+    const result = await controller.compactCurrentTask();
+    if (!result) {
+      void vscode.window.showInformationMessage('PerplexiCode: no task to compact.');
+    }
+  });
+
+  register('perplexicodeKilo.setPermissionMode', async () => {
+    const picked = await vscode.window.showQuickPick(
+      PERMISSION_MODES.map((mode) => ({
+        label: mode,
+        description: mode === controller.core.permissionMode ? 'current' : '',
+        detail: PERMISSION_MODE_DETAILS[mode],
+      })),
+      { title: 'PerplexiCode: Permission mode (this window)' }
+    );
+    if (picked) {
+      controller.core.setPermissionMode(picked.label as PermissionMode);
+      void vscode.window.showInformationMessage(`PerplexiCode: permission mode → ${picked.label}`);
+    }
   });
 
   register('perplexicodeKilo.manageAccounts', async () => {
@@ -323,6 +381,36 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   register('perplexicodeKilo.settings', async () => {
     await focusSidebar();
     controller.showView('settings');
+  });
+  register('perplexicodeKilo.library', async () => {
+    await focusSidebar();
+    controller.refreshLibrary();
+    controller.showView('library');
+  });
+  register('perplexicodeKilo.runPreset', async () => {
+    const presets = controller.taskPresets();
+    const picked = await vscode.window.showQuickPick(
+      presets.map((preset) => ({
+        label: preset.title,
+        description: [preset.mode, preset.agent ? `@${preset.agent}` : '', preset.source !== 'builtin' ? preset.source : ''].filter(Boolean).join(' · '),
+        detail: preset.description,
+        id: preset.id,
+        needsInput: preset.prompt.includes('{{input}}'),
+      })),
+      { placeHolder: 'PerplexiCode: choose a task preset' },
+    );
+    if (!picked) {
+      return;
+    }
+    const input = picked.needsInput
+      ? await vscode.window.showInputBox({ prompt: picked.label, placeHolder: 'Details for the task (optional)' })
+      : '';
+    if (input === undefined) {
+      return;
+    }
+    await focusSidebar();
+    controller.showView('chat');
+    await controller.runPreset(picked.id, input);
   });
   register('perplexicodeKilo.openInTab', async () => {
     const panel = vscode.window.createWebviewPanel('perplexicodeKilo.tab', 'PerplexiCode', vscode.ViewColumn.Beside, {

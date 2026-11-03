@@ -14,6 +14,23 @@ import { AccountPlan, RotationStrategy } from '../api/types';
 import { AccountManager } from '../storage/accountManager';
 import { DEFAULT_MODE_SLUG, getModeBySlug, MODES } from './modes';
 import { AgentTask, AskResponse } from './task';
+import { CoreBridge } from './coreBridge';
+import { compactMessages } from '../core/compaction';
+import {
+  applyPresetPrompt,
+  createCustomAgent,
+  createCustomSkill,
+  deletePresetFromFile,
+  installAgentPreset,
+  installSkillPreset,
+  LibraryScope,
+  LibrarySnapshot,
+  librarySnapshot,
+  normalizeName,
+  removeLibraryItem,
+  savePresetToFile,
+  WriteResult,
+} from '../core/library';
 import { TaskStore } from './taskStore';
 import { listFilesTool, readFileTool, resolveWorkspacePath, toPosixRelative } from './tools';
 import { PerplexityTransport, TransportError } from './transport';
@@ -40,6 +57,10 @@ interface StoredSelection {
 export class AgentController implements vscode.Disposable {
   private readonly webviews = new Set<WebviewTarget>();
   private readonly tasks = new Map<string, AgentTask>();
+  /** Subagent name a task runs as (presets / agent picker / delegation). */
+  private readonly taskAgents = new Map<string, string>();
+  /** 3.0 core: permissions, hooks, verify, subagents, shared session journal. */
+  readonly core: CoreBridge;
   /** Stack of tasks; the last element is the one shown in the UI (child tasks on top). */
   private stack: AgentTask[] = [];
   private selection: StoredSelection;
@@ -47,6 +68,9 @@ export class AgentController implements vscode.Disposable {
   private readonly output: vscode.OutputChannel;
   private readonly disposables: vscode.Disposable[] = [];
   private stateTimer?: NodeJS.Timeout;
+  /** 3.1 library snapshot (installed subagents/skills, catalog, task presets). Refreshed on change. */
+  private library?: LibrarySnapshot;
+  private libraryTimer?: NodeJS.Timeout;
   private readonly stateEmitter = new vscode.EventEmitter<void>();
   /** Fires whenever the UI state (selection, task, models) is re-published. */
   readonly onDidChangeState = this.stateEmitter.event;
@@ -61,6 +85,7 @@ export class AgentController implements vscode.Disposable {
     output: vscode.OutputChannel
   ) {
     this.output = output;
+    this.core = new CoreBridge((line) => this.output.appendLine(line));
     const stored = context.globalState.get<StoredSelection>(SELECTION_KEY);
     const configuredDefault = readSetting<string>('perplexicodeKilo.defaultModel', 'turbo');
     this.selection = {
@@ -80,6 +105,19 @@ export class AgentController implements vscode.Disposable {
       this.postState();
     }));
     this.applyPlanOverride();
+    // Keep the library in sync with files edited by hand, by `pcode` or by Claude Code.
+    const watcher = vscode.workspace.createFileSystemWatcher('**/{.perplexicode,.claude}/{agents,skills,presets.json}{,/**}');
+    const onLibraryFile = () => this.scheduleLibraryRefresh();
+    watcher.onDidCreate(onLibraryFile);
+    watcher.onDidChange(onLibraryFile);
+    watcher.onDidDelete(onLibraryFile);
+    this.disposables.push(watcher);
+    this.disposables.push(vscode.workspace.onDidChangeWorkspaceFolders(() => this.scheduleLibraryRefresh()));
+    this.disposables.push(vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration('perplexicodeKilo.taskPresets')) {
+        this.scheduleLibraryRefresh();
+      }
+    }));
   }
 
   dispose(): void {
@@ -238,7 +276,7 @@ export class AgentController implements vscode.Disposable {
   }
 
   /** Switches the visible view in every attached webview. */
-  showView(view: 'chat' | 'history' | 'settings'): void {
+  showView(view: 'chat' | 'history' | 'settings' | 'library'): void {
     this.post({ type: 'view', view });
   }
 
@@ -252,6 +290,24 @@ export class AgentController implements vscode.Disposable {
 
   get currentTask(): AgentTask | undefined {
     return this.stack[this.stack.length - 1];
+  }
+
+  /** Summarises the current task transcript with the selected model (Claude Code /compact). */
+  async compactCurrentTask(focus?: string): Promise<{ before: number; after: number } | undefined> {
+    const task = this.currentTask;
+    if (!task) {
+      return undefined;
+    }
+    if (task.isBusy) {
+      throw new Error('The task is running; compact it when it is idle.');
+    }
+    const compacted = await compactMessages({ provider: this.transport, selection: this.getSelection(), messages: task.apiMessages, focus });
+    task.replaceHistory(compacted.messages);
+    this.core.onEvent(task, { type: 'compacted', before: compacted.before, after: compacted.after });
+    task.say({ type: 'info', text: `Context compacted: ${compacted.before} → ${compacted.after} messages.` });
+    this.store.save(task.toJSON());
+    this.postState();
+    return { before: compacted.before, after: compacted.after };
   }
 
   private workspaceRoot(): string | undefined {
@@ -269,19 +325,26 @@ export class AgentController implements vscode.Disposable {
     return folders[0].uri.fsPath;
   }
 
-  private buildTask(options: { mode: string; parentId?: string; restore?: PersistedTask; cwd?: string }): AgentTask {
+  private buildTask(options: { mode: string; parentId?: string; restore?: PersistedTask; cwd?: string; agent?: string }): AgentTask {
     const cwd = options.restore?.workspace || options.cwd || this.workspaceRoot() || os.homedir();
     const host = new VsCodeAgentHost(cwd, () => readSetting<boolean>('perplexicodeKilo.agent.revealEditedFiles', true));
+    const agent = options.agent ? this.core.findSubagent(cwd, options.agent) : undefined;
+    const gate = this.core.createGate({ cwd, host, parentId: options.parentId, agent });
+    const readBatchSize = this.core.readBatchSize(cwd);
     const task = new AgentTask({
+      gate,
+      isSubtaskTarget: (slug) => this.core.subagents(cwd).some((entry) => entry.name === slug),
+      readBatchSize: () => readBatchSize,
       host,
       provider: this.transport,
       getSettings: () => this.getSettings(),
       getSelection: () => this.getSelection(),
       getModelLabel: (modelId, thinking) => getModelLabel(modelId, thinking),
-      mode: options.mode,
+      mode: agent ? agent.mode : options.mode,
       parentId: options.parentId,
       restore: options.restore,
       callbacks: {
+        onEvent: (owner, event) => this.core.onEvent(owner, event),
         onMessage: (owner, message) => {
           if (this.currentTask === owner) {
             this.post({ type: 'messageUpdated', taskId: owner.id, message });
@@ -307,17 +370,28 @@ export class AgentController implements vscode.Disposable {
         startSubtask: (parent, mode, message, todos) => this.startSubtask(parent, mode, message, todos),
         persist: (owner) => this.store.save(owner.toJSON()),
         onCompleted: (owner) => {
+          const report = this.core.finish(owner);
+          if (report && report.status !== 'no_changes') {
+            owner.say({ type: 'info', text: `Verification — ${this.core.label(report)}` });
+            this.output.appendLine(`[core] ${owner.id} ${this.core.label(report)}`);
+          }
           this.store.save(owner.toJSON());
           this.postState();
         },
       },
     });
+    this.core.register(task);
     this.tasks.set(task.id, task);
+    if (agent) {
+      this.taskAgents.set(task.id, agent.name);
+    }
     return task;
   }
 
   private async startSubtask(parent: AgentTask, mode: string, message: string, todos: TodoItem[]): Promise<string> {
-    const child = this.buildTask({ mode, parentId: parent.id, cwd: (parent.toJSON().workspace) });
+    const cwd = parent.toJSON().workspace;
+    const isAgent = !MODES.some((entry) => entry.slug === mode) && !!this.core.findSubagent(cwd, mode);
+    const child = this.buildTask({ mode: isAgent ? 'code' : mode, parentId: parent.id, cwd, agent: isAgent ? mode : undefined });
     child.todos = todos;
     this.stack.push(child);
     this.postState(true);
@@ -334,7 +408,7 @@ export class AgentController implements vscode.Disposable {
     return result;
   }
 
-  async newTask(text: string, images: string[] = [], mode?: string): Promise<void> {
+  async newTask(text: string, images: string[] = [], mode?: string, agent?: string): Promise<void> {
     await this.clearTask();
     if (!this.workspaceRoot()) {
       void vscode.window.showWarningMessage('PerplexiCode: open a folder or workspace so the agent can work with files. The task will run in your home directory.');
@@ -343,7 +417,12 @@ export class AgentController implements vscode.Disposable {
       this.selection.mode = mode;
       await this.saveSelection();
     }
-    const task = this.buildTask({ mode: this.selection.mode });
+    const cwd = this.workspaceRoot();
+    const resolvedAgent = agent ? this.core.findSubagent(cwd || os.homedir(), agent) : undefined;
+    if (agent && !resolvedAgent) {
+      this.output.appendLine(`[library] subagent "${agent}" is not installed; running in ${this.selection.mode} mode`);
+    }
+    const task = this.buildTask({ mode: this.selection.mode, agent: resolvedAgent?.name });
     this.stack = [task];
     this.postState(true);
     await task.start(text, images);
@@ -380,11 +459,11 @@ export class AgentController implements vscode.Disposable {
   }
 
   /** Text from the chat box: continue the current task or start a new one. */
-  async sendMessage(text: string, images: string[] = []): Promise<void> {
+  async sendMessage(text: string, images: string[] = [], agent?: string): Promise<void> {
     const processed = await this.expandMentions(text);
     const task = this.currentTask;
     if (!task) {
-      await this.newTask(processed, images);
+      await this.newTask(processed, images, undefined, agent);
       return;
     }
     if (task.mode !== this.selection.mode) {
@@ -560,7 +639,36 @@ export class AgentController implements vscode.Disposable {
         await this.newTask(await this.expandMentions(String(message.text || '')), message.images || []);
         break;
       case 'sendMessage':
-        await this.sendMessage(String(message.text || ''), message.images || []);
+        await this.sendMessage(String(message.text || ''), message.images || [], typeof message.agent === 'string' && message.agent ? message.agent : undefined);
+        break;
+      case 'refreshLibrary':
+        this.refreshLibrary();
+        break;
+      case 'installPreset':
+        await this.installPreset(message.kind === 'skill' ? 'skill' : 'agent', String(message.id), message.scope === 'user' ? 'user' : 'project');
+        break;
+      case 'installPresetBundle':
+        await this.installBundle(Array.isArray(message.agents) ? message.agents.map(String) : [], Array.isArray(message.skills) ? message.skills.map(String) : [], message.scope === 'user' ? 'user' : 'project');
+        break;
+      case 'removeLibraryItem':
+        await this.removeLibraryItem(message.kind === 'skill' ? 'skill' : 'agent', String(message.file), String(message.name || ''));
+        break;
+      case 'openLibraryFile':
+        if (this.isLibraryFile(String(message.file))) {
+          await vscode.window.showTextDocument(vscode.Uri.file(String(message.file)), { preview: false });
+        }
+        break;
+      case 'createLibraryItem':
+        await this.createLibraryItem(message);
+        break;
+      case 'runPreset':
+        await this.runPreset(String(message.id), String(message.text || ''));
+        break;
+      case 'savePreset':
+        await this.saveTaskPreset(message);
+        break;
+      case 'deletePreset':
+        await this.deleteTaskPreset(String(message.id), String(message.source || 'user'));
         break;
       case 'askResponse': {
         const task = this.currentTask;
@@ -789,6 +897,7 @@ export class AgentController implements vscode.Disposable {
         parentId: task.parentId,
         title: task.title,
         mode: task.mode,
+        agent: this.taskAgents.get(task.id),
         status: task.status,
         todos: task.todos,
         busy: task.isBusy,
@@ -842,6 +951,8 @@ export class AgentController implements vscode.Disposable {
       })),
       history: this.store.list().filter((item) => !item.parentId).slice(0, 200),
       workspace: this.workspaceRoot() || null,
+      library: this.getLibrary(),
+      permissionMode: this.core.permissionMode,
     };
     this.post(state, target);
     this.stateEmitter.fire();
@@ -850,6 +961,208 @@ export class AgentController implements vscode.Disposable {
   // ---------------------------------------------------------------------------------------------
   // HTML
   // ---------------------------------------------------------------------------------------------
+
+  // ---------------------------------------------------------------------------------------------
+  // 3.1 library: subagents, skills, task presets
+  // ---------------------------------------------------------------------------------------------
+
+  private libraryPaths(): { cwd?: string; home: string } {
+    return { cwd: this.workspaceRoot(), home: os.homedir() };
+  }
+
+  private getLibrary(): LibrarySnapshot {
+    if (!this.library || this.library.workspace !== (this.workspaceRoot() || null)) {
+      this.library = this.computeLibrary();
+    }
+    return this.library;
+  }
+
+  private computeLibrary(): LibrarySnapshot {
+    try {
+      return librarySnapshot(this.libraryPaths(), readSetting<unknown[]>('perplexicodeKilo.taskPresets', []) || []);
+    } catch (error) {
+      this.output.appendLine(`[library] ${(error as Error).message}`);
+      return { workspace: this.workspaceRoot() || null, agents: [], skills: [], agentPresets: [], skillPresets: [], taskPresets: [] };
+    }
+  }
+
+  taskPresets(): LibrarySnapshot['taskPresets'] {
+    return this.getLibrary().taskPresets;
+  }
+
+  refreshLibrary(): void {
+    this.library = this.computeLibrary();
+    this.postState();
+  }
+
+  private scheduleLibraryRefresh(): void {
+    if (this.libraryTimer) clearTimeout(this.libraryTimer);
+    this.libraryTimer = setTimeout(() => {
+      this.libraryTimer = undefined;
+      this.refreshLibrary();
+    }, 150);
+  }
+
+  private isLibraryFile(file: string): boolean {
+    const library = this.getLibrary();
+    return library.agents.some((agent) => agent.file === file) || library.skills.some((skill) => skill.file === file);
+  }
+
+  private resolveScope(scope: LibraryScope): LibraryScope | undefined {
+    if (scope === 'project' && !this.workspaceRoot()) {
+      void vscode.window.showWarningMessage('PerplexiCode: open a folder to install into the project, or choose "Global".');
+      return undefined;
+    }
+    return scope;
+  }
+
+  /** Runs a write; on "already exists" asks before overwriting. */
+  private async writeWithConfirm(label: string, write: (overwrite: boolean) => WriteResult): Promise<WriteResult | undefined> {
+    try {
+      return write(false);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      const answer = await vscode.window.showWarningMessage(`PerplexiCode: ${label} already exists. Overwrite it?`, { modal: true }, 'Overwrite');
+      return answer === 'Overwrite' ? write(true) : undefined;
+    }
+  }
+
+  async installPreset(kind: 'agent' | 'skill', id: string, requestedScope: LibraryScope): Promise<void> {
+    const scope = this.resolveScope(requestedScope);
+    if (!scope) return;
+    const paths = this.libraryPaths();
+    const result = await this.writeWithConfirm(`${kind === 'agent' ? 'Subagent' : 'Skill'} "${id}"`, (overwrite) => kind === 'agent' ? installAgentPreset(id, scope, paths, overwrite) : installSkillPreset(id, scope, paths, overwrite));
+    if (result) {
+      this.output.appendLine(`[library] installed ${kind} ${id} → ${result.file}`);
+      this.post({ type: 'toast', text: `${kind === 'agent' ? 'Subagent' : 'Skill'} "${id}" installed (${scope === 'project' ? 'project' : 'global'})` });
+    }
+    this.refreshLibrary();
+  }
+
+  private async installBundle(agents: string[], skills: string[], requestedScope: LibraryScope): Promise<void> {
+    const scope = this.resolveScope(requestedScope);
+    if (!scope) return;
+    const paths = this.libraryPaths();
+    const installed: string[] = [];
+    for (const id of agents) {
+      try { installAgentPreset(id, scope, paths, false); installed.push(id); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') this.output.appendLine(`[library] ${(error as Error).message}`); }
+    }
+    for (const id of skills) {
+      try { installSkillPreset(id, scope, paths, false); installed.push(id); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') this.output.appendLine(`[library] ${(error as Error).message}`); }
+    }
+    this.output.appendLine(`[library] bundle installed (${scope}): ${installed.join(', ') || 'nothing new'}`);
+    this.post({ type: 'toast', text: installed.length ? `Installed: ${installed.join(', ')}` : 'Everything is already installed' });
+    this.refreshLibrary();
+  }
+
+  private async removeLibraryItem(kind: 'agent' | 'skill', file: string, name: string): Promise<void> {
+    if (!this.isLibraryFile(file)) {
+      this.refreshLibrary();
+      return;
+    }
+    const answer = await vscode.window.showWarningMessage(`PerplexiCode: delete ${kind === 'agent' ? 'subagent' : 'skill'} "${name}"?`, { modal: true, detail: file }, 'Delete');
+    if (answer !== 'Delete') return;
+    const removed = removeLibraryItem(kind, file, this.libraryPaths());
+    this.output.appendLine(`[library] removed ${removed}`);
+    this.refreshLibrary();
+  }
+
+  private async createLibraryItem(message: Record<string, any>): Promise<void> {
+    const scope = this.resolveScope(message.scope === 'user' ? 'user' : 'project');
+    if (!scope) return;
+    const paths = this.libraryPaths();
+    const name = normalizeName(String(message.name || ''));
+    try {
+      const result = await this.writeWithConfirm(`"${name}"`, (overwrite) => message.kind === 'skill'
+        ? createCustomSkill({ name, description: String(message.description || ''), body: String(message.body || '') }, scope, paths, overwrite)
+        : createCustomAgent({
+          name,
+          description: String(message.description || ''),
+          tools: String(message.tools || '').split(/,(?![^(]*\))/).map((entry: string) => entry.trim()).filter(Boolean),
+          mode: String(message.mode || ''),
+          model: String(message.model || ''),
+          prompt: String(message.body || ''),
+        }, scope, paths, overwrite));
+      if (result) {
+        this.post({ type: 'libraryCreated', kind: message.kind === 'skill' ? 'skill' : 'agent', name });
+        await vscode.window.showTextDocument(vscode.Uri.file(result.file), { preview: false, preserveFocus: true });
+      }
+    } catch (error) {
+      this.post({ type: 'toast', text: (error as Error).message });
+    }
+    this.refreshLibrary();
+  }
+
+  /** Starts a new task from a preset; offers to install missing subagents/skills first. */
+  async runPreset(id: string, text: string): Promise<void> {
+    const library = this.getLibrary();
+    const preset = library.taskPresets.find((entry) => entry.id === id);
+    if (!preset) {
+      void vscode.window.showErrorMessage(`PerplexiCode: preset "${id}" not found.`);
+      return;
+    }
+    const missingAgents = preset.missing.agents.filter((name) => library.agentPresets.some((entry) => entry.id === name));
+    const missingSkills = preset.missing.skills.filter((name) => library.skillPresets.some((entry) => entry.id === name));
+    if (missingAgents.length + missingSkills.length > 0) {
+      const items = [...missingAgents, ...missingSkills].join(', ');
+      const choice = await vscode.window.showInformationMessage(
+        `PerplexiCode: "${preset.title}" works best with ${items}. Install them?`,
+        { modal: true },
+        ...(this.workspaceRoot() ? ['Install to project'] : []),
+        'Install globally',
+        'Run without',
+      );
+      if (!choice) return;
+      if (choice !== 'Run without') {
+        await this.installBundle(missingAgents, missingSkills, choice === 'Install globally' ? 'user' : 'project');
+      }
+    }
+    if (MODES.some((entry) => entry.slug === preset.mode)) {
+      this.selection.mode = preset.mode;
+      await this.saveSelection();
+    }
+    const prompt = applyPresetPrompt(preset, await this.expandMentions(text));
+    await this.newTask(prompt, [], preset.mode, preset.agent);
+  }
+
+  private async saveTaskPreset(message: Record<string, any>): Promise<void> {
+    const raw = {
+      id: message.id ? String(message.id) : undefined,
+      title: String(message.title || '').trim(),
+      description: String(message.description || ''),
+      mode: String(message.mode || 'code'),
+      prompt: String(message.prompt || ''),
+      agent: message.agent ? String(message.agent) : undefined,
+    };
+    if (!raw.title || !raw.prompt.trim()) {
+      this.post({ type: 'toast', text: 'A preset needs a title and a prompt' });
+      return;
+    }
+    if (message.scope === 'project') {
+      if (!this.resolveScope('project')) return;
+      savePresetToFile(raw, 'project', this.libraryPaths());
+    } else {
+      const current = (readSetting<unknown[]>('perplexicodeKilo.taskPresets', []) || []).filter((entry) => normalizeName(String((entry as any)?.id || (entry as any)?.title || '')) !== normalizeName(raw.id || raw.title));
+      await writeSetting('perplexicodeKilo.taskPresets', [...current, { ...raw, id: normalizeName(raw.id || raw.title) }]);
+    }
+    this.post({ type: 'toast', text: `Preset "${raw.title}" saved` });
+    this.refreshLibrary();
+  }
+
+  private async deleteTaskPreset(id: string, source: string): Promise<void> {
+    if (source === 'project') {
+      deletePresetFromFile(id, 'project', this.libraryPaths());
+    } else if (source === 'user') {
+      const current = readSetting<unknown[]>('perplexicodeKilo.taskPresets', []) || [];
+      const next = current.filter((entry) => normalizeName(String((entry as any)?.id || (entry as any)?.title || '')) !== id);
+      if (next.length !== current.length) {
+        await writeSetting('perplexicodeKilo.taskPresets', next);
+      } else {
+        deletePresetFromFile(id, 'user', this.libraryPaths());
+      }
+    }
+    this.refreshLibrary();
+  }
 
   private getHtml(webview: vscode.Webview): string {
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'out', 'agent-webview.js'));

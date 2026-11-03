@@ -38,7 +38,7 @@ interface AppState {
   task: null | {
     id: string; parentId?: string; title: string; mode: string; busy: boolean; todos: TodoItem[];
     status: { state: string; askId?: string; askKind?: AskKind; requestCount: number };
-    messages?: UiMessage[]; depth: number; parentTitle?: string;
+    messages?: UiMessage[]; depth: number; parentTitle?: string; agent?: string;
   };
   mode: string;
   modes: Array<{ slug: string; name: string; description: string; icon: string }>;
@@ -49,6 +49,18 @@ interface AppState {
   accounts: Array<{ id: string; alias: string; status: string; plan: string; email?: string; queriesToday: number; queriesTotal: number; lastUsedAt?: string; quotas: Record<string, string> }>;
   history: Array<{ id: string; ts: number; title: string; workspace: string; mode: string; status: string; requestCount: number }>;
   workspace: string | null;
+  library?: LibraryState;
+  permissionMode?: string;
+}
+
+type LibraryScope = 'project' | 'user';
+interface LibraryState {
+  workspace: string | null;
+  agents: Array<{ name: string; description: string; mode?: string; file: string; scope: LibraryScope; tools: string[] | null; preset: boolean }>;
+  skills: Array<{ name: string; description: string; file: string; scope: LibraryScope; preset: boolean }>;
+  agentPresets: Array<{ id: string; description: string; mode: string; tools: string[] | null; tags: string[]; installed: LibraryScope | null }>;
+  skillPresets: Array<{ id: string; description: string; tags: string[]; installed: LibraryScope | null }>;
+  taskPresets: Array<{ id: string; title: string; description: string; mode: string; prompt: string; agent?: string; icon?: string; inputRequired?: boolean; source: 'builtin' | 'user' | 'project'; missing: { agents: string[]; skills: string[] } }>;
 }
 
 declare function acquireVsCodeApi(): { postMessage(message: unknown): void; getState(): any; setState(state: any): void };
@@ -111,7 +123,18 @@ function md(text: string | undefined): string {
 let state: AppState | undefined;
 let messages: UiMessage[] = [];
 let currentTaskId: string | undefined;
-let view: 'chat' | 'history' | 'settings' = 'chat';
+type ViewName = 'chat' | 'history' | 'settings' | 'library';
+let view: ViewName = 'chat';
+type LibraryTab = 'presets' | 'agents' | 'skills';
+let libraryTab: LibraryTab = 'presets';
+let libraryQuery = '';
+let libraryForm: undefined | 'agent' | 'skill' | 'preset';
+let libraryKey = '';
+const formValues: Record<string, string> = {};
+/** Preset picked on the welcome screen / library; the next send runs it. */
+let activePreset: { id: string; title: string; agent?: string; mode: string; needsInput: boolean } | undefined;
+/** Subagent picked in the mode menu; the next new task runs as this agent. */
+let activeAgent: string | undefined;
 let settingsTab = 'accounts';
 let historyQuery = '';
 let modelMenuOpen = false;
@@ -142,6 +165,7 @@ root.innerHTML = `
         <div id="auto-approve" class="auto-approve"></div>
         <div class="composer" id="composer">
           <div id="popup" class="popup hidden"></div>
+          <div id="composer-chips" class="composer-chips hidden"></div>
           <textarea id="input" rows="3" placeholder="Type your task here… (@ to add context, / for commands, Shift+Enter for new line)"></textarea>
           <div class="composer-bar">
             <div class="selector-wrap">
@@ -161,6 +185,7 @@ root.innerHTML = `
     </div>
     <div id="view-history" class="view hidden"></div>
     <div id="view-settings" class="view hidden"></div>
+    <div id="view-library" class="view hidden"></div>
   </div>`;
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -226,6 +251,15 @@ window.addEventListener('message', (event) => {
     case 'focusInput':
       input.focus();
       break;
+    case 'toast':
+      showToast(String(message.text || ''));
+      break;
+    case 'libraryCreated':
+      libraryForm = undefined;
+      for (const key of Object.keys(formValues)) delete formValues[key];
+      showToast(`${message.kind === 'skill' ? 'Skill' : 'Subagent'} "${message.name}" created`);
+      renderLibrary();
+      break;
     default:
       break;
   }
@@ -254,6 +288,12 @@ function applyState(next: AppState & { includeMessages: boolean }): void {
   }
   if (view === 'settings') {
     renderSettings();
+  }
+  if (view === 'library') {
+    const key = JSON.stringify(next.library || null);
+    if (key !== libraryKey) {
+      renderLibrary();
+    }
   }
 }
 
@@ -507,6 +547,7 @@ function renderTaskHeader(): void {
     </div>
     <div class="task-meta">
       <span class="chip">${modeIcon(stateModeIcon(task.mode))}${escapeHtml(modeName)}</span>
+      ${task.agent ? `<span class="chip agent-chip" title="Runs as subagent ${escapeHtml(task.agent)}">${icons.agent}@${escapeHtml(task.agent)}</span>` : ''}
       <span class="chip">${task.status.requestCount} requests</span>
       <span class="chip state-${task.status.state}">${escapeHtml(stateLabel(task.status.state, task.busy))}</span>
     </div>
@@ -546,14 +587,38 @@ function renderWelcome(): void {
     <div class="hero">
       <div class="logo">${BRAND_MARK}</div>
       <h2>PerplexiCode Kilo</h2>
-      <p class="muted">Kilo-style coding agent powered by your Perplexity subscription. Plan, write and debug code with ${state.models.filter((model) => model.surfaced).length} Perplexity models.</p>
+      <p class="muted">Kilo-style coding agent powered by your Perplexity subscription, with Claude Code-compatible subagents, skills and the <code>pcode</code> CLI.</p>
       ${noAccounts ? `<div class="notice warn">${icons.key}<div>No Perplexity account connected.<br><button class="btn primary small" data-action="addAccount">Add account</button></div></div>` : ''}
       ${!state.workspace ? `<div class="notice info">${icons.folder}<div>Open a folder to let the agent read and edit files.</div></div>` : ''}
     </div>
+    ${welcomePresetsHtml()}
+    <div class="section-title">Modes</div>
     <div class="tips">
       ${state.modes.map((mode) => `<button class="tip ${state!.mode === mode.slug ? 'active' : ''}" data-mode="${mode.slug}">${modeIcon(mode.icon)}<div><b>${escapeHtml(mode.name)}</b><span>${escapeHtml(mode.description)}</span></div></button>`).join('')}
     </div>
     ${recent.length > 0 ? `<div class="recent"><div class="section-title">Recent tasks<button class="link" data-action="history">View all</button></div>${recent.map(historyItemHtml).join('')}</div>` : ''}`;
+}
+
+function welcomePresetsHtml(): string {
+  const library = state?.library;
+  if (!library) return '';
+  const presets = library.taskPresets.slice(0, 6);
+  const installedAgents = library.agents.length;
+  const installedSkills = library.skills.length;
+  return `
+    <div class="section-title">Quick start<button class="link" data-action="library-presets">All presets</button></div>
+    <div class="preset-grid">${presets.map((preset) => `
+      <button class="preset-card ${activePreset?.id === preset.id ? 'active' : ''}" data-preset="${escapeHtml(preset.id)}" title="${escapeHtml(preset.prompt)}">
+        <span class="preset-icon">${modeIcon(preset.icon || stateModeIcon(preset.mode))}</span>
+        <span class="preset-text"><b>${escapeHtml(preset.title)}</b><span>${escapeHtml(preset.description)}</span></span>
+      </button>`).join('')}
+    </div>
+    <div class="library-strip">
+      ${icons.agent}<span><b>${installedAgents}</b> subagents · <b>${installedSkills}</b> skills</span>
+      <span class="spacer"></span>
+      ${installedAgents === 0 ? '<button class="btn ghost small" data-action="install-starter">Install starter pack</button>' : ''}
+      <button class="btn ghost small" data-action="library-agents">${icons.gear} Manage</button>
+    </div>`;
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -653,20 +718,49 @@ function renderComposer(): void {
   sendBtn.classList.toggle('stop', busy);
   input.placeholder = task
     ? (pendingAsk()?.ask?.kind === 'followup' ? 'Type your answer…' : busy ? 'PerplexiCode is working…' : 'Type a message… (@ to add context)')
-    : 'Type your task here… (@ to add context, / for commands, Shift+Enter for new line)';
+    : activePreset
+      ? `${activePreset.title}: ${activePreset.needsInput ? 'add details' : 'optional details'}, then Enter to run`
+      : activeAgent
+        ? `Task for @${activeAgent}… (Enter to start)`
+        : 'Type your task here… (@ to add context, / for commands, Shift+Enter for new line)';
+  renderComposerChips();
   renderModeMenu();
   renderModelMenu();
+}
+
+function renderComposerChips(): void {
+  const el = $('composer-chips');
+  const chips: string[] = [];
+  if (!state?.task && activePreset) {
+    chips.push(`<span class="chip preset-chip">${icons.preset}Preset: ${escapeHtml(activePreset.title)}<button class="chip-x" data-clear-chip="preset" title="Clear preset">${icons.x}</button></span>`);
+  }
+  const agent = !state?.task ? (activePreset?.agent || activeAgent) : undefined;
+  if (agent) {
+    const installed = state?.library?.agents.some((entry) => entry.name === agent);
+    chips.push(`<span class="chip agent-chip ${installed ? '' : 'missing'}" title="${installed ? 'Runs as this subagent' : 'Not installed yet: you will be offered to install it'}">${icons.agent}@${escapeHtml(agent)}${activePreset ? '' : `<button class="chip-x" data-clear-chip="agent" title="Clear subagent">${icons.x}</button>`}</span>`);
+  }
+  el.innerHTML = chips.join('');
+  el.classList.toggle('hidden', chips.length === 0);
 }
 
 function renderModeMenu(): void {
   const menu = $('mode-menu');
   menu.classList.toggle('hidden', !modeMenuOpen);
   if (!modeMenuOpen || !state) return;
+  const agents = state.library?.agents || [];
+  const agentItems = state.task ? '' : `
+    <div class="menu-section">Subagents</div>
+    ${agents.length === 0 ? '<div class="menu-empty muted">None installed yet</div>' : agents.map((agent) => `
+      <button class="menu-item ${activeAgent === agent.name ? 'selected' : ''}" data-agent-pick="${escapeHtml(agent.name)}" title="${escapeHtml(agent.description)}">
+        ${icons.agent}<div class="menu-text"><b>@${escapeHtml(agent.name)}</b><span>${escapeHtml(agent.description)}</span></div>
+        ${activeAgent === agent.name ? `<span class="check">${icons.check}</span>` : ''}
+      </button>`).join('')}
+    <button class="menu-item" data-action="library-agents">${icons.plus}<div class="menu-text"><b>Add subagents & skills…</b></div></button>`;
   menu.innerHTML = state.modes.map((mode) => `
     <button class="menu-item ${mode.slug === state!.mode ? 'selected' : ''}" data-mode="${mode.slug}">
       ${modeIcon(mode.icon)}<div class="menu-text"><b>${escapeHtml(mode.name)}</b><span>${escapeHtml(mode.description)}</span></div>
       ${mode.slug === state!.mode ? `<span class="check">${icons.check}</span>` : ''}
-    </button>`).join('') + '<div class="menu-foot muted">⌘. next mode · ⌘⇧. previous</div>';
+    </button>`).join('') + agentItems + '<div class="menu-foot muted">⌘. next mode · ⌘⇧. previous</div>';
 }
 
 function renderModelMenu(): void {
@@ -712,11 +806,30 @@ function send(): void {
     post({ type: 'abort' });
     return;
   }
+  if (!task && activePreset) {
+    if (activePreset.needsInput && !text) {
+      showToast(`Describe what "${activePreset.title}" should work on`);
+      input.focus();
+      return;
+    }
+    post({ type: 'runPreset', id: activePreset.id, text });
+    activePreset = undefined;
+    activeAgent = undefined;
+    input.value = '';
+    saveDraft();
+    autoResize();
+    stickToBottom = true;
+    renderComposer();
+    return;
+  }
   if (!text) return;
   if (text.startsWith('/') && handleSlash(text)) {
     return;
   }
-  post({ type: 'sendMessage', text });
+  post({ type: 'sendMessage', text, agent: !task ? activeAgent : undefined });
+  if (!task) {
+    activeAgent = undefined;
+  }
   input.value = '';
   saveDraft();
   autoResize();
@@ -729,6 +842,10 @@ const SLASH_COMMANDS = () => [
   { label: '/history', value: 'history', description: 'Open task history' },
   { label: '/settings', value: 'settings', description: 'Open settings' },
   { label: '/web', value: 'web', description: 'Toggle web search (auto → on → off)' },
+  { label: '/presets', value: 'library:presets', description: 'Task presets' },
+  { label: '/agents', value: 'library:agents', description: 'Install or create subagents' },
+  { label: '/skills', value: 'library:skills', description: 'Install or create skills' },
+  ...(state?.library?.taskPresets || []).map((preset) => ({ label: `/${preset.id}`, value: `preset:${preset.id}`, description: `Preset: ${preset.title}` })),
 ];
 
 function handleSlash(text: string): boolean {
@@ -760,6 +877,13 @@ function applySlash(value: string, restText = ''): void {
   } else if (value === 'web') {
     cycleWebSearch();
     input.value = restText;
+  } else if (value.startsWith('library:')) {
+    libraryTab = value.slice(8) as LibraryTab;
+    setView('library');
+    input.value = '';
+  } else if (value.startsWith('preset:')) {
+    selectPreset(value.slice(7));
+    input.value = restText;
   }
   saveDraft();
   autoResize();
@@ -773,7 +897,7 @@ function updatePopups(): void {
   const value = input.value;
   const caret = input.selectionStart || 0;
   const before = value.slice(0, caret);
-  const slashMatch = /^\/(\w*)$/.exec(before);
+  const slashMatch = /^\/([\w-]*)$/.exec(before);
   if (slashMatch) {
     const query = slashMatch[1].toLowerCase();
     slashState = { items: SLASH_COMMANDS().filter((item) => item.label.slice(1).startsWith(query)), index: 0 };
@@ -957,13 +1081,234 @@ function renderSettings(): void {
     </div>`;
 }
 
-function setView(next: 'chat' | 'history' | 'settings'): void {
+// -------------------------------------------------------------------------------------------------
+// Library view: task presets, subagents, skills
+// -------------------------------------------------------------------------------------------------
+
+function selectPreset(id: string): void {
+  const preset = state?.library?.taskPresets.find((entry) => entry.id === id);
+  if (!preset) return;
+  if (state?.task) {
+    post({ type: 'clearTask' });
+  }
+  activePreset = { id: preset.id, title: preset.title, agent: preset.agent, mode: preset.mode, needsInput: Boolean(preset.inputRequired) };
+  activeAgent = undefined;
+  if (state && state.mode !== preset.mode) {
+    post({ type: 'setMode', mode: preset.mode });
+  }
+  setView('chat');
+  renderWelcome();
+  renderComposer();
+  input.focus();
+}
+
+const LIBRARY_TABS: Array<[LibraryTab, string, string]> = [
+  ['presets', 'Task presets', 'preset'],
+  ['agents', 'Subagents', 'agent'],
+  ['skills', 'Skills', 'skill'],
+];
+
+const SCOPE_LABEL: Record<LibraryScope, string> = { project: 'project', user: 'global' };
+
+function matchesQuery(...values: Array<string | undefined>): boolean {
+  const query = libraryQuery.trim().toLowerCase();
+  return !query || values.some((value) => (value || '').toLowerCase().includes(query));
+}
+
+function formField(name: string, label: string, control: string, hint = ''): string {
+  return `<label class="form-field" data-field-name="${name}"><span class="form-label">${escapeHtml(label)}${hint ? `<span class="muted"> · ${escapeHtml(hint)}</span>` : ''}</span>${control}</label>`;
+}
+
+function textInput(name: string, placeholder = ''): string {
+  return `<input class="text" data-form-field="${name}" value="${escapeHtml(formValues[name] || '')}" placeholder="${escapeHtml(placeholder)}">`;
+}
+
+function textArea(name: string, rows: number, placeholder = ''): string {
+  return `<textarea class="setting-text" data-form-field="${name}" rows="${rows}" placeholder="${escapeHtml(placeholder)}">${escapeHtml(formValues[name] || '')}</textarea>`;
+}
+
+function selectInput(name: string, options: Array<[string, string]>, fallback: string): string {
+  const value = formValues[name] ?? fallback;
+  formValues[name] = value;
+  return `<select data-form-field="${name}">${options.map(([v, l]) => `<option value="${escapeHtml(v)}" ${v === value ? 'selected' : ''}>${escapeHtml(l)}</option>`).join('')}</select>`;
+}
+
+function scopeSelect(): string {
+  const hasWorkspace = Boolean(state?.library?.workspace);
+  return selectInput('scope', hasWorkspace ? [['project', 'This project (.perplexicode/)'], ['user', 'Global (~/.perplexicode/)']] : [['user', 'Global (~/.perplexicode/)']], hasWorkspace ? 'project' : 'user');
+}
+
+function installButtons(kind: 'agent' | 'skill', id: string, installed: LibraryScope | null): string {
+  if (installed) {
+    return `<span class="badge new">installed · ${SCOPE_LABEL[installed]}</span>`;
+  }
+  const hasWorkspace = Boolean(state?.library?.workspace);
+  return `<span class="btn-group">
+    <button class="btn primary small" data-install="${kind}" data-id="${escapeHtml(id)}" data-scope="project" ${hasWorkspace ? '' : 'disabled title="Open a folder first"'}>${icons.plus} Project</button>
+    <button class="btn secondary small" data-install="${kind}" data-id="${escapeHtml(id)}" data-scope="user">Global</button>
+  </span>`;
+}
+
+function presetsTabHtml(library: LibraryState): string {
+  const modes = state?.modes || [];
+  const agentOptions: Array<[string, string]> = [['', '— none (plain mode) —'], ...[...new Set([...library.agents.map((agent) => agent.name), ...library.agentPresets.map((agent) => agent.id)])].map((name): [string, string] => [name, `@${name}`])];
+  const form = libraryForm === 'preset' ? `
+    <div class="lib-form">
+      <div class="section-title">New task preset</div>
+      ${formField('title', 'Title', textInput('title', 'e.g. Go service skeleton'))}
+      ${formField('description', 'Description', textInput('description', 'Shown under the title'))}
+      <div class="form-row">
+        ${formField('mode', 'Mode', selectInput('mode', modes.map((mode): [string, string] => [mode.slug, mode.name]), state?.mode || 'code'))}
+        ${formField('agent', 'Subagent', selectInput('agent', agentOptions, ''))}
+      </div>
+      ${formField('prompt', 'Prompt template', textArea('prompt', 6, 'Use {{input}} where your text should go'), '{{input}} = text typed in the chat')}
+      ${formField('scope', 'Save to', selectInput('scope', [['user', 'My presets (all projects)'], ...(library.workspace ? [['project', 'This project (.perplexicode/presets.json)'] as [string, string]] : [])], 'user'))}
+      <div class="form-actions"><button class="btn ghost small" data-action="lib-cancel">Cancel</button><button class="btn primary small" data-action="lib-submit-preset">Save preset</button></div>
+    </div>` : '';
+  const presets = library.taskPresets.filter((preset) => matchesQuery(preset.title, preset.description, preset.agent, preset.mode));
+  return `
+    <div class="lib-toolbar"><span class="muted small">A preset sets the mode, the subagent and a prompt template. Pick one, add details, press Enter.</span><span class="spacer"></span>
+      ${libraryForm === 'preset' ? '' : `<button class="btn primary small" data-lib-form="preset">${icons.plus} New preset</button>`}</div>
+    ${form}
+    <div class="lib-list">${presets.length === 0 ? '<div class="empty muted">No presets match.</div>' : presets.map((preset) => `
+      <div class="lib-card">
+        <div class="lib-card-top"><div class="lib-title">${modeIcon(preset.icon || stateModeIcon(preset.mode))}<b>${escapeHtml(preset.title)}</b>
+          <span class="chip">${escapeHtml(modes.find((mode) => mode.slug === preset.mode)?.name || preset.mode)}</span>
+          ${preset.agent ? `<span class="chip agent-chip ${preset.missing.agents.includes(preset.agent) ? 'missing' : ''}">${icons.agent}@${escapeHtml(preset.agent)}</span>` : ''}
+          ${preset.source !== 'builtin' ? `<span class="badge">${preset.source === 'project' ? 'project' : 'mine'}</span>` : ''}
+          </div><div class="lib-actions">
+          ${preset.source !== 'builtin' ? `<button class="icon-btn" data-preset-delete="${escapeHtml(preset.id)}" data-source="${preset.source}" title="Delete preset">${icons.trash}</button>` : ''}
+          <button class="btn primary small" data-preset="${escapeHtml(preset.id)}">Use</button>
+        </div></div>
+        <div class="muted small">${escapeHtml(preset.description)}</div>
+        ${preset.missing.agents.length + preset.missing.skills.length > 0 ? `<div class="lib-missing small">${icons.info}<span>Needs ${[...preset.missing.agents.map((name) => `@${name}`), ...preset.missing.skills].map(escapeHtml).join(', ')}, offered on first run</span>
+          <button class="link" data-install-bundle="${escapeHtml(preset.id)}">install now</button></div>` : ''}
+      </div>`).join('')}
+    </div>`;
+}
+
+function agentsTabHtml(library: LibraryState): string {
+  const modes = state?.modes || [];
+  const installed = library.agents.filter((agent) => matchesQuery(agent.name, agent.description));
+  const catalog = library.agentPresets.filter((preset) => matchesQuery(preset.id, preset.description, preset.tags.join(' ')));
+  const notInstalled = library.agentPresets.filter((preset) => !preset.installed).length;
+  const form = libraryForm === 'agent' ? `
+    <div class="lib-form">
+      <div class="section-title">New subagent</div>
+      <div class="form-row">
+        ${formField('name', 'Name', textInput('name', 'e.g. go-expert'), 'a-z 0-9 - _')}
+        ${formField('mode', 'Mode', selectInput('mode', modes.map((mode): [string, string] => [mode.slug, mode.name]), 'code'))}
+      </div>
+      ${formField('description', 'When to use', textInput('description', 'The orchestrator reads this to decide when to delegate'))}
+      ${formField('tools', 'Allowed tools', textInput('tools', 'Read, Grep, Glob, Edit, Bash(go test:*)'), 'empty = all tools')}
+      ${formField('model', 'Model', textInput('model', 'optional, e.g. claude-fable-5-1'), 'optional')}
+      ${formField('body', 'System prompt', textArea('body', 7, 'You are … Steps: … Report: …'))}
+      ${formField('scope', 'Install to', scopeSelect())}
+      <div class="form-actions"><button class="btn ghost small" data-action="lib-cancel">Cancel</button><button class="btn primary small" data-action="lib-submit-agent">Create subagent</button></div>
+    </div>` : '';
+  return `
+    <div class="lib-toolbar"><span class="muted small">Claude Code format (<code>.claude/agents</code> is read too). The Orchestrator delegates to them; you can also start a task as one from the mode menu.</span><span class="spacer"></span>
+      ${libraryForm === 'agent' ? '' : `<button class="btn primary small" data-lib-form="agent">${icons.plus} Create</button>`}</div>
+    ${form}
+    <div class="section-title">Installed <span class="muted">(${library.agents.length})</span></div>
+    ${installed.length === 0 ? '<div class="empty-inline muted">No subagents yet. Install one from the catalog below.</div>' : installed.map((agent) => `
+      <div class="lib-card">
+        <div class="lib-card-top"><div class="lib-title">${icons.agent}<b>@${escapeHtml(agent.name)}</b><span class="badge">${SCOPE_LABEL[agent.scope]}</span>${agent.mode ? `<span class="chip">${escapeHtml(modes.find((mode) => mode.slug === agent.mode)?.name || agent.mode)}</span>` : ''}
+          </div><div class="lib-actions">
+          <button class="icon-btn" data-lib-open="${escapeHtml(agent.file)}" title="Open file">${icons.edit}</button>
+          <button class="icon-btn" data-lib-remove="agent" data-file="${escapeHtml(agent.file)}" data-name="${escapeHtml(agent.name)}" title="Delete">${icons.trash}</button>
+          <button class="btn secondary small" data-agent-pick="${escapeHtml(agent.name)}">Start task</button></div></div>
+        <div class="muted small">${escapeHtml(agent.description)}</div>
+        <div class="muted small tools-line">${agent.tools ? `tools: ${agent.tools.map(escapeHtml).join(', ')}` : 'tools: all'}</div>
+      </div>`).join('')}
+    <div class="section-title">Catalog <span class="muted">(${library.agentPresets.length})</span><span class="spacer"></span>
+      ${notInstalled > 0 ? `<button class="btn ghost small" data-action="install-all-agents">Install all ${library.workspace ? 'to project' : 'globally'}</button>` : ''}</div>
+    ${catalog.map((preset) => `
+      <div class="lib-card">
+        <div class="lib-card-top"><div class="lib-title">${icons.agent}<b>@${escapeHtml(preset.id)}</b><span class="chip">${escapeHtml(modes.find((mode) => mode.slug === preset.mode)?.name || preset.mode)}</span>${preset.tools ? '<span class="badge">limited tools</span>' : ''}
+          </div><div class="lib-actions">${installButtons('agent', preset.id, preset.installed)}</div></div>
+        <div class="muted small">${escapeHtml(preset.description)}</div>
+      </div>`).join('')}`;
+}
+
+function skillsTabHtml(library: LibraryState): string {
+  const installed = library.skills.filter((skill) => matchesQuery(skill.name, skill.description));
+  const catalog = library.skillPresets.filter((preset) => matchesQuery(preset.id, preset.description, preset.tags.join(' ')));
+  const notInstalled = library.skillPresets.filter((preset) => !preset.installed).length;
+  const form = libraryForm === 'skill' ? `
+    <div class="lib-form">
+      <div class="section-title">New skill</div>
+      ${formField('name', 'Name', textInput('name', 'e.g. go-conventions'), 'a-z 0-9 - _')}
+      ${formField('description', 'When to use', textInput('description', 'The agent loads the skill when this matches the task'))}
+      ${formField('body', 'Instructions (SKILL.md)', textArea('body', 8, '# Title\n1. …\n2. …'))}
+      ${formField('scope', 'Install to', scopeSelect())}
+      <div class="form-actions"><button class="btn ghost small" data-action="lib-cancel">Cancel</button><button class="btn primary small" data-action="lib-submit-skill">Create skill</button></div>
+    </div>` : '';
+  return `
+    <div class="lib-toolbar"><span class="muted small">Skills are instructions the agent loads on demand (<code>skills/&lt;name&gt;/SKILL.md</code>, Claude Code compatible).</span><span class="spacer"></span>
+      ${libraryForm === 'skill' ? '' : `<button class="btn primary small" data-lib-form="skill">${icons.plus} Create</button>`}</div>
+    ${form}
+    <div class="section-title">Installed <span class="muted">(${library.skills.length})</span></div>
+    ${installed.length === 0 ? '<div class="empty-inline muted">No skills yet. Install one from the catalog below.</div>' : installed.map((skill) => `
+      <div class="lib-card">
+        <div class="lib-card-top"><div class="lib-title">${icons.skill}<b>${escapeHtml(skill.name)}</b><span class="badge">${SCOPE_LABEL[skill.scope]}</span></div><div class="lib-actions">
+          <button class="icon-btn" data-lib-open="${escapeHtml(skill.file)}" title="Open SKILL.md">${icons.edit}</button>
+          <button class="icon-btn" data-lib-remove="skill" data-file="${escapeHtml(skill.file)}" data-name="${escapeHtml(skill.name)}" title="Delete">${icons.trash}</button></div></div>
+        <div class="muted small">${escapeHtml(skill.description)}</div>
+      </div>`).join('')}
+    <div class="section-title">Catalog <span class="muted">(${library.skillPresets.length})</span><span class="spacer"></span>
+      ${notInstalled > 0 ? `<button class="btn ghost small" data-action="install-all-skills">Install all ${library.workspace ? 'to project' : 'globally'}</button>` : ''}</div>
+    ${catalog.map((preset) => `
+      <div class="lib-card">
+        <div class="lib-card-top"><div class="lib-title">${icons.skill}<b>${escapeHtml(preset.id)}</b>${preset.tags.map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`).join('')}</div><div class="lib-actions">${installButtons('skill', preset.id, preset.installed)}</div></div>
+        <div class="muted small">${escapeHtml(preset.description)}</div>
+      </div>`).join('')}`;
+}
+
+function renderLibrary(): void {
+  const el = $('view-library');
+  const library = state?.library;
+  libraryKey = JSON.stringify(library || null);
+  if (!library) {
+    el.innerHTML = `<div class="view-header"><button class="icon-btn" data-action="chat">${icons.chevronLeft}</button><h3>Agents, Skills & Presets</h3></div><div class="empty muted">Loading…</div>`;
+    return;
+  }
+  const counts: Record<string, number> = { presets: library.taskPresets.length, agents: library.agents.length, skills: library.skills.length };
+  const body = libraryTab === 'presets' ? presetsTabHtml(library) : libraryTab === 'agents' ? agentsTabHtml(library) : skillsTabHtml(library);
+  el.innerHTML = `
+    <div class="view-header"><button class="icon-btn" data-action="chat">${icons.chevronLeft}</button><h3>Agents, Skills & Presets</h3><span class="spacer"></span><button class="btn primary small" data-action="chat">Done</button></div>
+    <div class="lib-tabs">${LIBRARY_TABS.map(([id, label, icon]) => `<button class="lib-tab ${libraryTab === id ? 'active' : ''}" data-lib-tab="${id}">${icons[icon]}<span>${label}</span><span class="count">${counts[id]}</span></button>`).join('')}</div>
+    <div class="view-body">
+      ${!library.workspace ? `<div class="notice info">${icons.folder}<div>No folder open: items are installed globally (~/.perplexicode). Open a folder to install per project.</div></div>` : ''}
+      <input class="search" id="library-search" placeholder="Filter…" value="${escapeHtml(libraryQuery)}">
+      ${body}
+    </div>`;
+}
+
+function submitLibraryForm(kind: 'agent' | 'skill' | 'preset'): void {
+  if (kind === 'preset') {
+    post({ type: 'savePreset', title: formValues.title || '', description: formValues.description || '', mode: formValues.mode || 'code', agent: formValues.agent || undefined, prompt: formValues.prompt || '', scope: formValues.scope || 'user' });
+    libraryForm = undefined;
+    for (const key of Object.keys(formValues)) delete formValues[key];
+    renderLibrary();
+    return;
+  }
+  if (!(formValues.name || '').trim() || !(formValues.description || '').trim() || !(formValues.body || '').trim()) {
+    showToast('Name, description and instructions are required');
+    return;
+  }
+  post({ type: 'createLibraryItem', kind, name: formValues.name, description: formValues.description, body: formValues.body, tools: formValues.tools || '', mode: formValues.mode || '', model: formValues.model || '', scope: formValues.scope || 'project' });
+}
+
+function setView(next: ViewName): void {
   view = next;
   $('view-chat').classList.toggle('hidden', view !== 'chat');
   $('view-history').classList.toggle('hidden', view !== 'history');
   $('view-settings').classList.toggle('hidden', view !== 'settings');
+  $('view-library').classList.toggle('hidden', view !== 'library');
   if (view === 'history') renderHistory();
   if (view === 'settings') renderSettings();
+  if (view === 'library') { post({ type: 'refreshLibrary' }); renderLibrary(); }
   if (view === 'chat') input.focus();
 }
 
@@ -973,7 +1318,7 @@ function setView(next: 'chat' | 'history' | 'settings'): void {
 
 document.addEventListener('click', (event) => {
   const target = event.target as HTMLElement;
-  const el = target.closest('[data-action],[data-mode],[data-model],[data-toggle],[data-toggle-tool],[data-copy],[data-insert],[data-url],[data-file],[data-restore],[data-suggest],[data-ask-primary],[data-ask-secondary],[data-open-task],[data-delete-task],[data-export-task],[data-tab],[data-slash],[data-mention],[data-remove-account],[data-toggle-account],[data-run],#more-models,#mode-btn,#model-btn,#web-btn,#enhance-btn,#send-btn,#task-title-toggle,#task-export,#task-close,#todos-toggle,#aa-toggle') as HTMLElement | null;
+  const el = target.closest('[data-action],[data-mode],[data-model],[data-toggle],[data-toggle-tool],[data-copy],[data-insert],[data-url],[data-file],[data-restore],[data-suggest],[data-ask-primary],[data-ask-secondary],[data-open-task],[data-delete-task],[data-export-task],[data-tab],[data-slash],[data-mention],[data-remove-account],[data-toggle-account],[data-run],[data-preset],[data-preset-delete],[data-install],[data-install-bundle],[data-lib-open],[data-lib-remove],[data-lib-tab],[data-lib-form],[data-agent-pick],[data-clear-chip],#more-models,#mode-btn,#model-btn,#web-btn,#enhance-btn,#send-btn,#task-title-toggle,#task-export,#task-close,#todos-toggle,#aa-toggle') as HTMLElement | null;
 
   if (!target.closest('#model-menu') && !target.closest('#model-btn') && modelMenuOpen) {
     modelMenuOpen = false;
@@ -1071,6 +1416,40 @@ document.addEventListener('click', (event) => {
   if (data.slash) { applySlash(data.slash, ''); slashState = undefined; renderPopup(); input.focus(); return; }
   if (data.mention) { insertMention(data.mention); return; }
   if (data.removeAccount) { post({ type: 'removeAccount', id: data.removeAccount }); return; }
+  if (data.presetDelete) { post({ type: 'deletePreset', id: data.presetDelete, source: data.source }); return; }
+  if (data.preset) { selectPreset(data.preset); return; }
+  if (data.install) { post({ type: 'installPreset', kind: data.install, id: data.id, scope: data.scope }); return; }
+  if (data.installBundle) {
+    const preset = state?.library?.taskPresets.find((entry) => entry.id === data.installBundle);
+    if (preset) post({ type: 'installPresetBundle', agents: preset.missing.agents, skills: preset.missing.skills, scope: state?.library?.workspace ? 'project' : 'user' });
+    return;
+  }
+  if (data.libOpen) { post({ type: 'openLibraryFile', file: data.libOpen }); return; }
+  if (data.libRemove) { post({ type: 'removeLibraryItem', kind: data.libRemove, file: data.file, name: data.name }); return; }
+  if (data.libTab) { libraryTab = data.libTab as LibraryTab; libraryForm = undefined; renderLibrary(); return; }
+  if (data.libForm) {
+    libraryForm = data.libForm as typeof libraryForm;
+    for (const key of Object.keys(formValues)) delete formValues[key];
+    if (libraryForm === 'preset' && input.value.trim()) formValues.prompt = input.value.trim();
+    renderLibrary();
+    return;
+  }
+  if (data.agentPick) {
+    if (state?.task) post({ type: 'clearTask' });
+    activeAgent = activeAgent === data.agentPick ? undefined : data.agentPick;
+    activePreset = undefined;
+    modeMenuOpen = false;
+    setView('chat');
+    renderComposer();
+    input.focus();
+    return;
+  }
+  if (data.clearChip) {
+    if (data.clearChip === 'preset') activePreset = undefined; else activeAgent = undefined;
+    renderWelcome();
+    renderComposer();
+    return;
+  }
   if (data.toggleAccount) { post({ type: 'toggleAccount', id: data.toggleAccount }); return; }
 
   switch (data.action) {
@@ -1085,6 +1464,21 @@ document.addEventListener('click', (event) => {
     case 'clearTask': post({ type: 'clearTask' }); break;
     case 'resume': post({ type: 'sendMessage', text: input.value.trim() || 'Continue the task from where you left off.' }); input.value = ''; saveDraft(); break;
     case 'openSettingsJson': post({ type: 'openSettingsJson' }); break;
+    case 'library-presets': libraryTab = 'presets'; setView('library'); break;
+    case 'library-agents': libraryTab = 'agents'; modeMenuOpen = false; setView('library'); break;
+    case 'lib-cancel': libraryForm = undefined; renderLibrary(); break;
+    case 'lib-submit-preset': submitLibraryForm('preset'); break;
+    case 'lib-submit-agent': submitLibraryForm('agent'); break;
+    case 'lib-submit-skill': submitLibraryForm('skill'); break;
+    case 'install-starter':
+      post({ type: 'installPresetBundle', agents: ['code-reviewer', 'test-writer', 'debugger', 'explorer'], skills: ['commit-message', 'write-tests', 'debug-playbook'], scope: state?.workspace ? 'project' : 'user' });
+      break;
+    case 'install-all-agents':
+      post({ type: 'installPresetBundle', agents: (state?.library?.agentPresets || []).filter((entry) => !entry.installed).map((entry) => entry.id), skills: [], scope: state?.library?.workspace ? 'project' : 'user' });
+      break;
+    case 'install-all-skills':
+      post({ type: 'installPresetBundle', agents: [], skills: (state?.library?.skillPresets || []).filter((entry) => !entry.installed).map((entry) => entry.id), scope: state?.library?.workspace ? 'project' : 'user' });
+      break;
     default: break;
   }
 });
@@ -1096,6 +1490,10 @@ document.addEventListener('change', (event) => {
     return;
   }
   const data = target.dataset;
+  if (data.formField) {
+    formValues[data.formField] = target.value;
+    return;
+  }
   if (data.setting) {
     post({ type: 'updateSetting', key: data.setting, value: (target as HTMLInputElement).checked });
   } else if (data.settingNumber) {
@@ -1115,6 +1513,19 @@ document.addEventListener('change', (event) => {
 
 document.addEventListener('input', (event) => {
   const target = event.target as HTMLInputElement;
+  if (target.dataset.formField) {
+    formValues[target.dataset.formField] = target.value;
+    return;
+  }
+  if (target.id === 'library-search') {
+    libraryQuery = target.value;
+    const caret = target.selectionStart;
+    renderLibrary();
+    const search = $<HTMLInputElement>('library-search');
+    search.focus();
+    if (caret !== null) search.setSelectionRange(caret, caret);
+    return;
+  }
   if (target.id === 'history-search') {
     historyQuery = target.value;
     const caret = target.selectionStart;
@@ -1146,7 +1557,7 @@ input.addEventListener('keydown', (event) => {
       event.preventDefault();
       if (slashState?.items.length) {
         const entry = slashState.items[slashState.index];
-        const rest = input.value.replace(/^\/\w*/, '').trim();
+        const rest = input.value.replace(/^\/[\w-]*/, '').trim();
         slashState = undefined;
         applySlash(entry.value, rest);
         renderPopup();

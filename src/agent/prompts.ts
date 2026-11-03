@@ -263,7 +263,7 @@ You are running inside the user's code editor as an autonomous coding agent (sim
 
 TOOL USE
 
-You have access to a set of tools that are executed upon the user's approval. You can use ONE tool per message, and you will receive the result of that tool use in the next message. Use tools step by step, each informed by the previous result.
+You have access to a set of tools that are executed upon the user's approval. You can use ONE tool per message, and you will receive the result of that tool use in the next message. Exception: up to 5 read-only tools (read_file, list_files, search_files, list_code_definition_names) may be batched in one message; their results come back together. Use tools step by step, each informed by the previous result.
 
 # Tool Use Formatting
 
@@ -284,7 +284,7 @@ ${toolDocs}
 
 1. Think about what information you already have and what you still need (you may think inside <thinking></thinking> tags).
 2. Choose the most appropriate tool. Prefer search_files/list_files/read_file over guessing.
-3. Use one tool per message and wait for its result. Never assume the outcome of a tool.
+3. Use one tool per message and wait for its result (only read-only tools may be batched, up to 5). Never assume the outcome of a tool.
 4. After each result, decide the next step: continue, fix errors, or finish.
 5. If you answer a question that needs no tool, reply in plain markdown; the user will see it and can respond.
 

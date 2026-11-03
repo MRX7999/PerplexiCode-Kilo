@@ -43,7 +43,13 @@ export interface ParsedAssistantMessage {
   tool?: ParsedToolUse;
   /** Number of extra tool calls after the first one (they are ignored, one tool per turn). */
   ignoredToolCount: number;
+  /** Complete read-only tool calls that directly follow a read-only first tool (3.0 batching). */
+  readBatch?: ParsedToolUse[];
+  /** The text the offsets refer to (differs from the raw answer when entities were decoded). */
+  source?: string;
 }
+
+const READ_ONLY_TOOLS = new Set(['read_file', 'list_files', 'search_files', 'list_code_definition_names']);
 
 export function parseAssistantMessage(raw: string, options: { partial?: boolean } = {}): ParsedAssistantMessage {
   let source = raw;
@@ -66,16 +72,64 @@ export function parseAssistantMessage(raw: string, options: { partial?: boolean 
   const rest = tool.partial ? '' : source.slice(tool.end);
   const ignoredToolCount = tool.partial ? 0 : countTools(rest);
 
+  const readBatch: ParsedToolUse[] = [];
+  if (!tool.partial && READ_ONLY_TOOLS.has(tool.name)) {
+    let cursor = tool.end;
+    while (readBatch.length < 9) {
+      const next = findFirstTool(source.slice(cursor));
+      if (!next || !READ_ONLY_TOOLS.has(next.name)) {
+        break;
+      }
+      // Only whitespace or short prose may separate batched calls.
+      const gap = source.slice(cursor, cursor + next.index);
+      if (gap.trim().length > 200) {
+        break;
+      }
+      const extra = extractTool(source, next.name, cursor + next.index);
+      if (extra.partial) {
+        break;
+      }
+      readBatch.push(extra);
+      cursor = extra.end;
+    }
+  }
+
   return {
     text: cleanupProse(text),
     reasoning,
     tool,
     ignoredToolCount,
+    readBatch,
+    source,
   };
+}
+
+/**
+ * Ranges covered by <thinking>…</thinking> (an unclosed block runs to the end). Thinking models
+ * often draft the tool call inside their reasoning; such drafts must never be parsed as the call,
+ * otherwise the draft's opening tag and the real closing tag merge into one doubled value
+ * (e.g. a todo list with every item twice).
+ */
+function thinkingRanges(source: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  let from = 0;
+  while (true) {
+    const open = source.indexOf('<thinking>', from);
+    if (open === -1) {
+      break;
+    }
+    const close = source.indexOf('</thinking>', open);
+    const end = close === -1 ? source.length : close + '</thinking>'.length;
+    ranges.push([open, end]);
+    from = end;
+  }
+  return ranges;
 }
 
 function findFirstTool(source: string): { name: string; index: number } | undefined {
   let best: { name: string; index: number } | undefined;
+  const thinking = thinkingRanges(source);
+  const insideThinking = (index: number) => thinking.some(([from, to]) => index >= from && index < to);
   for (const name of TOOL_NAMES) {
     const regex = new RegExp(`<${name}>`, 'g');
     let match: RegExpExecArray | null;
@@ -84,6 +138,9 @@ function findFirstTool(source: string): { name: string; index: number } | undefi
       const prev = source[match.index - 1];
       const next = source[match.index + match[0].length];
       if (prev === '`' && next === '`') {
+        continue;
+      }
+      if (insideThinking(match.index)) {
         continue;
       }
       if (!best || match.index < best.index) {
@@ -249,17 +306,36 @@ export interface TodoItem {
   status: 'pending' | 'in_progress' | 'completed';
 }
 
-/** Parses a markdown checklist: [ ] pending, [-] in progress, [x] completed. */
+const STATUS_RANK: Record<TodoItem['status'], number> = { pending: 0, in_progress: 1, completed: 2 };
+
+/**
+ * Parses a markdown checklist: [ ] pending, [-] in progress, [x] completed.
+ * Items with the same text are merged (first position, most advanced status): a repeated block
+ * from a streaming glitch or a model echo must not show every step twice.
+ */
 export function parseTodos(markdown: string): TodoItem[] {
-  return markdown
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .map((line) => line.match(/^(?:[-*]\s*)?\[([ xX\-~])\]\s*(.+)$/))
-    .filter((match): match is RegExpMatchArray => Boolean(match))
-    .map((match) => ({
-      text: match[2].trim(),
-      status: match[1] === ' ' ? 'pending' : (match[1] === '-' || match[1] === '~') ? 'in_progress' : 'completed',
-    }));
+  const items: TodoItem[] = [];
+  const byKey = new Map<string, TodoItem>();
+  for (const line of markdown.split(/\r?\n/)) {
+    const match = line.trim().match(/^(?:[-*]\s*|\d+[.)]\s*)?\[([ xX\-~])\]\s*(.+)$/);
+    if (!match) {
+      continue;
+    }
+    const text = match[2].trim();
+    const status: TodoItem['status'] = match[1] === ' ' ? 'pending' : (match[1] === '-' || match[1] === '~') ? 'in_progress' : 'completed';
+    const key = text.toLowerCase().replace(/\s+/g, ' ');
+    const existing = byKey.get(key);
+    if (existing) {
+      if (STATUS_RANK[status] > STATUS_RANK[existing.status]) {
+        existing.status = status;
+      }
+      continue;
+    }
+    const item = { text, status };
+    byKey.set(key, item);
+    items.push(item);
+  }
+  return items;
 }
 
 export function formatTodos(todos: TodoItem[]): string {
