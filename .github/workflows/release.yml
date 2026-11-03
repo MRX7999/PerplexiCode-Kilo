@@ -1,8 +1,9 @@
 name: Release
 
 # Push a tag like v2.0.1 (or run manually with a tag) to build the VSIX,
-# attach it to a GitHub release and, when the secrets are set, publish it to
-# Open VSX (OVSX_PAT) and the VS Code Marketplace (VSCE_PAT).
+# attach it to a GitHub release and publish it to Open VSX (secret OVSX_PAT)
+# and the VS Code Marketplace (Trusted Publishing over GitHub OIDC, no secret;
+# needs a policy for this repo and release.yml on the MRX7999 publisher).
 on:
   push:
     tags: ['v*']
@@ -14,6 +15,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write   # OIDC token for VS Code Marketplace Trusted Publishing
 
 jobs:
   release:
@@ -77,8 +79,14 @@ jobs:
           npx --yes ovsx@1.3.0 publish --packagePath "perplexicode-$VERSION.vsix" -p "$OVSX_PAT" --skip-duplicate
 
       - name: Publish to VS Code Marketplace
+        # A Marketplace failure must not undo the GitHub / Open VSX release.
+        continue-on-error: true
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
         run: |
-          if [ -z "$VSCE_PAT" ]; then echo "VSCE_PAT not set, skipping"; exit 0; fi
-          npx vsce publish --packagePath "perplexicode-$VERSION.vsix" --skip-duplicate
+          if [ -n "$VSCE_PAT" ]; then
+            npx --yes @vscode/vsce@4.1.0 publish --packagePath "perplexicode-$VERSION.vsix" --skip-duplicate
+          else
+            unset VSCE_PAT
+            npx --yes @vscode/vsce@4.1.0 publish --oidc --packagePath "perplexicode-$VERSION.vsix" --skip-duplicate
+          fi
