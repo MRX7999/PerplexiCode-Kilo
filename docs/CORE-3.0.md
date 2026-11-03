@@ -165,6 +165,24 @@ Built-in mode names (`code`, `ask`, …) cannot be redefined.
 Skills live at `<dir>/<name>/SKILL.md` under `.perplexicode/skills`, `.claude/skills` and `~/...`. The agent sees
 the list and reads a skill file when the task matches. Reading these files is always allowed.
 
+### Catalog and task presets (3.1)
+
+`src/core/library.ts` holds the built-in catalog: 8 subagents, 8 skills and 10 task presets. `pcode agents add <id...> [-g]` and
+`pcode skills add <id...> [-g]` write the catalog files. Existing files are never overwritten, and names are checked so nothing is
+written outside the target folder. The VS Code view does the same.
+
+A task preset is JSON:
+
+```json
+{ "id": "fix-bug", "title": "Fix a bug", "mode": "debug", "agent": "debugger",
+  "prompt": "Reproduce, find the root cause and fix: {{input}}", "inputRequired": true,
+  "requires": { "agents": ["debugger"], "skills": ["debug-playbook"] } }
+```
+
+Sources are merged by `id`. Later sources override earlier ones in this order: built-in → `~/.perplexicode/presets.json` →
+`perplexicodeKilo.taskPresets` → `.perplexicode/presets.json`. `pcode --preset <id> -p "<input>"` runs a preset, and
+`pcode --agent <name>` runs the whole root task as a subagent, with its prompt and tool list.
+
 Memory files are `CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md`, `PERPLEXICODE.md`,
 `~/.claude/CLAUDE.md` and `~/.perplexicode/PERPLEXICODE.md`. `@path` imports are followed up to 4 levels deep.
 

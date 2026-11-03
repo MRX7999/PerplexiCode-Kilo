@@ -8,6 +8,7 @@ import type { AgentTask, AskResponse, CompletionProvider } from '../agent/task';
 import type { AgentSettings, UiMessage } from '../agent/types';
 import { getModelById, getModelCatalog, getModelLabel } from '../api/modelCatalog';
 import { loadSkills, loadSubagents } from '../core/agents';
+import { applyPresetPrompt, installAgentPreset, installSkillPreset, librarySnapshot, loadTaskPresets } from '../core/library';
 import { listSessions, perplexicodeHome, sessionsDir } from '../core/journal';
 import { cliStores, parseCookieInput } from '../core/nodeStores';
 import { OpenAICompatibleProvider, openAIOptionsFromEnv } from '../core/openaiProvider';
@@ -23,7 +24,7 @@ const VERSION: string = (() => {
   try {
     return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version;
   } catch {
-    return '3.0.0';
+    return '3.1.0';
   }
 })();
 
@@ -44,6 +45,9 @@ export interface CliOptions {
   model?: string;
   thinking: boolean;
   mode: string;
+  preset?: string;
+  agent?: string;
+  global: boolean;
   continue: boolean;
   resume?: string;
   cwd: string;
@@ -58,7 +62,7 @@ export interface CliOptions {
   version: boolean;
 }
 
-const SUBCOMMANDS = new Set(['login', 'logout', 'accounts', 'sessions', 'models', 'agents', 'skills', 'doctor', 'help', 'version']);
+const SUBCOMMANDS = new Set(['login', 'logout', 'accounts', 'sessions', 'models', 'agents', 'skills', 'presets', 'doctor', 'help', 'version']);
 
 function splitRules(value: string): string[] {
   // "Bash(npm test:*),Read Edit" → ["Bash(npm test:*)", "Read", "Edit"]; commas/spaces inside (...) are kept.
@@ -88,6 +92,7 @@ export function parseArgs(argv: string[]): CliOptions {
     disallowedTools: [],
     thinking: false,
     mode: 'code',
+    global: false,
     continue: false,
     cwd: process.cwd(),
     provider: (process.env.PCODE_PROVIDER as 'perplexity' | 'openai') || 'perplexity',
@@ -139,6 +144,9 @@ export function parseArgs(argv: string[]): CliOptions {
         options.mode = v;
         break;
       }
+      case '--preset': options.preset = value(); break;
+      case '--agent': options.agent = value(); break;
+      case '-g': case '--global': options.global = true; break;
       case '-c': case '--continue': options.continue = true; break;
       case '-r': case '--resume': {
         const next = inline ?? argv[i + 1];
@@ -199,6 +207,8 @@ Options:
   --max-turns <n>             model requests before stopping; 0 = unlimited
   -m, --model <id>            model id (pcode models); --thinking for the thinking variant
   --mode <slug>               code | architect | ask | debug | orchestrator | review
+  --preset <id>               task preset (pcode presets): sets mode, subagent and prompt template
+  --agent <name>              run the task as an installed subagent
   --provider <p>              perplexity (your Pro/Max session) | openai (OpenAI-compatible, e.g. Ollama)
   --web / --no-web            force web search on/off
   --cwd <dir>                 workspace folder (default: current)
@@ -213,6 +223,10 @@ Commands:
   pcode sessions                           saved sessions of this folder
   pcode models                             available model ids
   pcode agents | skills                    subagents / skills found for this folder
+  pcode agents catalog | skills catalog    built-in presets you can install
+  pcode agents add <id...> [-g]            install subagent presets (project; -g = ~/.perplexicode)
+  pcode skills add <id...> [-g]            install skill presets
+  pcode presets                            task presets (built-in, ~/.perplexicode/presets.json, project)
   pcode doctor                             environment and configuration check
 
 Settings: ~/.claude/settings.json, ~/.perplexicode/settings.json, .claude/settings.json,
@@ -406,6 +420,7 @@ async function buildSession(options: CliOptions, ui: SessionUi): Promise<Session
     agentSettings: agentSettings(options),
     selection: { baseModelId: modelId, thinking: options.thinking, webSearch: options.web },
     mode: options.mode,
+    agent: options.agent,
     permissionMode: options.permissionMode,
     settings,
     extraAllow,
@@ -904,7 +919,62 @@ function cmdModels(): number {
   return 0;
 }
 
+function cmdLibraryAdd(kind: 'agent' | 'skill', options: CliOptions): number {
+  const ids = options.args.slice(1);
+  if (ids.length === 0) {
+    out(`usage: pcode ${kind}s add <id...> [-g]. See pcode ${kind}s catalog.`);
+    return 64;
+  }
+  const scope = options.global ? 'user' : 'project';
+  let failed = 0;
+  for (const id of ids) {
+    try {
+      const result = kind === 'agent' ? installAgentPreset(id, scope, { cwd: options.cwd }) : installSkillPreset(id, scope, { cwd: options.cwd });
+      out(`${green('✔')} ${id} → ${result.file}`);
+    } catch (error) {
+      failed++;
+      out(`${(error as NodeJS.ErrnoException).code === 'EEXIST' ? yellow('!') : red('✖')} ${id}: ${(error as Error).message}`);
+    }
+  }
+  return failed ? 1 : 0;
+}
+
+function cmdCatalog(kind: 'agent' | 'skill', options: CliOptions): number {
+  const snapshot = librarySnapshot({ cwd: options.cwd });
+  const rows = kind === 'agent' ? snapshot.agentPresets : snapshot.skillPresets;
+  for (const row of rows) {
+    process.stdout.write(`${row.id}\t${row.installed || '-'}\t${row.description}\n`);
+  }
+  return 0;
+}
+
+function cmdPresets(options: CliOptions): number {
+  for (const preset of loadTaskPresets({ cwd: options.cwd })) {
+    process.stdout.write(`${preset.id}\t${preset.mode}\t${preset.agent ? `@${preset.agent}` : '-'}\t${preset.source}\t${preset.title}\n`);
+  }
+  return 0;
+}
+
+/** Applies --preset: mode, subagent and prompt template (installing missing presets is explicit). */
+function applyPresetOption(options: CliOptions): void {
+  if (!options.preset) return;
+  const preset = loadTaskPresets({ cwd: options.cwd }).find((entry) => entry.id === options.preset);
+  if (!preset) throw new Error(`Unknown preset '${options.preset}'. Run \`pcode presets\`.`);
+  options.mode = preset.mode;
+  options.agent = options.agent || preset.agent;
+  if (!options.continue && !options.resume) {
+    options.prompt = applyPresetPrompt(preset, options.prompt || '');
+  }
+  const installed = new Set(loadSubagents(options.cwd).map((agent) => agent.name));
+  const missing = [...(preset.requires?.agents || []), ...(preset.agent ? [preset.agent] : [])].filter((name, index, list) => list.indexOf(name) === index && !installed.has(name));
+  if (missing.length > 0) {
+    out(dim(`preset '${preset.id}' works best with: ${missing.join(', ')} (pcode agents add ${missing.join(' ')})`));
+  }
+}
+
 function cmdAgents(options: CliOptions): number {
+  if (options.args[0] === 'add') return cmdLibraryAdd('agent', options);
+  if (options.args[0] === 'catalog') return cmdCatalog('agent', options);
   const agents = loadSubagents(options.cwd);
   if (agents.length === 0) out(dim('No subagents. Add .perplexicode/agents/<name>.md or .claude/agents/<name>.md.'));
   for (const a of agents) process.stdout.write(`${a.name}\t${a.scope}\t${a.mode}\t${a.tools ? a.tools.join(',') : '*'}\t${a.description}\n`);
@@ -912,6 +982,8 @@ function cmdAgents(options: CliOptions): number {
 }
 
 function cmdSkills(options: CliOptions): number {
+  if (options.args[0] === 'add') return cmdLibraryAdd('skill', options);
+  if (options.args[0] === 'catalog') return cmdCatalog('skill', options);
   const skills = loadSkills(options.cwd);
   if (skills.length === 0) out(dim('No skills. Add .perplexicode/skills/<name>/SKILL.md or .claude/skills/<name>/SKILL.md.'));
   for (const k of skills) process.stdout.write(`${k.name}\t${k.scope}\t${k.description}\n`);
@@ -971,9 +1043,11 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       case 'sessions': return cmdSessions(options);
       case 'models': return cmdModels();
       case 'agents': return cmdAgents(options);
+      case 'presets': return cmdPresets(options);
       case 'skills': return cmdSkills(options);
       case 'doctor': return await cmdDoctor(options);
       default:
+        applyPresetOption(options);
         if (options.print || !process.stdin.isTTY || !process.stderr.isTTY) {
           options.print = true;
           return await runHeadless(options);

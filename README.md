@@ -17,9 +17,9 @@ Plan, write, run and debug code with GPT-6.1 Sol, Claude Opus 5.5, Gemini 4 Argo
 [![Antigravity IDE](https://img.shields.io/badge/Antigravity%20IDE-supported-4285f4)](https://antigravity.google/download)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-[Install](#install) · [Features](#features) · [Models](#models) · [Modes](#modes) · [Commands](#commands-and-shortcuts) · [Settings](#settings) · [Build](#build-from-source) · [FAQ](#troubleshooting)
+[Install](#install) · [Features](#features) · [Agents, Skills & Presets](#31-agents-skills--presets) · [Models](#models) · [Modes](#modes) · [Commands](#commands-and-shortcuts) · [Settings](#settings) · [Build](#build-from-source) · [FAQ](#troubleshooting)
 
-<img src="docs/images/hero.png" alt="PerplexiCode welcome screen, model picker, agent task and diff approval" width="100%" />
+<img src="docs/images/hero.png" alt="PerplexiCode welcome screen with task presets, preset library, subagents and a task run by a subagent" width="100%" />
 
 </div>
 
@@ -128,14 +128,26 @@ Sessions are kept in the editor's [SecretStorage](https://code.visualstudio.com/
 | **History** | Searchable task history; reopen, delete or export past tasks. |
 | **Commit messages** | Generates a commit message from staged changes in the Source Control view. |
 | **Multi-account** | Several Perplexity accounts with quota display and automatic failover. |
+| **Agents, Skills & Presets** (3.1) | One-click subagents and skills from a built-in catalog, and task presets that set the mode, subagent and prompt for common jobs. See [below](#31-agents-skills--presets). |
+| **`pcode` CLI** (3.0) | The same agent core in the terminal, Claude Code style. See [3.0](#30-headless-core--pcode-cli). |
 
 ### Screenshots
 
 <table>
   <tr>
+    <td align="center"><img src="docs/images/welcome.png" width="260" alt="Welcome" /><br /><sub>Welcome screen with Quick start presets</sub></td>
+    <td align="center"><img src="docs/images/presets.png" width="260" alt="Task presets" /><br /><sub>Task presets: mode + subagent + prompt</sub></td>
+    <td align="center"><img src="docs/images/subagents.png" width="260" alt="Subagents" /><br /><sub>Installed subagents and the catalog</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/images/skills.png" width="260" alt="Skills" /><br /><sub>Skills (<code>SKILL.md</code>, Claude Code compatible)</sub></td>
+    <td align="center"><img src="docs/images/create-agent.png" width="260" alt="Create subagent" /><br /><sub>Create your own subagent</sub></td>
+    <td align="center"><img src="docs/images/task-with-agent.png" width="260" alt="Task run by a subagent" /><br /><sub>Task run by <code>@debugger</code></sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/images/modes.png" width="260" alt="Mode menu" /><br /><sub>Modes and subagents (<code>Cmd+.</code> cycles modes)</sub></td>
+    <td align="center"><img src="docs/images/preset-run.png" width="260" alt="Preset selected" /><br /><sub>Preset chip in the composer</sub></td>
     <td align="center"><img src="docs/images/model-picker.png" width="260" alt="Model picker" /><br /><sub>Model picker with Max badges and Thinking toggle</sub></td>
-    <td align="center"><img src="docs/images/more-models.png" width="260" alt="More models" /><br /><sub>77 more models</sub></td>
-    <td align="center"><img src="docs/images/modes.png" width="260" alt="Mode menu" /><br /><sub>Modes (<code>Cmd+.</code> cycles)</sub></td>
   </tr>
   <tr>
     <td align="center"><img src="docs/images/agent-task.png" width="260" alt="Agent task" /><br /><sub>Agent task with todo list, tools and checkpoints</sub></td>
@@ -145,11 +157,40 @@ Sessions are kept in the editor's [SecretStorage](https://code.visualstudio.com/
   <tr>
     <td align="center"><img src="docs/images/mentions.png" width="260" alt="Mentions" /><br /><sub><code>@</code> mentions</sub></td>
     <td align="center"><img src="docs/images/settings.png" width="260" alt="Settings" /><br /><sub>Accounts, models, auto-approve, terminal, context, prompts</sub></td>
-    <td align="center"><img src="docs/images/welcome.png" width="260" alt="Welcome" /><br /><sub>Welcome screen and recent tasks</sub></td>
+    <td align="center"><img src="docs/images/history.png" width="260" alt="History" /><br /><sub>Task history</sub></td>
   </tr>
 </table>
 
 <sub>Screenshots are rendered from the test fixture (`npm run test:webview`) with sample data.</sub>
+
+---
+
+## 3.1: Agents, Skills & Presets
+
+Set up subagents and skills from the UI and start common jobs in one click.
+
+| Where | What you get |
+| --- | --- |
+| **Welcome screen** | A **Quick start** grid with presets (Review my changes, Fix a bug, Write tests, Build a feature, Explain this project, Security audit). The strip below it shows how many subagents and skills are installed and has **Install starter pack**. |
+| **Library button** in the view title (or **PerplexiCode: Agents, Skills & Presets**) | Three tabs. **Task presets**: built-in and your own. **Subagents**: installed ones (open, delete, Start task) and a catalog of 8 (`code-reviewer`, `test-writer`, `debugger`, `security-auditor`, `docs-writer`, `refactorer`, `explorer`, `planner`) that you install into the project or globally. **Skills**: 8 catalog skills (`commit-message`, `code-review-checklist`, `write-tests`, `security-audit`, `debug-playbook`, `api-design`, `release-checklist`, `readme-writer`). Each tab has a form for creating your own items. |
+| **Mode menu** | A **Subagents** section: pick `@debugger` and the whole task runs as that subagent, with its prompt and tool list. |
+| **Composer** | `/presets`, `/agents`, `/skills` and `/<preset-id>` in the slash menu. The selected preset or agent appears as a chip. |
+| **Command palette** | **PerplexiCode: Run Task Preset…**. |
+
+A preset sets the mode, subagent and prompt template (`{{input}}` is replaced with what you type). If the preset needs a subagent or skill that isn't installed, PerplexiCode offers to install it into the project or globally, or to run without it.
+
+Files are standard: subagents go to `.perplexicode/agents/<name>.md` (`~/.perplexicode/agents` for global), skills go to `.perplexicode/skills/<name>/SKILL.md`. Your own presets are stored in `.perplexicode/presets.json`, `~/.perplexicode/presets.json` or the `perplexicodeKilo.taskPresets` setting. Later sources override earlier ones in this order: built-in → global file → setting → project file.
+
+The same actions in the terminal:
+
+```bash
+pcode agents catalog                 # list catalog subagents
+pcode agents add code-reviewer debugger    # into .perplexicode/agents (-g for global)
+pcode skills add commit-message -g
+pcode presets                        # list task presets
+pcode --preset fix-bug -p "login returns 500"
+pcode --agent security-auditor -p "audit src/auth"
+```
 
 ---
 

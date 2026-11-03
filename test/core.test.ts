@@ -7,7 +7,8 @@ import * as path from 'path';
 import type { AskResponse, CompletionProvider } from '../src/agent/task';
 import type { CompletionRequest, CompletionResult } from '../src/agent/transport';
 import type { AgentSettings, UiMessage } from '../src/agent/types';
-import { parseAssistantMessage } from '../src/agent/toolParser';
+import { parseAssistantMessage, parseTodos } from '../src/agent/toolParser';
+import { AGENT_PRESETS, applyPresetPrompt, BUILTIN_TASK_PRESETS, createCustomAgent, createCustomSkill, installAgentPreset, installSkillPreset, librarySnapshot, loadTaskPresets, removeLibraryItem, savePresetToFile, SKILL_PRESETS } from '../src/core/library';
 import { formatSessionContext, loadMemory, loadSkills, loadSubagents, parseFrontmatter } from '../src/core/agents';
 import { compactMessages } from '../src/core/compaction';
 import { HookEngine } from '../src/core/hooks';
@@ -643,6 +644,148 @@ test('cli e2e: headless denies an unapproved command and exits cleanly; login re
     assert.match(login.stderr, /session-token/);
     const sessions = await runCli(['sessions'], env, root);
     assert.match(sessions.stdout, /install it/);
+  } finally {
+    server.close();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// 3.1: duplicate todo regression, library (subagents / skills / task presets)
+// ---------------------------------------------------------------------------------------------
+
+test('toolParser: a tool call drafted inside <thinking> is ignored (todo list is not doubled)', () => {
+  // Real-world shape from a Thinking model: the reasoning drafts the call without closing it.
+  const raw = '<thinking>Plan: <update_todo_list>\n<todos>\n[-] Create project\n[ ] Run tests\n[ ] Report\n</thinking>\nDelegating to code mode.\n<update_todo_list>\n<todos>\n[-] Create project\n[ ] Run tests\n[ ] Report\n</todos>\n</update_todo_list>';
+  const parsed = parseAssistantMessage(raw);
+  assert.strictEqual(parsed.tool?.name, 'update_todo_list');
+  assert.strictEqual(parsed.text, 'Delegating to code mode.');
+  const todos = parseTodos(parsed.tool!.params.todos);
+  assert.deepStrictEqual(todos.map((todo) => todo.text), ['Create project', 'Run tests', 'Report']);
+  // A closed thinking block with a complete draft call is skipped too.
+  const closed = parseAssistantMessage('<thinking><read_file><path>x</path></read_file></thinking>\n<list_files><path>.</path></list_files>');
+  assert.strictEqual(closed.tool?.name, 'list_files');
+  // Still streaming inside thinking → no tool yet.
+  assert.strictEqual(parseAssistantMessage('<thinking>draft <read_file><path>a</path></read_file>', true).tool, undefined);
+});
+
+test('parseTodos: repeated items merge with the most advanced status; numbered lists work', () => {
+  const todos = parseTodos('[x] A\n[ ] B\n[ ] C\n[ ] a\n[-] B\n[ ] C\n1. [ ] D');
+  assert.deepStrictEqual(todos.map((todo) => `${todo.text}:${todo.status}`), ['A:completed', 'B:in_progress', 'C:pending', 'D:pending']);
+});
+
+test('library: install presets (project/global), refuse overwrite, custom agent/skill, safe removal', () => {
+  const { root, home } = workspace();
+  const paths = { cwd: root, home };
+  const agentFile = installAgentPreset('code-reviewer', 'project', paths).file;
+  assert.strictEqual(agentFile, path.join(root, '.perplexicode', 'agents', 'code-reviewer.md'));
+  assert.throws(() => installAgentPreset('code-reviewer', 'project', paths), /already exists/);
+  installAgentPreset('code-reviewer', 'project', paths, true);
+  installSkillPreset('commit-message', 'user', paths);
+  assert.ok(fs.existsSync(path.join(home, '.perplexicode', 'skills', 'commit-message', 'SKILL.md')));
+  // Installed files are parsed by the same loaders the agent uses.
+  const agents = loadSubagents(root, home);
+  const reviewer = agents.find((agent) => agent.name === 'code-reviewer')!;
+  assert.strictEqual(reviewer.mode, 'review');
+  assert.ok(reviewer.tools?.includes('Bash(git diff:*)'), `tools: ${reviewer.tools}`);
+  assert.match(reviewer.description, /Reviews recent changes/);
+  assert.ok(loadSkills(root, home).some((skill) => skill.name === 'commit-message' && skill.scope === 'user'));
+  // Custom definitions: names normalised, built-in mode names rejected, description required.
+  createCustomAgent({ name: 'Go Expert', description: 'Go: idioms, tests', tools: ['Read', 'Bash(go test:*)'], mode: 'code', prompt: 'You know Go.' }, 'project', paths);
+  assert.ok(loadSubagents(root, home).some((agent) => agent.name === 'go-expert' && agent.description === 'Go: idioms, tests'));
+  assert.throws(() => createCustomAgent({ name: 'code', description: 'x', prompt: 'y' }, 'project', paths), /built-in mode/);
+  assert.throws(() => createCustomSkill({ name: 'x', description: ' ', body: 'y' }, 'project', paths), /Description/);
+  // Snapshot marks installed presets and missing preset dependencies.
+  const snap = librarySnapshot(paths);
+  assert.strictEqual(snap.agentPresets.find((entry) => entry.id === 'code-reviewer')!.installed, 'project');
+  assert.strictEqual(snap.skillPresets.find((entry) => entry.id === 'commit-message')!.installed, 'user');
+  assert.deepStrictEqual(snap.taskPresets.find((entry) => entry.id === 'review-changes')!.missing, { agents: [], skills: [] });
+  assert.deepStrictEqual(snap.taskPresets.find((entry) => entry.id === 'fix-bug')!.missing, { agents: ['debugger'], skills: ['debug-playbook'] });
+  // Removal only inside agents/skills folders.
+  assert.throws(() => removeLibraryItem('agent', path.join(root, 'package.json'), paths), /outside/);
+  assert.throws(() => removeLibraryItem('skill', agentFile, paths), /SKILL\.md|Not a/);
+  removeLibraryItem('agent', agentFile, paths);
+  assert.ok(!fs.existsSync(agentFile));
+  removeLibraryItem('skill', path.join(home, '.perplexicode', 'skills', 'commit-message', 'SKILL.md'), paths);
+  assert.ok(!fs.existsSync(path.join(home, '.perplexicode', 'skills', 'commit-message')));
+  // Catalog sanity: every preset agent mode exists, every task preset requirement is in the catalog.
+  for (const preset of BUILTIN_TASK_PRESETS) {
+    for (const name of [...(preset.requires?.agents || []), ...(preset.agent ? [preset.agent] : [])]) assert.ok(AGENT_PRESETS.some((entry) => entry.id === name), `${preset.id} → ${name}`);
+    for (const name of preset.requires?.skills || []) assert.ok(SKILL_PRESETS.some((entry) => entry.id === name), `${preset.id} → ${name}`);
+  }
+});
+
+test('task presets: override order, sanitising, {{input}} templating', () => {
+  const { root, home } = workspace();
+  const paths = { cwd: root, home };
+  savePresetToFile({ title: 'Go service', description: 'skeleton', mode: 'code', prompt: 'Create a Go service: {{input}}', agent: 'Go Expert' }, 'project', paths);
+  write(path.join(home, '.perplexicode', 'presets.json'), JSON.stringify([{ id: 'review-changes', title: 'My review', mode: 'nonsense', prompt: 'Review strictly' }, { title: '' }]));
+  const presets = loadTaskPresets(paths, [{ title: 'From setting', prompt: 'Hello {{input}}', mode: 'ask' }]);
+  const mine = presets.find((entry) => entry.id === 'review-changes')!;
+  assert.strictEqual(mine.title, 'My review');
+  assert.strictEqual(mine.mode, 'code', 'unknown modes fall back to code');
+  assert.strictEqual(mine.source, 'user');
+  const project = presets.find((entry) => entry.id === 'go-service')!;
+  assert.strictEqual(project.source, 'project');
+  assert.strictEqual(project.agent, 'go-expert');
+  assert.ok(presets.some((entry) => entry.id === 'from-setting' && entry.mode === 'ask'));
+  assert.strictEqual(applyPresetPrompt(project, 'with health check'), 'Create a Go service: with health check');
+  assert.strictEqual(applyPresetPrompt({ prompt: 'Fix this bug.\n\n{{input}}' }, ''), 'Fix this bug.');
+  assert.strictEqual(applyPresetPrompt({ prompt: 'Summarise' }, 'README'), 'Summarise\n\nREADME');
+});
+
+test('session: a root task started as a subagent gets its prompt and tool list', async () => {
+  const { root, home } = workspace({ 'a.ts': 'x' });
+  installAgentPreset('explorer', 'project', { cwd: root, home });
+  const provider = new ScriptedProvider([
+    (request) => {
+      assert.match(request.fullPrompt, /You are the "explorer" agent/);
+      return '<write_to_file><path>a.ts</path><content>y</content><line_count>1</line_count></write_to_file>';
+    },
+    '<attempt_completion><result>explored</result></attempt_completion>',
+  ]);
+  const events: CoreEvent[] = [];
+  const settings = loadSettings(root, { home, trustProjectHooks: true });
+  const core = new CoreSession({
+    cwd: root, home, provider, agentSettings: agentSettings(), selection: { baseModelId: 'turbo', thinking: false, webSearch: false },
+    mode: 'code', agent: 'explorer', permissionMode: 'bypassPermissions', settings, journal: false, trustProjectHooks: true,
+    onAsk: async (_task, message) => headlessAnswer(message, 10), onEvent: (_task, event) => events.push(event),
+  });
+  const result = await core.run('map the code');
+  assert.strictEqual(result.result, 'explored');
+  assert.strictEqual(core.currentTask?.mode, 'ask', 'explorer preset runs in ask mode');
+  assert.strictEqual(fs.readFileSync(path.join(root, 'a.ts'), 'utf8'), 'x');
+});
+
+test('cli e2e: agents add / catalog, presets, --preset runs with the preset subagent', async () => {
+  const { root, home } = workspace({ 'a.js': 'exports.x = 1;\n' });
+  const server = await mockOpenAI([
+    '<attempt_completion><result>Reviewed: no issues</result></attempt_completion>',
+  ]);
+  try {
+    const env = { HOME: home, USERPROFILE: home, PERPLEXICODE_HOME: path.join(home, '.perplexicode'), PCODE_OPENAI_BASE_URL: server.url, PCODE_OPENAI_MODEL: 'mock' };
+    const add = await runCli(['agents', 'add', 'code-reviewer', 'nope'], env, root);
+    assert.strictEqual(add.code, 1, add.stderr);
+    assert.match(add.stderr, /code-reviewer →/);
+    assert.match(add.stderr, /Unknown subagent preset "nope"/);
+    const again = await runCli(['agents', 'add', 'code-reviewer'], env, root);
+    assert.match(again.stderr, /already exists/);
+    const skills = await runCli(['skills', 'add', 'commit-message', '-g'], env, root);
+    assert.strictEqual(skills.code, 0, skills.stderr);
+    assert.ok(fs.existsSync(path.join(home, '.perplexicode', 'skills', 'commit-message', 'SKILL.md')));
+    const catalog = await runCli(['agents', 'catalog'], env, root);
+    assert.match(catalog.stdout, /^code-reviewer\tproject\t/m);
+    assert.match(catalog.stdout, /^debugger\t-\t/m);
+    const presets = await runCli(['presets'], env, root);
+    assert.match(presets.stdout, /^review-changes\treview\t@code-reviewer\tbuiltin\tReview my changes$/m);
+    const run = await runCli(['-p', 'focus on a.js', '--preset', 'review-changes', '--provider', 'openai', '--output-format', 'json'], env, root);
+    assert.strictEqual(run.code, 0, `${run.stderr}\n${run.stdout}`);
+    assert.strictEqual(JSON.parse(run.stdout.trim().split('\n').pop()!).result, 'Reviewed: no issues');
+    const body = JSON.stringify(server.requests[0]);
+    assert.match(body, /You are the \\"code-reviewer\\" agent/);
+    assert.match(body, /Review the uncommitted changes in this repository\. focus on a\.js/);
+    const bad = await runCli(['-p', 'x', '--preset', 'missing-one', '--provider', 'openai'], env, root);
+    assert.notStrictEqual(bad.code, 0);
+    assert.match(bad.stderr, /Unknown preset 'missing-one'/);
   } finally {
     server.close();
   }

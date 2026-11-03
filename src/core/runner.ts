@@ -24,6 +24,8 @@ export interface CoreSessionOptions {
   agentSettings: AgentSettings;
   selection: ModelSelection;
   mode?: string;
+  /** Subagent (by name) the root task runs as, e.g. from a task preset. */
+  agent?: string;
   permissionMode?: PermissionMode;
   settings?: CoreSettings;
   host?: AgentHost;
@@ -95,7 +97,11 @@ export class CoreSession {
       extraAllow: this.options.extraAllow,
       extraDeny: this.options.extraDeny,
       toolAllowList: agent?.tools,
-      extraContext: agent ? `# You are the "${agent.name}" subagent\n${agent.prompt}\n\nWork only on the brief you were given and finish with attempt_completion: a concise report the parent agent can act on.` : undefined,
+      extraContext: agent
+        ? options.parentId
+          ? `# You are the "${agent.name}" subagent\n${agent.prompt}\n\nWork only on the brief you were given and finish with attempt_completion: a concise report the parent agent can act on.`
+          : `# You are the "${agent.name}" agent\n${agent.prompt}\n\nThe user started this task with the "${agent.name}" agent. Follow the instructions above and finish with attempt_completion.`
+        : undefined,
       includeAgents: !options.parentId,
       transcriptPath: (id) => this.journalPath(id),
       runCommand: (command, cwd, run) => this.host.runCommand(command, cwd, run),
@@ -188,7 +194,11 @@ export class CoreSession {
   }
 
   async run(prompt: string): Promise<RunResult> {
-    const task = this.root || this.createTask({ mode: this.options.mode || 'code' });
+    const rootAgent = this.options.agent ? this.agents.find((entry) => entry.name === this.options.agent) : undefined;
+    if (this.options.agent && !rootAgent) {
+      this.options.log?.(`Subagent '${this.options.agent}' is not installed; running in ${this.options.mode || 'code'} mode (pcode agents add ${this.options.agent}).`);
+    }
+    const task = this.root || this.createTask({ mode: rootAgent ? rootAgent.mode : this.options.mode || 'code', agent: rootAgent });
     this.root = task;
     if (task.uiMessages.length === 0) {
       await task.start(prompt);

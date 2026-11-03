@@ -2,7 +2,7 @@
   "name": "perplexicode-kilo",
   "displayName": "PerplexiCode Kilo",
   "description": "Kilo Code-style autonomous coding agent (Code / Architect / Ask / Debug / Orchestrator / Review modes, tools, diffs, checkpoints, auto-approve) powered by your Perplexity Pro/Max subscription and its latest models.",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "publisher": "MRX7999",
   "engines": {
     "vscode": "^1.85.0"
@@ -83,6 +83,17 @@
         "title": "Settings",
         "category": "PerplexiCode",
         "icon": "$(gear)"
+      },
+      {
+        "command": "perplexicodeKilo.library",
+        "title": "Agents, Skills & Presets",
+        "category": "PerplexiCode",
+        "icon": "$(library)"
+      },
+      {
+        "command": "perplexicodeKilo.runPreset",
+        "title": "Run Task Preset…",
+        "category": "PerplexiCode"
       },
       {
         "command": "perplexicodeKilo.openInTab",
@@ -234,14 +245,19 @@
           "group": "navigation@2"
         },
         {
-          "command": "perplexicodeKilo.settings",
+          "command": "perplexicodeKilo.library",
           "when": "view == perplexicodeKilo.chatView",
           "group": "navigation@3"
         },
         {
-          "command": "perplexicodeKilo.openInTab",
+          "command": "perplexicodeKilo.settings",
           "when": "view == perplexicodeKilo.chatView",
           "group": "navigation@4"
+        },
+        {
+          "command": "perplexicodeKilo.openInTab",
+          "when": "view == perplexicodeKilo.chatView",
+          "group": "navigation@5"
         }
       ],
       "editor/context": [
@@ -553,6 +569,49 @@
           "minimum": 0,
           "maximum": 9,
           "description": "Max read-only tool calls executed from one model answer (0 = use settings.json readBatchSize, default 5; 1 disables batching)."
+        },
+        "perplexicodeKilo.taskPresets": {
+          "type": "array",
+          "default": [],
+          "scope": "application",
+          "items": {
+            "type": "object",
+            "required": [
+              "title",
+              "prompt"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "code",
+                  "architect",
+                  "ask",
+                  "debug",
+                  "orchestrator",
+                  "review"
+                ]
+              },
+              "agent": {
+                "type": "string",
+                "description": "Subagent name (from .perplexicode/agents or .claude/agents)"
+              },
+              "prompt": {
+                "type": "string",
+                "description": "Prompt template; {{input}} is replaced with your text"
+              }
+            }
+          },
+          "markdownDescription": "Custom task presets shown on the welcome screen and in **Agents, Skills & Presets**. Project presets can also live in `.perplexicode/presets.json`."
         }
       }
     },

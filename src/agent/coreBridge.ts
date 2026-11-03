@@ -59,7 +59,9 @@ export class CoreBridge {
       permissionMode: () => this.permissionMode,
       toolAllowList: agent?.tools,
       extraContext: agent
-        ? `# You are the "${agent.name}" subagent\n${agent.prompt}\n\nWork only on the brief you were given and finish with attempt_completion: a concise report the parent agent can act on.`
+        ? options.parentId
+          ? `# You are the "${agent.name}" subagent\n${agent.prompt}\n\nWork only on the brief you were given and finish with attempt_completion: a concise report the parent agent can act on.`
+          : `# You are the "${agent.name}" agent\n${agent.prompt}\n\nThe user started this task with the "${agent.name}" agent. Follow the instructions above and finish with attempt_completion.`
         : undefined,
       includeAgents: !options.parentId,
       transcriptPath: (id) => this.journals.get(id)?.logPath,

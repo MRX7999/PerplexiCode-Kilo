@@ -2,6 +2,25 @@
 
 All notable changes to PerplexiCode Kilo. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.1.0] - 2026-11-03
+
+### Added
+- **Agents, Skills & Presets view** (view title button and command **PerplexiCode: Agents, Skills & Presets**). It has three tabs with a filter:
+  - Installed items, which you can open, delete or use to start a task.
+  - A built-in catalog with **Project** / **Global** install and **Install all**.
+  - Forms for creating your own subagents, skills and presets.
+- **Catalog**: 8 subagents (`code-reviewer`, `test-writer`, `debugger`, `security-auditor`, `docs-writer`, `refactorer`, `explorer`, `planner`) and 8 skills (`commit-message`, `code-review-checklist`, `write-tests`, `security-audit`, `debug-playbook`, `api-design`, `release-checklist`, `readme-writer`). They are written as standard `.perplexicode/agents/*.md` and `.perplexicode/skills/*/SKILL.md` files.
+- **Task presets**: 10 built-in presets that each set the mode, the subagent and a `{{input}}` prompt template. If a required subagent or skill is missing, it is offered for install on the first run. Your own presets are read from `~/.perplexicode/presets.json`, the `perplexicodeKilo.taskPresets` setting and `.perplexicode/presets.json`, in that order.
+- **Welcome screen**: a Quick start preset grid and a "N subagents · M skills" strip with **Install starter pack**.
+- **Mode menu**: a Subagents section. A task can now run as a subagent, using its prompt and tool list. The task header shows an `@agent` chip.
+- **Composer**: the slash commands `/presets`, `/agents`, `/skills` and `/<preset-id>`, plus Preset / Agent chips.
+- Command **PerplexiCode: Run Task Preset…**.
+- CLI: `pcode agents add|catalog`, `pcode skills add|catalog`, `pcode presets`, and the `--preset <id>`, `--agent <name>` and `-g/--global` flags.
+- Tests: 6 new core tests (33 total) and webview renders 12–20 with message assertions.
+
+### Fixed
+- **Duplicated todo list with Thinking models.** A model could draft `<update_todo_list>` inside `<thinking>` without closing it. The parser then joined the draft's opening tag to the real call's closing tag, so every item appeared twice and the text in between was lost. Tool calls inside `<thinking>` are now ignored. `parseTodos` also merges repeated items, keeping the first position and the most advanced status, and accepts numbered lists (`1. [ ] …`).
+
 ## [3.0.0] - 2026-11-03
 
 ### Added

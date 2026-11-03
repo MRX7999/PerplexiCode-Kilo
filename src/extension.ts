@@ -382,6 +382,36 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     await focusSidebar();
     controller.showView('settings');
   });
+  register('perplexicodeKilo.library', async () => {
+    await focusSidebar();
+    controller.refreshLibrary();
+    controller.showView('library');
+  });
+  register('perplexicodeKilo.runPreset', async () => {
+    const presets = controller.taskPresets();
+    const picked = await vscode.window.showQuickPick(
+      presets.map((preset) => ({
+        label: preset.title,
+        description: [preset.mode, preset.agent ? `@${preset.agent}` : '', preset.source !== 'builtin' ? preset.source : ''].filter(Boolean).join(' · '),
+        detail: preset.description,
+        id: preset.id,
+        needsInput: preset.prompt.includes('{{input}}'),
+      })),
+      { placeHolder: 'PerplexiCode: choose a task preset' },
+    );
+    if (!picked) {
+      return;
+    }
+    const input = picked.needsInput
+      ? await vscode.window.showInputBox({ prompt: picked.label, placeHolder: 'Details for the task (optional)' })
+      : '';
+    if (input === undefined) {
+      return;
+    }
+    await focusSidebar();
+    controller.showView('chat');
+    await controller.runPreset(picked.id, input);
+  });
   register('perplexicodeKilo.openInTab', async () => {
     const panel = vscode.window.createWebviewPanel('perplexicodeKilo.tab', 'PerplexiCode', vscode.ViewColumn.Beside, {
       enableScripts: true,
