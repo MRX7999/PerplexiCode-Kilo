@@ -43,7 +43,13 @@ export interface ParsedAssistantMessage {
   tool?: ParsedToolUse;
   /** Number of extra tool calls after the first one (they are ignored, one tool per turn). */
   ignoredToolCount: number;
+  /** Complete read-only tool calls that directly follow a read-only first tool (3.0 batching). */
+  readBatch?: ParsedToolUse[];
+  /** The text the offsets refer to (differs from the raw answer when entities were decoded). */
+  source?: string;
 }
+
+const READ_ONLY_TOOLS = new Set(['read_file', 'list_files', 'search_files', 'list_code_definition_names']);
 
 export function parseAssistantMessage(raw: string, options: { partial?: boolean } = {}): ParsedAssistantMessage {
   let source = raw;
@@ -66,11 +72,35 @@ export function parseAssistantMessage(raw: string, options: { partial?: boolean 
   const rest = tool.partial ? '' : source.slice(tool.end);
   const ignoredToolCount = tool.partial ? 0 : countTools(rest);
 
+  const readBatch: ParsedToolUse[] = [];
+  if (!tool.partial && READ_ONLY_TOOLS.has(tool.name)) {
+    let cursor = tool.end;
+    while (readBatch.length < 9) {
+      const next = findFirstTool(source.slice(cursor));
+      if (!next || !READ_ONLY_TOOLS.has(next.name)) {
+        break;
+      }
+      // Only whitespace or short prose may separate batched calls.
+      const gap = source.slice(cursor, cursor + next.index);
+      if (gap.trim().length > 200) {
+        break;
+      }
+      const extra = extractTool(source, next.name, cursor + next.index);
+      if (extra.partial) {
+        break;
+      }
+      readBatch.push(extra);
+      cursor = extra.end;
+    }
+  }
+
   return {
     text: cleanupProse(text),
     reasoning,
     tool,
     ignoredToolCount,
+    readBatch,
+    source,
   };
 }
 

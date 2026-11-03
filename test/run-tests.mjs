@@ -26,10 +26,27 @@ const suites = [
     outfile: 'settings.test.cjs',
     options: { alias: { vscode: path.join(process.cwd(), 'test', 'mocks', 'vscode-settings.ts') } },
   },
+  {
+    // 3.0 headless core + CLI: real files, real sh hooks, mock OpenAI server, spawns out/cli.js.
+    entry: 'core.test.ts',
+    outfile: 'core.test.cjs',
+    prebuild: true,
+    options: { external: ['vscode', 'puppeteer-core', 'sql.js'] },
+  },
 ];
 
+const only = process.argv[2];
 let failed = false;
 for (const suite of suites) {
+  if (only && !suite.entry.startsWith(only)) continue;
+  if (suite.prebuild && !process.env.SKIP_PREBUILD) {
+    // The CLI e2e tests spawn out/cli.js, so build it from the current sources first.
+    const built = spawnSync(process.execPath, ['esbuild.js'], { stdio: 'inherit' });
+    if (built.status !== 0) {
+      console.error('esbuild.js failed');
+      process.exit(1);
+    }
+  }
   const outfile = path.join(outDir, suite.outfile);
   await build({ ...common, ...suite.options, entryPoints: [path.join(process.cwd(), 'test', suite.entry)], outfile });
   const result = spawnSync(process.execPath, [outfile], { stdio: 'inherit' });

@@ -153,6 +153,34 @@ Sessions are kept in the editor's [SecretStorage](https://code.visualstudio.com/
 
 ---
 
+## 3.0: headless core + `pcode` CLI
+
+The extension and a terminal CLI share one agent core, so you get Kilo Code in the editor and Claude Code in the terminal from one install.
+
+| | |
+| --- | --- |
+| **`pcode` CLI** | REPL with diff approvals and slash commands (`/mode`, `/permissions`, `/compact`, `/resume` …). Headless `pcode -p "…"` with `--output-format text\|json\|stream-json` for scripts and CI. |
+| **Claude Code compatible config** | Reads `.claude/settings.json` (permissions and hooks), `.claude/agents/*.md`, skills and `CLAUDE.md`. Your existing `.claude/` folder works as is, next to `.perplexicode/`. |
+| **Permissions** | `allow` / `ask` / `deny` rules such as `Bash(npm test:*)` and `Edit(src/**)`. Modes `default`, `acceptEdits`, `plan` and `bypassPermissions`. Built-in protection for `.env`, keys and `.ssh`, including through symlinks and `cat .env`. |
+| **Hooks** | `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `Stop`, `SubagentStop`, `SessionStart`, `SessionEnd`. Exit code 2 blocks the action. JSON decisions are supported. Project hooks run only in trusted folders. |
+| **Verify before done** | `verify.command` (for example `npm test`) runs before the task can finish, and a failing check sends the agent back to fix it. Each task ends with a status: verified, needs review, failed, blocked or no changes. |
+| **Subagents** | `new_task` can delegate to your own agents. Each one has its own prompt, model and tool list, and the tool list is enforced. |
+| **Resume anywhere** | Every IDE or CLI task writes a journal to `~/.perplexicode/sessions`. `pcode -c` continues the last one. Commands that were cut off by a crash are flagged, and the agent checks the real state before re-running them. |
+| **Fewer round-trips** | Up to 5 read-only tool calls from one answer run in one step. |
+| **Two transports** | Your Perplexity Pro/Max web session, with account rotation (shared with the extension through **PerplexiCode: Share Accounts with CLI** or `pcode login`), or any OpenAI-compatible endpoint (`--provider openai`: Ollama, LM Studio, vLLM). |
+
+```bash
+git clone https://github.com/MRX7999/PerplexiCode-Kilo && cd PerplexiCode-Kilo
+npm ci && npm run build && npm link          # puts `pcode` on PATH
+pcode login                                  # paste the Cookie header (hidden input) or use --browser
+pcode doctor
+pcode -p "fix the failing test" --permission-mode acceptEdits --allowedTools "Bash(npm test:*)"
+```
+
+See [docs/CORE-3.0.md](docs/CORE-3.0.md) for the full reference and [examples/claude-code-compat](examples/claude-code-compat) for a working configuration.
+
+---
+
 ## Models
 
 The model list matches the current Perplexity picker. It is loaded live from your account's model config, with a bundled snapshot (2026-10-28, 89 models) as a fallback.

@@ -14,6 +14,8 @@ import { AccountPlan, RotationStrategy } from '../api/types';
 import { AccountManager } from '../storage/accountManager';
 import { DEFAULT_MODE_SLUG, getModeBySlug, MODES } from './modes';
 import { AgentTask, AskResponse } from './task';
+import { CoreBridge } from './coreBridge';
+import { compactMessages } from '../core/compaction';
 import { TaskStore } from './taskStore';
 import { listFilesTool, readFileTool, resolveWorkspacePath, toPosixRelative } from './tools';
 import { PerplexityTransport, TransportError } from './transport';
@@ -40,6 +42,8 @@ interface StoredSelection {
 export class AgentController implements vscode.Disposable {
   private readonly webviews = new Set<WebviewTarget>();
   private readonly tasks = new Map<string, AgentTask>();
+  /** 3.0 core: permissions, hooks, verify, subagents, shared session journal. */
+  readonly core: CoreBridge;
   /** Stack of tasks; the last element is the one shown in the UI (child tasks on top). */
   private stack: AgentTask[] = [];
   private selection: StoredSelection;
@@ -61,6 +65,7 @@ export class AgentController implements vscode.Disposable {
     output: vscode.OutputChannel
   ) {
     this.output = output;
+    this.core = new CoreBridge((line) => this.output.appendLine(line));
     const stored = context.globalState.get<StoredSelection>(SELECTION_KEY);
     const configuredDefault = readSetting<string>('perplexicodeKilo.defaultModel', 'turbo');
     this.selection = {
@@ -254,6 +259,24 @@ export class AgentController implements vscode.Disposable {
     return this.stack[this.stack.length - 1];
   }
 
+  /** Summarises the current task transcript with the selected model (Claude Code /compact). */
+  async compactCurrentTask(focus?: string): Promise<{ before: number; after: number } | undefined> {
+    const task = this.currentTask;
+    if (!task) {
+      return undefined;
+    }
+    if (task.isBusy) {
+      throw new Error('The task is running; compact it when it is idle.');
+    }
+    const compacted = await compactMessages({ provider: this.transport, selection: this.getSelection(), messages: task.apiMessages, focus });
+    task.replaceHistory(compacted.messages);
+    this.core.onEvent(task, { type: 'compacted', before: compacted.before, after: compacted.after });
+    task.say({ type: 'info', text: `Context compacted: ${compacted.before} → ${compacted.after} messages.` });
+    this.store.save(task.toJSON());
+    this.postState();
+    return { before: compacted.before, after: compacted.after };
+  }
+
   private workspaceRoot(): string | undefined {
     const folders = vscode.workspace.workspaceFolders;
     if (!folders || folders.length === 0) {
@@ -269,19 +292,26 @@ export class AgentController implements vscode.Disposable {
     return folders[0].uri.fsPath;
   }
 
-  private buildTask(options: { mode: string; parentId?: string; restore?: PersistedTask; cwd?: string }): AgentTask {
+  private buildTask(options: { mode: string; parentId?: string; restore?: PersistedTask; cwd?: string; agent?: string }): AgentTask {
     const cwd = options.restore?.workspace || options.cwd || this.workspaceRoot() || os.homedir();
     const host = new VsCodeAgentHost(cwd, () => readSetting<boolean>('perplexicodeKilo.agent.revealEditedFiles', true));
+    const agent = options.agent ? this.core.findSubagent(cwd, options.agent) : undefined;
+    const gate = this.core.createGate({ cwd, host, parentId: options.parentId, agent });
+    const readBatchSize = this.core.readBatchSize(cwd);
     const task = new AgentTask({
+      gate,
+      isSubtaskTarget: (slug) => this.core.subagents(cwd).some((entry) => entry.name === slug),
+      readBatchSize: () => readBatchSize,
       host,
       provider: this.transport,
       getSettings: () => this.getSettings(),
       getSelection: () => this.getSelection(),
       getModelLabel: (modelId, thinking) => getModelLabel(modelId, thinking),
-      mode: options.mode,
+      mode: agent ? agent.mode : options.mode,
       parentId: options.parentId,
       restore: options.restore,
       callbacks: {
+        onEvent: (owner, event) => this.core.onEvent(owner, event),
         onMessage: (owner, message) => {
           if (this.currentTask === owner) {
             this.post({ type: 'messageUpdated', taskId: owner.id, message });
@@ -307,17 +337,25 @@ export class AgentController implements vscode.Disposable {
         startSubtask: (parent, mode, message, todos) => this.startSubtask(parent, mode, message, todos),
         persist: (owner) => this.store.save(owner.toJSON()),
         onCompleted: (owner) => {
+          const report = this.core.finish(owner);
+          if (report && report.status !== 'no_changes') {
+            owner.say({ type: 'info', text: `Verification — ${this.core.label(report)}` });
+            this.output.appendLine(`[core] ${owner.id} ${this.core.label(report)}`);
+          }
           this.store.save(owner.toJSON());
           this.postState();
         },
       },
     });
+    this.core.register(task);
     this.tasks.set(task.id, task);
     return task;
   }
 
   private async startSubtask(parent: AgentTask, mode: string, message: string, todos: TodoItem[]): Promise<string> {
-    const child = this.buildTask({ mode, parentId: parent.id, cwd: (parent.toJSON().workspace) });
+    const cwd = parent.toJSON().workspace;
+    const isAgent = !MODES.some((entry) => entry.slug === mode) && !!this.core.findSubagent(cwd, mode);
+    const child = this.buildTask({ mode: isAgent ? 'code' : mode, parentId: parent.id, cwd, agent: isAgent ? mode : undefined });
     child.todos = todos;
     this.stack.push(child);
     this.postState(true);

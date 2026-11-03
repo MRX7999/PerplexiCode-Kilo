@@ -36,6 +36,8 @@ import {
   truncateOutput,
 } from './tools';
 import type { CompletionRequest, CompletionResult, ThreadState } from './transport';
+import type { CoreEvent, GateContext, GateVerdict, ToolGate } from '../core/types';
+import { READ_TOOLS } from '../core/types';
 import {
   AgentSettings,
   AskKind,
@@ -68,6 +70,8 @@ export interface TaskCallbacks {
   persist?(task: AgentTask): void;
   /** Called after a file was changed so the editor can reveal it. */
   onFileEdited?(absPath: string): void;
+  /** Structured 3.0 core events (journal, verification, CLI output). */
+  onEvent?(task: AgentTask, event: CoreEvent): void;
 }
 
 export interface TaskOptions {
@@ -81,6 +85,12 @@ export interface TaskOptions {
   mode: string;
   parentId?: string;
   restore?: PersistedTask;
+  /** 3.0 policy engine: permission rules, modes, hooks, verify-before-done. */
+  gate?: ToolGate;
+  /** Accept new_task targets that are not built-in modes (file based subagents). */
+  isSubtaskTarget?: (slug: string) => boolean;
+  /** Maximum read-only tool calls executed from one answer (default 1 = 2.x behaviour). */
+  readBatchSize?: () => number;
 }
 
 let idCounter = 0;
@@ -117,6 +127,9 @@ export class AgentTask {
   private completionResolvers: Array<(result: string) => void> = [];
   private rulesCache?: { mode: string; text: string };
   private didEditFile = false;
+  /** Verdict of the gate for the tool that is currently executing. */
+  private gateVerdict?: GateVerdict;
+  private stopAttempts = 0;
 
   constructor(private readonly options: TaskOptions) {
     const restore = options.restore;
@@ -173,8 +186,13 @@ export class AgentTask {
 
   async start(text: string, images: string[] = []): Promise<void> {
     this.title = this.title || text.replace(/\s+/g, ' ').trim().slice(0, 140);
+    this.emitEvent({ type: 'session_start', mode: this.mode, cwd: this.options.host.cwd, resumed: false });
     this.say({ type: 'user', text, images });
-    const content = await this.withEnvironment(`<task>\n${text}\n</task>`, true);
+    const extra = await this.checkPrompt(text);
+    if (extra === null) {
+      return;
+    }
+    const content = await this.withEnvironment(`<task>\n${text}\n</task>${extra}`, true);
     this.apiMessages.push({ role: 'user', content, ts: Date.now() });
     await this.loop();
   }
@@ -193,7 +211,11 @@ export class AgentTask {
       this.abortController = new AbortController();
     }
     this.consecutiveMistakes = 0;
-    const content = await this.withEnvironment(`<user_message>\n${text}\n</user_message>`, false);
+    const extra = await this.checkPrompt(text);
+    if (extra === null) {
+      return;
+    }
+    const content = await this.withEnvironment(`<user_message>\n${text}\n</user_message>${extra}`, false);
     this.apiMessages.push({ role: 'user', content, ts: Date.now() });
     await this.loop();
   }
@@ -284,6 +306,7 @@ export class AgentTask {
     this.mode = mode;
     this.thread = undefined;
     this.rulesCache = undefined;
+    this.emitEvent({ type: 'mode', mode });
     this.options.callbacks.onModeChanged?.(this, mode);
     this.options.callbacks.persist?.(this);
   }
@@ -434,6 +457,7 @@ export class AgentTask {
         }
       };
 
+      this.emitEvent({ type: 'request_start', model: selection.baseModelId });
       try {
         const result = await this.options.provider.complete({
           fullPrompt: full.prompt,
@@ -468,6 +492,7 @@ export class AgentTask {
         };
         reqMessage.text = result.modelLabel;
         this.emit(reqMessage);
+        this.emitEvent({ type: 'request_end', model: result.modelLabel, account: result.accountAlias, promptChars: result.promptChars, durationMs: Date.now() - startedAt, followUp: result.usedFollowUp, ok: true });
         // The streamed preview is replaced by the final parsed content.
         this.removeMessage(streamMessage);
         this.removeMessage(reasoningMessage);
@@ -478,6 +503,7 @@ export class AgentTask {
         reqMessage.partial = false;
         this.emit(reqMessage);
         const typed = error as Error & { kind?: string };
+        this.emitEvent({ type: 'request_end', model: selection.baseModelId, promptChars: full.prompt.length, durationMs: Date.now() - startedAt, followUp: Boolean(followUpPrompt), ok: false, error: typed.message });
         if (this.abortController.signal.aborted || typed.kind === 'aborted') {
           this.removeMessage(reqMessage);
           return undefined;
@@ -513,11 +539,17 @@ export class AgentTask {
     }
 
     const tool = parsed.tool;
-    // Store a normalized assistant message: prose + exactly one tool call.
+    const batchLimit = Math.max(1, this.options.readBatchSize?.() ?? 1);
+    const batch = tool && !tool.partial && READ_TOOLS.has(tool.name) && batchLimit > 1
+      ? (parsed.readBatch || []).slice(0, batchLimit - 1)
+      : [];
+    // Store a normalized assistant message: prose + the executed tool call(s).
+    const source = parsed.source ?? result.text;
     const assistantContent = tool
-      ? `${parsed.text ? `${parsed.text}\n\n` : ''}${result.text.slice(tool.start, tool.end)}`
+      ? `${parsed.text ? `${parsed.text}\n\n` : ''}${[tool, ...batch].map((entry) => source.slice(entry.start, entry.end)).join('\n')}`
       : result.text.trim();
     this.apiMessages.push({ role: 'assistant', content: assistantContent, ts: Date.now() });
+    this.emitEvent({ type: 'assistant', text: parsed.text.slice(0, 4000), tools: tool ? [tool, ...batch].map((entry) => entry.name) : [] });
 
     if (!tool) {
       return this.handleNoTool(parsed.text);
@@ -534,12 +566,28 @@ export class AgentTask {
       return this.pushToolError(tool.name, `Tool '${tool.name}' is not available in ${this.modeConfig.name} mode. Use switch_mode to change to a mode that allows it, or use another tool.`, settings);
     }
 
-    const result_ = await this.executeTool(tool, settings);
+    const result_ = await this.executeGated(tool, settings);
     if (result_ === 'stop') {
       return 'stop';
     }
-    if (parsed.ignoredToolCount > 0) {
-      this.appendToLastUser(`\n\n[Note: only the first tool call of your message was executed. ${parsed.ignoredToolCount} additional tool call(s) were ignored. Use one tool per message.]`);
+    // Batched read-only calls: results are merged into one USER message, in order.
+    for (const extra of batch) {
+      if (this.abortController.signal.aborted) {
+        return 'stop';
+      }
+      const before = this.apiMessages.length;
+      const outcome = await this.executeGated(extra, settings);
+      const added = this.apiMessages.splice(before);
+      if (added.length > 0) {
+        this.appendToLastUser(`\n\n${added.map((message) => message.content).join('\n\n')}`);
+      }
+      if (outcome === 'stop') {
+        return 'stop';
+      }
+    }
+    const ignored = parsed.ignoredToolCount - batch.length;
+    if (ignored > 0) {
+      this.appendToLastUser(`\n\n[Note: only ${batch.length > 0 ? `the first ${batch.length + 1} read-only tool calls` : 'the first tool call'} of your message ${batch.length > 0 ? 'were' : 'was'} executed. ${ignored} additional tool call(s) were ignored. Batch only read-only tools (read_file, list_files, search_files, list_code_definition_names); use one tool per message otherwise.]`);
     }
     if (this.consecutiveMistakes >= MAX_CONSECUTIVE_MISTAKES) {
       const answer = await this.ask('mistake_limit', {
@@ -595,6 +643,57 @@ export class AgentTask {
     }
   }
 
+  get gateContext(): GateContext {
+    return { taskId: this.id, parentId: this.parentId, mode: this.mode, cwd: this.options.host.cwd };
+  }
+
+  /** Runs one tool through the 3.0 gate: PreToolUse policy/hooks, execution, PostToolUse hooks. */
+  private async executeGated(tool: ParsedToolUse, settings: AgentSettings): Promise<'continue' | 'stop'> {
+    const gate = this.options.gate;
+    this.gateVerdict = undefined;
+    if (gate?.preToolUse && tool.name !== 'attempt_completion') {
+      const verdict = await gate.preToolUse(this.gateContext, { name: tool.name, params: tool.params });
+      if (verdict.stopTask) {
+        this.say({ type: 'info', text: `Stopped by hook: ${verdict.reason || 'continue=false'}` });
+        this.emitEvent({ type: 'denied', tool: tool.name, reason: verdict.reason || 'stopped', source: verdict.source || 'hook' });
+        this.setState('idle');
+        return 'stop';
+      }
+      if (verdict.decision === 'deny') {
+        const reason = verdict.reason || 'Denied by policy.';
+        this.consecutiveMistakes += 1;
+        this.say({ type: 'tool', tool: { name: tool.name, path: tool.params.path, title: `Blocked: ${toolActivityLabel(tool.name)}${tool.params.path ? ` ${tool.params.path}` : tool.params.command ? ` \`${tool.params.command}\`` : ''}`, content: `${reason}${verdict.source ? `\n(${verdict.source})` : ''}` }, status: 'rejected' });
+        this.emitEvent({ type: 'denied', tool: tool.name, reason, source: verdict.source || 'policy' });
+        this.pushToolResult(tool.name, tool.params.path || tool.params.command, `[DENIED] ${reason}\nDo not retry the same call. Choose another approach or ask the user.`);
+        return 'continue';
+      }
+      this.gateVerdict = verdict;
+    }
+    this.emitEvent({ type: 'tool_start', tool: tool.name, params: tool.params });
+    const before = this.apiMessages.length;
+    let outcome: 'continue' | 'stop';
+    try {
+      outcome = await this.executeTool(tool, settings);
+    } finally {
+      this.gateVerdict = undefined;
+    }
+    const resultMessage = this.apiMessages.length > before ? this.apiMessages[this.apiMessages.length - 1] : undefined;
+    const output = resultMessage?.role === 'user' ? resultMessage.content : '';
+    const isError = /\] Result:\n?\[(ERROR|DENIED)\]/.test(output) || output.includes('The user denied this operation');
+    this.emitEvent({ type: 'tool_end', tool: tool.name, ok: !isError, summary: output.slice(0, 300) });
+    if (gate?.postToolUse && outcome === 'continue' && resultMessage && !isError && tool.name !== 'attempt_completion') {
+      const post = await gate.postToolUse(this.gateContext, { name: tool.name, params: tool.params }, { output, isError });
+      if (post.blockReason) {
+        this.appendToLastUser(`\n\n[PostToolUse hook feedback — fix this before continuing]\n${post.blockReason}`);
+        this.say({ type: 'info', text: `Hook feedback: ${post.blockReason.slice(0, 500)}` });
+      }
+      if (post.additionalContext) {
+        this.appendToLastUser(`\n\n${post.additionalContext}`);
+      }
+    }
+    return outcome;
+  }
+
   private async executeTool(tool: ParsedToolUse, settings: AgentSettings): Promise<'continue' | 'stop'> {
     const params = tool.params;
     const missing = (name: string) => {
@@ -641,6 +740,15 @@ export class AgentTask {
           return missing('result');
         }
         this.consecutiveMistakes = 0;
+        if (this.options.gate?.stop) {
+          const stop = await this.options.gate.stop(this.gateContext, resultText, this.stopAttempts);
+          if (stop.continueReason && !this.abortController.signal.aborted) {
+            this.stopAttempts += 1;
+            this.say({ type: 'info', text: `Not done yet: ${stop.continueReason.split('\n')[0].slice(0, 300)}` });
+            this.pushToolResult(tool.name, undefined, `[NOT ACCEPTED] ${stop.continueReason}`);
+            return 'continue';
+          }
+        }
         if (this.parentId) {
           this.say({ type: 'completion', text: resultText });
           this.finishCompletion(resultText);
@@ -700,22 +808,22 @@ export class AgentTask {
         if (!message) {
           return missing('message');
         }
-        if (!MODES.some((mode) => mode.slug === modeSlug)) {
-          return this.pushToolError(tool.name, `Unknown mode '${modeSlug}'.`, settings);
+        if (!MODES.some((mode) => mode.slug === modeSlug) && !this.options.isSubtaskTarget?.(modeSlug)) {
+          return this.pushToolError(tool.name, `Unknown mode or subagent '${modeSlug}'.`, settings);
         }
         if (!this.options.callbacks.startSubtask) {
           return this.pushToolError(tool.name, 'Subtasks are not supported in this context.', settings);
         }
         const approved = await this.approve('new_task', settings.autoApprove.subtasks, {
           name: tool.name,
-          title: `New subtask in ${getModeBySlug(modeSlug).name} mode`,
+          title: MODES.some((mode) => mode.slug === modeSlug) ? `New subtask in ${getModeBySlug(modeSlug).name} mode` : `Delegate to subagent ${modeSlug}`,
           mode: modeSlug,
           content: message,
         });
         if (approved.response === 'no' || this.abortController.signal.aborted) {
           return this.denied(tool.name, modeSlug, approved.text);
         }
-        const subtaskMessage = this.say({ type: 'subtask', text: message, tool: { name: tool.name, title: getModeBySlug(modeSlug).name, mode: modeSlug }, status: 'running' });
+        const subtaskMessage = this.say({ type: 'subtask', text: message, tool: { name: tool.name, title: MODES.some((mode) => mode.slug === modeSlug) ? getModeBySlug(modeSlug).name : modeSlug, mode: modeSlug }, status: 'running' });
         this.setState('waiting');
         let childResult: string;
         try {
@@ -923,6 +1031,7 @@ export class AgentTask {
       message.status = 'done';
       this.emit(message);
       this.say({ type: 'checkpoint', checkpoint: { seq }, text: displayPath });
+      this.emitEvent({ type: 'file_edit', path: displayPath, created: original === null, added: stats.added, removed: stats.removed, checkpoint: seq });
       this.consecutiveMistakes = 0;
       const problems = host.getDiagnostics ? await host.getDiagnostics(absPath) : '';
       const partialFailures = (tool as ParsedToolUse & { partialFailures?: string[] }).partialFailures || [];
@@ -949,17 +1058,19 @@ export class AgentTask {
     }
     const host = this.options.host;
     const cwd = tool.params.cwd ? resolveWorkspacePath(host.cwd, tool.params.cwd) : host.cwd;
-    const autoApproved = settings.autoApprove.execute && isCommandAutoApproved(command, settings.allowedCommands, settings.deniedCommands);
+    const gateDecision = this.gateVerdict?.decision;
+    const legacyAuto = settings.autoApprove.enabled && settings.autoApprove.execute && isCommandAutoApproved(command, settings.allowedCommands, settings.deniedCommands);
+    const autoApproved = gateDecision === 'allow' || (gateDecision !== 'ask' && legacyAuto);
     const askId = makeId();
     const commandMessage: UiMessage = {
       id: askId,
       ts: Date.now(),
       type: 'command',
       command: { command, cwd: cwd === host.cwd ? undefined : toPosixRelative(host.cwd, cwd) },
-      status: autoApproved && settings.autoApprove.enabled ? 'approved' : 'pending',
+      status: autoApproved ? 'approved' : 'pending',
     };
     let feedback: string | undefined;
-    if (autoApproved && settings.autoApprove.enabled) {
+    if (autoApproved) {
       commandMessage.ask = { kind: 'command', resolved: true, autoApproved: true };
       this.pushUi(commandMessage);
     } else {
@@ -976,6 +1087,7 @@ export class AgentTask {
     commandMessage.status = 'running';
     this.emit(commandMessage);
     let lastEmit = 0;
+    this.emitEvent({ type: 'command_start', command, cwd: toPosixRelative(host.cwd, cwd) });
     const result = await host.runCommand(command, cwd, {
       signal: this.abortController.signal,
       timeoutMs: settings.commandTimeoutSec * 1000,
@@ -993,6 +1105,7 @@ export class AgentTask {
     commandMessage.command!.output = truncateOutput(result.output, 400);
     commandMessage.status = result.exitCode === 0 ? 'done' : 'error';
     this.emit(commandMessage);
+    this.emitEvent({ type: 'command_end', command, exitCode: result.exitCode, timedOut: result.timedOut, outputTail: result.output.trim().split('\n').slice(-40).join('\n').slice(-4000) });
     if (this.abortController.signal.aborted) {
       return 'stop';
     }
@@ -1021,6 +1134,7 @@ export class AgentTask {
 
   private finishCompletion(result: string): void {
     this.completionResult = result;
+    this.emitEvent({ type: 'completion', result });
     this.setState('completed');
     const resolvers = this.completionResolvers;
     this.completionResolvers = [];
@@ -1035,7 +1149,9 @@ export class AgentTask {
   private async approve(kind: AskKind, autoApproved: boolean, info: ToolInfo): Promise<AskResponse & { message: UiMessage }> {
     const settings = this.options.getSettings();
     const message: UiMessage = { id: makeId(), ts: Date.now(), type: 'tool', tool: info, status: 'pending' };
-    if (autoApproved && settings.autoApprove.enabled) {
+    const gateDecision = kind === 'tool' || kind === 'new_task' ? this.gateVerdict?.decision : undefined;
+    const auto = gateDecision === 'allow' || (gateDecision !== 'ask' && autoApproved && settings.autoApprove.enabled);
+    if (auto) {
       message.status = 'approved';
       message.ask = { kind, resolved: true, autoApproved: true };
       this.pushUi(message);
@@ -1092,6 +1208,9 @@ export class AgentTask {
   }
 
   private setState(state: TaskStatus['state']): void {
+    if (this.status.state !== state) {
+      this.emitEvent({ type: 'state', state });
+    }
     this.status.state = state;
     if (state !== 'waiting') {
       this.status.askId = undefined;
@@ -1104,9 +1223,51 @@ export class AgentTask {
     if (this.rulesCache && this.rulesCache.mode === this.mode) {
       return this.rulesCache.text;
     }
-    const text = await loadWorkspaceRules(this.options.host.cwd, this.mode).catch(() => '');
+    const rules = await loadWorkspaceRules(this.options.host.cwd, this.mode).catch(() => '');
+    const extra = this.options.gate?.sessionContext ? await this.options.gate.sessionContext(this.gateContext).catch(() => '') : '';
+    const text = [rules, extra].filter(Boolean).join('\n\n');
     this.rulesCache = { mode: this.mode, text };
     return text;
+  }
+
+  /** UserPromptSubmit hooks. Returns extra context, or null when the prompt was blocked. */
+  private async checkPrompt(text: string): Promise<string | null> {
+    this.emitEvent({ type: 'user', text: text.slice(0, 4000) });
+    if (!this.options.gate?.userPromptSubmit) {
+      return '';
+    }
+    const outcome = await this.options.gate.userPromptSubmit(this.gateContext, text);
+    if (outcome.block) {
+      this.say({ type: 'error', text: `Prompt blocked by hook: ${outcome.block}` });
+      this.setState('idle');
+      this.options.callbacks.persist?.(this);
+      return null;
+    }
+    return outcome.additionalContext ? `\n\n<hook_context>\n${outcome.additionalContext}\n</hook_context>` : '';
+  }
+
+  private emitEvent(event: CoreEvent): void {
+    this.options.callbacks.onEvent?.(this, event);
+  }
+
+  /** Adds a note for the model, for example after a resume (used by the core runner). */
+  addNote(text: string): void {
+    this.apiMessages.push({ role: 'user', content: text, ts: Date.now() });
+    this.apiMessages.push({ role: 'assistant', content: 'Understood.', ts: Date.now() });
+    this.options.callbacks.persist?.(this);
+  }
+
+  /** Replaces the model transcript (used by /compact). The Perplexity thread is reset. */
+  replaceHistory(messages: ApiMessage[]): void {
+    this.apiMessages = messages;
+    this.thread = undefined;
+    this.rulesCache = undefined;
+    this.options.callbacks.persist?.(this);
+  }
+
+  /** Signals session start for resumed tasks (journal). */
+  markResumed(): void {
+    this.emitEvent({ type: 'session_start', mode: this.mode, cwd: this.options.host.cwd, resumed: true });
   }
 
   private async withEnvironment(content: string, includeFiles: boolean): Promise<string> {
