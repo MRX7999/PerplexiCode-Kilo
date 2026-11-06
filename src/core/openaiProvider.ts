@@ -120,6 +120,20 @@ export class OpenAICompatibleProvider implements CompletionProvider {
               finish(new Error(`Unexpected response from ${url.host}: ${(error as Error).message}`));
               return;
             }
+          } else if (buffer.trim().startsWith('data:')) {
+            const data = buffer.trim().slice(5).trim();
+            if (data && data !== '[DONE]') {
+              try {
+                const parsed = JSON.parse(data);
+                const delta = parsed.choices?.[0]?.delta?.content ?? parsed.choices?.[0]?.message?.content ?? '';
+                if (delta) {
+                  text += delta;
+                  request.onText?.(text, delta);
+                }
+              } catch {
+                // Ignore incomplete trailing line.
+              }
+            }
           }
           void startedAt;
           finish();

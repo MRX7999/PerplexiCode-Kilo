@@ -791,6 +791,28 @@ test('cli e2e: agents add / catalog, presets, --preset runs with the preset suba
   }
 });
 
+test('permissions: heredoc bodies, code property accesses (item.key), and safe dev commands do not falsely ask', () => {
+  const { root } = workspace({});
+  const cfg = perm({ mode: 'bypassPermissions' });
+  const heredocCmd = "cat << 'EOF' > src/app.ts\nconst apiKey = item.key;\n// Load from .env\nEOF";
+  assert.strictEqual(
+    evaluatePermission(cfg, { name: 'execute_command', params: { command: heredocCmd } }, root).decision,
+    'allow'
+  );
+  assert.strictEqual(
+    evaluatePermission(cfg, { name: 'execute_command', params: { command: 'node -e "console.log(item.key)"' } }, root).decision,
+    'allow'
+  );
+  assert.strictEqual(
+    evaluatePermission(perm({ allow: ['Bash(pytest *)', 'Bash(git status:*)', 'Bash(npm test:*)'], mode: 'acceptEdits' }), { name: 'execute_command', params: { command: 'pytest -q && git status && npm test' } }, root).decision,
+    'allow'
+  );
+  assert.strictEqual(
+    evaluatePermission(cfg, { name: 'execute_command', params: { command: 'cat server.key' } }, root).decision,
+    'ask'
+  );
+});
+
 async function main(): Promise<void> {
   let failed = 0;
   let ran = 0;

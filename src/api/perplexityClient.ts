@@ -1,4 +1,5 @@
 import * as https from 'https';
+import { StringDecoder } from 'string_decoder';
 import * as tls from 'tls';
 import { getModelById, getModelLabel } from './modelCatalog';
 import {
@@ -208,6 +209,46 @@ export class PerplexityWebClient {
         let fullContent = '';
         let responseMeta = { ...meta };
         let buffer = '';
+        const decoder = new StringDecoder('utf8');
+        const markdownChunks: string[] = [];
+
+        const handleEventBlock = (event: string): boolean => {
+          const trimmed = event.trim();
+          if (!trimmed) {
+            return false;
+          }
+
+          if (trimmed.includes('event: end_of_stream') || trimmed === 'data: [DONE]') {
+            callbacks.onDone(fullContent, responseMeta);
+            return true;
+          }
+
+          const payload = this._extractEventPayload(trimmed);
+          if (payload === undefined) {
+            return false;
+          }
+
+          if (typeof payload === 'string') {
+            fullContent += payload;
+            callbacks.onChunk(payload);
+            return false;
+          }
+
+          const processed = this._processChunk(payload, fullContent, responseMeta, markdownChunks);
+          fullContent = processed.content;
+          responseMeta = processed.meta;
+
+          if (processed.metaChanged) {
+            callbacks.onMeta?.(processed.metaChanged);
+          }
+          if (processed.delta) {
+            callbacks.onChunk(processed.delta);
+          }
+          if (processed.citations.length > 0) {
+            callbacks.onCitations?.(processed.citations);
+          }
+          return false;
+        };
 
         res.on('data', (chunk: Buffer) => {
           if (abortController.signal.aborted) {
@@ -215,44 +256,13 @@ export class PerplexityWebClient {
             return;
           }
 
-          buffer += chunk.toString();
-          const events = buffer.split('\r\n\r\n');
+          buffer += decoder.write(chunk);
+          const events = buffer.split(/\r?\n\r?\n/);
           buffer = events.pop() || '';
 
           for (const event of events) {
-            const trimmed = event.trim();
-            if (!trimmed) {
-              continue;
-            }
-
-            if (trimmed.includes('event: end_of_stream') || trimmed === 'data: [DONE]') {
-              callbacks.onDone(fullContent, responseMeta);
+            if (handleEventBlock(event)) {
               return;
-            }
-
-            const payload = this._extractEventPayload(trimmed);
-            if (payload === undefined) {
-              continue;
-            }
-
-            if (typeof payload === 'string') {
-              fullContent += payload;
-              callbacks.onChunk(payload);
-              continue;
-            }
-
-            const processed = this._processChunk(payload, fullContent, responseMeta);
-            fullContent = processed.content;
-            responseMeta = processed.meta;
-
-            if (processed.metaChanged) {
-              callbacks.onMeta?.(processed.metaChanged);
-            }
-            if (processed.delta) {
-              callbacks.onChunk(processed.delta);
-            }
-            if (processed.citations.length > 0) {
-              callbacks.onCitations?.(processed.citations);
             }
           }
         });
@@ -262,9 +272,18 @@ export class PerplexityWebClient {
             return;
           }
 
-          const payload = this._extractTrailingPayload(buffer);
+          buffer += decoder.end();
+          const remainingEvents = buffer.split(/\r?\n\r?\n/);
+          const tail = remainingEvents.pop() || '';
+          for (const event of remainingEvents) {
+            if (handleEventBlock(event)) {
+              return;
+            }
+          }
+
+          const payload = this._extractTrailingPayload(tail);
           if (payload && typeof payload !== 'string') {
-            const processed = this._processChunk(payload, fullContent, responseMeta);
+            const processed = this._processChunk(payload, fullContent, responseMeta, markdownChunks);
             fullContent = processed.content;
             responseMeta = processed.meta;
             if (processed.metaChanged) {
@@ -339,7 +358,8 @@ export class PerplexityWebClient {
   private _processChunk(
     data: any,
     currentContent: string,
-    currentMeta: StreamResponseMeta
+    currentMeta: StreamResponseMeta,
+    markdownChunks: string[] = []
   ): {
     content: string;
     delta: string;
@@ -393,23 +413,37 @@ export class PerplexityWebClient {
       metaChanged.mode = nextMeta.mode;
     }
 
-    if (typeof data?.answer === 'string' && data.answer.length > content.length) {
-      delta = data.answer.slice(content.length);
-      content = data.answer;
+    const isFinalStep = Boolean(data?.final || data?.text_completed || data?.step_type === 'FINAL');
+    if (typeof data?.answer === 'string' && data.answer.length > 0) {
+      if (data.answer.startsWith(content)) {
+        delta = data.answer.slice(content.length);
+        content = data.answer;
+      } else if (data.answer.length >= content.length || isFinalStep) {
+        delta = mergeNonPrefixDelta(content, data.answer);
+        content = data.answer;
+      }
     } else if (typeof data?.text === 'string') {
       const parsedText = extractTextFromPayload(data.text);
-      if (parsedText.length > content.length) {
+      if (parsedText.startsWith(content)) {
         delta = parsedText.slice(content.length);
+        content = parsedText;
+      } else if (parsedText.length >= content.length || isFinalStep) {
+        delta = mergeNonPrefixDelta(content, parsedText);
         content = parsedText;
       }
     } else if (typeof data?.choices?.[0]?.delta?.content === 'string') {
       delta = data.choices[0].delta.content;
       content += delta;
     } else if (Array.isArray(data?.blocks)) {
-      const blockText = extractMarkdownBlockText(data.blocks, content);
+      const blockText = extractMarkdownBlockText(data.blocks, content, markdownChunks);
       if (blockText !== undefined && blockText !== content) {
-        delta = blockText.startsWith(content) ? blockText.slice(content.length) : blockText;
-        content = blockText;
+        if (blockText.startsWith(content)) {
+          delta = blockText.slice(content.length);
+          content = blockText;
+        } else if (blockText.length >= content.length || isFinalStep) {
+          delta = mergeNonPrefixDelta(content, blockText);
+          content = blockText;
+        }
       }
     }
 
@@ -423,6 +457,22 @@ export class PerplexityWebClient {
   }
 
   private _extractEventPayload(event: string): any {
+    const dataLines = event
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.replace(/^data:\s?/, ''));
+    if (dataLines.length > 0) {
+      const raw = dataLines.join('\n').trim();
+      if (!raw || raw === '[DONE]') {
+        return undefined;
+      }
+      try {
+        return JSON.parse(raw);
+      } catch {
+        return event.includes('event: message') ? undefined : raw;
+      }
+    }
+
     if (event.includes('event: message')) {
       const match = event.match(/data:\s*(.*)/s);
       if (!match) {
@@ -435,18 +485,6 @@ export class PerplexityWebClient {
       }
     }
 
-    if (event.startsWith('data: ')) {
-      const raw = event.slice(6).trim();
-      if (!raw || raw === '[DONE]') {
-        return undefined;
-      }
-      try {
-        return JSON.parse(raw);
-      } catch {
-        return raw;
-      }
-    }
-
     return undefined;
   }
 
@@ -455,18 +493,7 @@ export class PerplexityWebClient {
     if (!trimmed || trimmed.includes('end_of_stream')) {
       return undefined;
     }
-    if (trimmed.startsWith('data: ')) {
-      const raw = trimmed.slice(6).trim();
-      if (!raw || raw === '[DONE]') {
-        return undefined;
-      }
-      try {
-        return JSON.parse(raw);
-      } catch {
-        return undefined;
-      }
-    }
-    return undefined;
+    return this._extractEventPayload(trimmed);
   }
 
   private _toRequestError(statusCode: number, body: string): Error & { isAccessDenied?: boolean; isQuota?: boolean; isRateLimit?: boolean; isSession?: boolean; isCloudflare?: boolean } {
@@ -545,26 +572,91 @@ function extractTextFromPayload(rawText: string): string {
 
 /**
  * Newer Perplexity SSE payloads stream the answer as markdown blocks, either as a full
- * `answer` string or as `chunks` patched in at `chunk_starting_offset`.
+ * `answer` string or as `chunks` patched in at chunk index `chunk_starting_offset`.
+ * Note: `chunk_starting_offset` is a 0-based index into the `chunks` array, NOT a character
+ * offset into `current`.
  */
-function extractMarkdownBlockText(blocks: any[], current: string): string | undefined {
+export function extractMarkdownBlockText(blocks: any[], current: string, markdownChunks: string[] = []): string | undefined {
   const block = blocks.find((entry) => entry?.markdown_block && (entry?.intended_usage === 'ask_text' || !entry?.intended_usage))
     || blocks.find((entry) => entry?.markdown_block);
   const markdown = block?.markdown_block;
   if (!markdown) {
     return undefined;
   }
-  if (typeof markdown.answer === 'string' && markdown.answer.length >= current.length) {
-    return markdown.answer;
-  }
   if (Array.isArray(markdown.chunks)) {
-    const joined = markdown.chunks.filter((chunk: unknown) => typeof chunk === 'string').join('');
-    if (typeof markdown.chunk_starting_offset === 'number') {
-      return current.slice(0, markdown.chunk_starting_offset) + joined;
+    const chunks = markdown.chunks.filter((chunk: unknown): chunk is string => typeof chunk === 'string');
+    const joined = chunks.join('');
+    if (typeof markdown.chunk_starting_offset === 'number' && Number.isInteger(markdown.chunk_starting_offset) && markdown.chunk_starting_offset >= 0) {
+      const offset = markdown.chunk_starting_offset;
+      if (offset === 0) {
+        markdownChunks.length = 0;
+        markdownChunks.push(...chunks);
+        const reconstructed = markdownChunks.join('');
+        if (typeof markdown.answer === 'string' && markdown.answer.length >= reconstructed.length) {
+          return markdown.answer;
+        }
+        return reconstructed;
+      }
+      if (offset <= markdownChunks.length) {
+        markdownChunks.splice(offset, markdownChunks.length - offset, ...chunks);
+        const reconstructed = markdownChunks.join('');
+        if (typeof markdown.answer === 'string' && markdown.answer.length >= reconstructed.length) {
+          return markdown.answer;
+        }
+        return reconstructed;
+      }
+      // Fallback when earlier chunk frames were not recorded in `markdownChunks`:
+      // never slice `current` by `chunk_starting_offset` (which is a chunk index, not a char offset).
+      if (joined.length === 0) {
+        return typeof markdown.answer === 'string' && markdown.answer.length >= current.length ? markdown.answer : current;
+      }
+      if (current.endsWith(joined)) {
+        return current;
+      }
+      for (let k = Math.min(chunks.length, 16); k >= 1; k -= 1) {
+        const prefix = chunks.slice(0, k).join('');
+        if (prefix.length > 0 && current.endsWith(prefix)) {
+          return current + chunks.slice(k).join('');
+        }
+      }
+      return current + joined;
+    }
+    if (markdownChunks.length === 0 && chunks.length > 0) {
+      markdownChunks.push(...chunks);
+    }
+    if (typeof markdown.answer === 'string' && markdown.answer.length >= joined.length && markdown.answer.length >= current.length) {
+      return markdown.answer;
     }
     return joined.length >= current.length ? joined : current + joined;
   }
+  if (typeof markdown.answer === 'string' && markdown.answer.length >= current.length) {
+    return markdown.answer;
+  }
   return undefined;
+}
+
+/**
+ * Computes only the newly appended tail when `next` replaces `previous` with minor mid-stream
+ * normalization (e.g. Perplexity auto-linking a URL earlier in the text), avoiding a full-message
+ * duplicate delta.
+ */
+function mergeNonPrefixDelta(previous: string, next: string): string {
+  if (!previous) {
+    return next;
+  }
+  if (next.startsWith(previous)) {
+    return next.slice(previous.length);
+  }
+  for (const anchorLen of [64, 32, 16, 8]) {
+    if (previous.length >= anchorLen) {
+      const anchor = previous.slice(-anchorLen);
+      const idx = next.lastIndexOf(anchor);
+      if (idx !== -1 && idx + anchor.length <= next.length) {
+        return next.slice(idx + anchor.length);
+      }
+    }
+  }
+  return '';
 }
 
 function collectCitations(data: any): string[] {

@@ -37,7 +37,7 @@ import {
 } from './tools';
 import type { CompletionRequest, CompletionResult, ThreadState } from './transport';
 import type { CoreEvent, GateContext, GateVerdict, ToolGate } from '../core/types';
-import { READ_TOOLS } from '../core/types';
+import { EDIT_TOOLS, READ_TOOLS } from '../core/types';
 import {
   AgentSettings,
   AskKind,
@@ -119,6 +119,7 @@ export class AgentTask {
   private abortController = new AbortController();
   private pendingAsk?: { id: string; kind: AskKind; resolve: (response: AskResponse) => void };
   private consecutiveMistakes = 0;
+  private didAutoMistakeRecovery = false;
   private consecutiveNoTool = 0;
   private apiRetries = 0;
   private looping = false;
@@ -242,6 +243,48 @@ export class AgentTask {
     pending.resolve(response);
   }
 
+  /**
+   * Re-evaluates a waiting approval prompt when auto-approve settings, allowed commands,
+   * or permission mode change while a task is waiting on user confirmation.
+   */
+  recheckPendingApproval(): void {
+    if (!this.pendingAsk) {
+      return;
+    }
+    const settings = this.options.getSettings();
+    if (!settings.autoApprove.enabled) {
+      return;
+    }
+    const pending = this.pendingAsk;
+    const message = this.uiMessages.find((entry) => entry.id === pending.id);
+    if (!message) {
+      return;
+    }
+    let shouldApprove = false;
+    if (pending.kind === 'command' && message.command?.command) {
+      shouldApprove =
+        settings.autoApprove.execute
+        && isCommandAutoApproved(message.command.command, settings.allowedCommands, settings.deniedCommands);
+    } else if (pending.kind === 'mode_switch') {
+      shouldApprove = settings.autoApprove.modeSwitch;
+    } else if (pending.kind === 'new_task') {
+      shouldApprove = settings.autoApprove.subtasks;
+    } else if (pending.kind === 'tool' && message.tool) {
+      const outside = Boolean(message.tool.outsideWorkspace);
+      if (READ_TOOLS.has(message.tool.name)) {
+        shouldApprove = outside ? settings.autoApprove.readOutsideWorkspace : settings.autoApprove.read;
+      } else if (EDIT_TOOLS.has(message.tool.name)) {
+        shouldApprove = settings.autoApprove.write && (!outside || settings.autoApprove.readOutsideWorkspace);
+      }
+    }
+    if (shouldApprove) {
+      if (message.ask) {
+        message.ask.autoApproved = true;
+      }
+      this.respond(pending.id, { response: 'yes' });
+    }
+  }
+
   abort(): void {
     this.abortController.abort();
     if (this.pendingAsk) {
@@ -332,7 +375,7 @@ export class AgentTask {
       todos: this.todos,
       thread: this.thread,
       checkpoints,
-      status: this.status.state,
+      status: this.status.askKind === 'completion_result' ? 'completed' : this.status.state,
       requestCount: this.status.requestCount,
       completionResult: this.completionResult,
     };
@@ -510,10 +553,11 @@ export class AgentTask {
         }
         reqMessage.status = 'error';
         this.emit(reqMessage);
-        if (settings.autoApprove.enabled && settings.autoApprove.retry && typed.kind !== 'no_account' && this.apiRetries < 2) {
+        if (settings.autoApprove.enabled && settings.autoApprove.retry && typed.kind !== 'no_account' && this.apiRetries < 4) {
           this.apiRetries += 1;
-          this.say({ type: 'info', text: `Request failed: ${typed.message}. Retrying in 5 s…` });
-          await delay(5000, this.abortController.signal);
+          const retryDelayMs = Math.min(5000, 1500 * this.apiRetries);
+          this.say({ type: 'info', text: `Request failed: ${typed.message}. Retrying (${this.apiRetries}/4)…` });
+          await delay(retryDelayMs, this.abortController.signal);
           continue;
         }
         const answer = await this.ask('api_failed', { type: 'error', text: typed.message || 'Request failed.' });
@@ -590,11 +634,18 @@ export class AgentTask {
       this.appendToLastUser(`\n\n[Note: only ${batch.length > 0 ? `the first ${batch.length + 1} read-only tool calls` : 'the first tool call'} of your message ${batch.length > 0 ? 'were' : 'was'} executed. ${ignored} additional tool call(s) were ignored. Batch only read-only tools (read_file, list_files, search_files, list_code_definition_names); use one tool per message otherwise.]`);
     }
     if (this.consecutiveMistakes >= MAX_CONSECUTIVE_MISTAKES) {
+      if (settings.autoApprove.enabled && settings.autoApprove.retry && !this.didAutoMistakeRecovery) {
+        this.didAutoMistakeRecovery = true;
+        this.consecutiveMistakes = 0;
+        this.appendToLastUser('\n\n[System recovery: Multiple consecutive tool calls failed. Re-read the target file with read_file to inspect its current contents before editing, verify all required XML parameter tags are closed, and use smaller apply_diff or write_to_file steps.]');
+        return 'continue';
+      }
       const answer = await this.ask('mistake_limit', {
         type: 'error',
         text: 'The model is having trouble using tools correctly. You can give guidance (for example "read the file first" or "split the change into smaller steps") or try a different model.',
       });
       this.consecutiveMistakes = 0;
+      this.didAutoMistakeRecovery = false;
       if (answer.response === 'no') {
         this.setState('idle');
         return 'stop';
@@ -609,8 +660,14 @@ export class AgentTask {
   private async handleNoTool(text: string): Promise<'continue' | 'stop'> {
     const previousUser = [...this.apiMessages].reverse().find((message, index) => index > 0 && message.role === 'user');
     const midTask = Boolean(previousUser && /^\[[a-z_]+( for '.*')?\] Result:/.test(previousUser.content));
-    const looksUnfinished = /\b(let me|i will|i'll|next,? i|now i|сейчас|теперь|далее|давайте)\b/i.test(text.slice(-400));
-    if (midTask && looksUnfinished && this.consecutiveNoTool < 1) {
+    const tail = text.slice(-500);
+    const looksUnfinished =
+      /(?:^|[^\p{L}\p{N}_])(let me|i will|i'll|i am going to|i'm going to|next,? i|now i|сейчас|теперь|далее|давайте|приступим|перейдем|перейдём|проверю|проверим|исправлю|исправим|обновлю|обновим|создам|создадим|запущу|запустим|добавлю|добавим|выполню|выполним|прочитаю|прочитаем|посмотрю|посмотрим)(?=$|[^\p{L}\p{N}_])/iu.test(tail)
+      || /[:…]\s*$/.test(tail.trim())
+      || /\.\.\.\s*$/.test(tail.trim())
+      || /<(read_file|write_to_file|apply_diff|insert_content|search_and_replace|execute_command|list_files|search_files|list_code_definition_names|update_todo_list|switch_mode|new_task|attempt_completion)\b/i.test(text);
+    const hasIncompleteTodos = this.todos.some((todo) => todo.status !== 'completed');
+    if (midTask && (looksUnfinished || hasIncompleteTodos) && this.consecutiveNoTool < 2) {
       this.consecutiveNoTool += 1;
       this.apiMessages.push({ role: 'user', content: NO_TOOL_USED_REMINDER, ts: Date.now() });
       return 'continue';
@@ -754,6 +811,7 @@ export class AgentTask {
           this.finishCompletion(resultText);
           return 'stop';
         }
+        this.completionResult = resultText;
         const answer = await this.ask('completion_result', {
           type: 'completion',
           text: resultText,
@@ -1015,7 +1073,7 @@ export class AgentTask {
       added: stats.added,
       removed: stats.removed,
     };
-    const approved = await this.approve('tool', settings.autoApprove.write && !outside, info);
+    const approved = await this.approve('tool', settings.autoApprove.write && (!outside || settings.autoApprove.readOutsideWorkspace), info);
     if (approved.response === 'no' || this.abortController.signal.aborted) {
       return this.denied(tool.name, displayPath, approved.text);
     }
@@ -1150,7 +1208,15 @@ export class AgentTask {
     const settings = this.options.getSettings();
     const message: UiMessage = { id: makeId(), ts: Date.now(), type: 'tool', tool: info, status: 'pending' };
     const gateDecision = kind === 'tool' || kind === 'new_task' ? this.gateVerdict?.decision : undefined;
-    const auto = gateDecision === 'allow' || (gateDecision !== 'ask' && autoApproved && settings.autoApprove.enabled);
+    const explicitOutsideAllow =
+      !info.outsideWorkspace
+      || !READ_TOOLS.has(info.name)
+      || (settings.autoApprove.enabled && settings.autoApprove.readOutsideWorkspace)
+      || this.gateVerdict?.source === 'mode: bypassPermissions'
+      || Boolean(this.gateVerdict?.source?.includes('('));
+    const auto =
+      (gateDecision === 'allow' && explicitOutsideAllow)
+      || (gateDecision !== 'ask' && autoApproved && settings.autoApprove.enabled);
     if (auto) {
       message.status = 'approved';
       message.ask = { kind, resolved: true, autoApproved: true };

@@ -126,10 +126,25 @@ function thinkingRanges(source: string): Array<[number, number]> {
   return ranges;
 }
 
+function fencedRanges(source: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  const regex = /```[^\n]*\n[\s\S]*?```/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(source)) !== null) {
+    ranges.push([match.index, match.index + match[0].length]);
+  }
+  return ranges;
+}
+
 function findFirstTool(source: string): { name: string; index: number } | undefined {
-  let best: { name: string; index: number } | undefined;
   const thinking = thinkingRanges(source);
+  const fences = fencedRanges(source);
   const insideThinking = (index: number) => thinking.some(([from, to]) => index >= from && index < to);
+  const insideFence = (index: number) => fences.some(([from, to]) => index >= from && index < to);
+
+  let bestUnfenced: { name: string; index: number } | undefined;
+  let bestFenced: { name: string; index: number } | undefined;
+
   for (const name of TOOL_NAMES) {
     const regex = new RegExp(`<${name}>`, 'g');
     let match: RegExpExecArray | null;
@@ -143,13 +158,19 @@ function findFirstTool(source: string): { name: string; index: number } | undefi
       if (insideThinking(match.index)) {
         continue;
       }
-      if (!best || match.index < best.index) {
-        best = { name, index: match.index };
+      if (insideFence(match.index)) {
+        if (!bestFenced || match.index < bestFenced.index) {
+          bestFenced = { name, index: match.index };
+        }
+        continue;
+      }
+      if (!bestUnfenced || match.index < bestUnfenced.index) {
+        bestUnfenced = { name, index: match.index };
       }
       break;
     }
   }
-  return best;
+  return bestUnfenced || bestFenced;
 }
 
 function countTools(source: string): number {
@@ -167,13 +188,14 @@ function extractTool(source: string, name: string, start: number): ParsedToolUse
   const bodyStart = start + openTag.length;
   const params: Record<string, string> = {};
   const paramNames = TOOL_PARAMS[name] || [];
+  const siblingPattern = paramNames.length > 0 ? paramNames.map(escapeRegex).join('|') : '[a-z_]+';
 
   let cursor = bodyStart;
   let closeIndex = -1;
   const bodySpans: Array<[number, number]> = [];
 
   // Resolve body params first: their closing tag is the first one that is followed only by
-  // other params and the tool's closing tag.
+  // other params of this tool and the tool's closing tag.
   for (const param of paramNames.filter((entry) => BODY_PARAMS.has(entry))) {
     const open = `<${param}>`;
     const close = `</${param}>`;
@@ -184,13 +206,13 @@ function extractTool(source: string, name: string, start: number): ParsedToolUse
     const valueStart = openIndex + open.length;
     let searchFrom = valueStart;
     let chosen = -1;
+    const tail = new RegExp(`^\\s*(?:<(${siblingPattern})>[\\s\\S]*?<\\/\\1>\\s*)*${escapeRegex(closeTag)}`);
     while (true) {
       const candidate = source.indexOf(close, searchFrom);
       if (candidate === -1) {
         break;
       }
       const after = source.slice(candidate + close.length);
-      const tail = new RegExp(`^\\s*(?:<([a-z_]+)>[\\s\\S]*?<\\/\\1>\\s*)*${escapeRegex(closeTag)}`);
       if (tail.test(after)) {
         chosen = candidate;
         break;
@@ -212,6 +234,31 @@ function extractTool(source: string, name: string, start: number): ParsedToolUse
   }
 
   closeIndex = source.indexOf(closeTag, cursor);
+
+  // If another `<name>` opens after `cursor` before `closeTag`, the first block had its closing
+  // tag corrupted and was followed by a clean repeated tool call; prefer the clean block.
+  const nextOpen = source.indexOf(openTag, cursor);
+  if (nextOpen !== -1 && (closeIndex === -1 || nextOpen < closeIndex)) {
+    const nextClose = source.indexOf(closeTag, nextOpen + openTag.length);
+    if (nextClose !== -1) {
+      return extractTool(source, name, nextOpen);
+    }
+  }
+
+  let closeLength = closeTag.length;
+  if (closeIndex === -1 && name.length >= 6) {
+    // Recover when a mid-stream splice corrupted the outer closing tag (e.g. `</apply_d...iff>`)
+    // after all inner parameters were already closed.
+    const prefix = escapeRegex(name.slice(0, 4));
+    const suffix = escapeRegex(name.slice(-3));
+    const corruptedClose = new RegExp(`^(\\s*(?:<(${siblingPattern})>[\\s\\S]*?<\\/\\2>\\s*)*)<\\/${prefix}[^>]{1,120}?${suffix}>`);
+    const match = source.slice(cursor).match(corruptedClose);
+    if (match) {
+      closeIndex = cursor + match[1].length;
+      closeLength = match[0].length - match[1].length;
+    }
+  }
+
   // Mask body params so a "<path>" inside file content cannot shadow the real parameter.
   let toolBody = source.slice(bodyStart, closeIndex === -1 ? source.length : closeIndex);
   for (const [from, to] of bodySpans) {
@@ -239,16 +286,41 @@ function extractTool(source: string, name: string, start: number): ParsedToolUse
     params: finalizeParams(name, params),
     partial: closeIndex === -1,
     start,
-    end: closeIndex === -1 ? source.length : closeIndex + closeTag.length,
+    end: closeIndex === -1 ? source.length : closeIndex + closeLength,
   };
 }
 
+/**
+ * Unwraps Markdown links `[https://...](https://...)` injected by Perplexity's post-processor
+ * when the link label and target URL are identical.
+ */
+export function unwrapAutoLinkedUrls(value: string): string {
+  return value.replace(/\[(https?:\/\/[^\s\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (full, label: string, href: string) => {
+    const normLabel = label.replace(/\/+$/, '');
+    const normHref = href.replace(/\/+$/, '');
+    return normLabel === normHref ? label : full;
+  });
+}
+
 function finalizeParams(name: string, params: Record<string, string>): Record<string, string> {
+  if (params.path) {
+    params.path = unwrapAutoLinkedUrls(decodeEntities(params.path)).replace(/^["'`]|["'`]$/g, '').trim();
+  }
+  if (params.cwd) {
+    params.cwd = unwrapAutoLinkedUrls(decodeEntities(params.cwd)).replace(/^["'`]|["'`]$/g, '').trim();
+  }
+  if (typeof params.command === 'string') {
+    params.command = unwrapAutoLinkedUrls(decodeEntities(params.command));
+  }
+  const isMarkdownPath = Boolean(params.path && /\.(md|mdx|markdown)$/i.test(params.path));
   if ((name === 'write_to_file' || name === 'insert_content') && typeof params.content === 'string') {
     params.content = stripWrappingFence(params.content);
+    if (!isMarkdownPath) {
+      params.content = unwrapAutoLinkedUrls(params.content);
+    }
   }
-  if (params.path) {
-    params.path = params.path.replace(/^["'`]|["'`]$/g, '').trim();
+  if (name === 'apply_diff' && typeof params.diff === 'string' && !isMarkdownPath) {
+    params.diff = unwrapAutoLinkedUrls(params.diff);
   }
   return params;
 }
@@ -282,7 +354,10 @@ function splitThinking(text: string, partial: boolean): { text: string; reasonin
 }
 
 function cleanupProse(text: string): string {
+  const toolNamesGroup = TOOL_NAMES.map(escapeRegex).join('|');
+  const echoedFence = new RegExp(`\`\`\`(?:xml|html)?\\s*<(${toolNamesGroup})>[\\s\\S]*?<\\/\\1>\\s*\`\`\``, 'gi');
   return text
+    .replace(echoedFence, '')
     .replace(/```(?:xml|html)?\s*$/i, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();

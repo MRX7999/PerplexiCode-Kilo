@@ -82,7 +82,7 @@ async function main() {
   installSkillPreset('write-tests', 'user', { cwd: dir, home });
   const library = librarySnapshot({ cwd: dir, home }, [{ title: 'Go service skeleton', description: 'cmd/, internal/, tests, Makefile', mode: 'code', agent: 'go-expert', prompt: 'Create a Go service: {{input}}' }]);
   const base = {
-    type: 'state', version: '3.1.0', includeMessages: true, library, permissionMode: 'default',
+    type: 'state', version: '3.2.0', includeMessages: true, library, permissionMode: 'default',
     mode: 'code',
     modes: MODES.map((mode) => ({ slug: mode.slug, name: mode.name, description: mode.description, icon: mode.icon })),
     models: models.map((model) => ({ id: model.id, label: model.label, description: model.description, category: model.category, supportsThinking: model.supportsThinking, requiredPlan: model.requiredPlan, isNew: model.isNew === true, surfaced: model.surfaced !== false, selectable: model.selectable !== false, provider: model.provider || null })),

@@ -1,6 +1,7 @@
 import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import { extractSingleFunctionHeader, findFunctionBlockEnd, parseFunctionHeaderLine } from './diffEngine';
 
 /**
  * Workspace tool implementations. Everything VS Code specific goes through AgentHost so the
@@ -391,18 +392,96 @@ export async function listCodeDefinitionsTool(host: AgentHost, relPath: string):
   return output.length > 0 ? output.join('\n\n') : 'No source code definitions found.';
 }
 
-export function insertContent(original: string, line: number, content: string): string {
+/**
+ * If `content` is a complete function/method definition that already exists in `original`
+ * (or is already present verbatim at `line`), returns the updated file content with the
+ * existing function replaced in-place instead of duplicated. Returns `null` when normal
+ * insertion should proceed.
+ */
+export function replaceExistingFunctionOnInsert(original: string, line: number, content: string): string | null {
   const eol = original.includes('\r\n') ? '\r\n' : '\n';
-  const lines = original.replace(/\r\n/g, '\n').split('\n');
+  const normalizedOriginal = original.replace(/\r\n/g, '\n');
+  const lines = normalizedOriginal.split('\n');
   const inserted = content.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n');
-  if (line <= 0 || line > lines.length) {
+
+  const isAppend = line <= 0 || line > lines.length;
+  const targetIndex = isAppend
+    ? (lines.length > 0 && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length)
+    : line - 1;
+
+  // Idempotency guard: if the exact block is already present at or right before targetIndex, do not duplicate it.
+  if (inserted.length > 0) {
+    const matchesAt = (start: number): boolean => {
+      if (start < 0 || start + inserted.length > lines.length) {
+        return false;
+      }
+      for (let i = 0; i < inserted.length; i += 1) {
+        if (lines[start + i].trimEnd() !== inserted[i].trimEnd()) {
+          return false;
+        }
+      }
+      return true;
+    };
+    if (matchesAt(targetIndex) || matchesAt(targetIndex - inserted.length)) {
+      return original;
+    }
+  }
+
+  // Function-definition guard: if inserting a complete function/method that already exists, replace it in place.
+  const fnHeader = extractSingleFunctionHeader(inserted);
+  const insertedEnd = fnHeader ? findFunctionBlockEnd(inserted, fnHeader.lineIndex) : undefined;
+  const trailingNonEmpty = insertedEnd !== undefined
+    ? inserted.slice(insertedEnd).some((line) => line.trim() !== '')
+    : true;
+  if (fnHeader && insertedEnd !== undefined && !trailingNonEmpty) {
+    const candidates: Array<{ start: number; end: number; distance: number }> = [];
+    for (let i = 0; i < lines.length; i += 1) {
+      const parsed = parseFunctionHeaderLine(lines[i]);
+      if (parsed && parsed.key === fnHeader.key) {
+        const end = findFunctionBlockEnd(lines, i);
+        if (end !== undefined) {
+          const distance = targetIndex >= i && targetIndex <= end
+            ? 0
+            : Math.min(Math.abs(i - targetIndex), Math.abs(end - targetIndex));
+          candidates.push({ start: i, end, distance });
+        }
+      }
+    }
+    const nearCandidate = candidates.find((c) => c.distance <= 15);
+    const uniqueCandidate = candidates.length === 1 ? candidates[0] : undefined;
+    const chosen = nearCandidate || uniqueCandidate;
+    if (chosen) {
+      lines.splice(chosen.start, chosen.end - chosen.start, ...inserted);
+      return lines.join(eol);
+    }
+  }
+
+  return null;
+}
+
+export function insertContent(original: string, line: number, content: string): string {
+  const replaced = replaceExistingFunctionOnInsert(original, line, content);
+  if (replaced !== null) {
+    return replaced;
+  }
+  const eol = original.includes('\r\n') ? '\r\n' : '\n';
+  const normalizedOriginal = original.replace(/\r\n/g, '\n');
+  const lines = normalizedOriginal.split('\n');
+  const inserted = content.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n');
+
+  const isAppend = line <= 0 || line > lines.length;
+  const targetIndex = isAppend
+    ? (lines.length > 0 && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length)
+    : line - 1;
+
+  if (isAppend) {
     if (lines.length > 0 && lines[lines.length - 1] === '') {
       lines.splice(lines.length - 1, 0, ...inserted);
     } else {
       lines.push(...inserted);
     }
   } else {
-    lines.splice(line - 1, 0, ...inserted);
+    lines.splice(targetIndex, 0, ...inserted);
   }
   return lines.join(eol);
 }
@@ -427,8 +506,119 @@ export function stripAnsi(text: string): string {
   return text.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007]*\u0007/g, '');
 }
 
+/**
+ * Strips heredoc body lines (`<<EOF ... EOF`) from a shell command while keeping the command header
+ * lines intact so heredoc payloads are never mistaken for shell segments or secret file arguments.
+ */
+export function stripHeredocBodies(command: string): string {
+  let out = '';
+  let quote: string | undefined;
+  const pendingDelimiters: string[] = [];
+  let i = 0;
+
+  while (i < command.length) {
+    const char = command[i];
+    if (quote) {
+      out += char;
+      if (char === quote && (quote === '\'' || command[i - 1] !== '\\')) {
+        quote = undefined;
+      }
+      i += 1;
+      continue;
+    }
+
+    if (char === '\\' && i + 1 < command.length) {
+      out += char + command[i + 1];
+      i += 2;
+      continue;
+    }
+
+    if (char === '"' || char === '\'' || char === '`') {
+      quote = char;
+      out += char;
+      i += 1;
+      continue;
+    }
+
+    if (
+      char === '<' &&
+      command[i + 1] === '<' &&
+      command[i - 1] !== '<' &&
+      command[i + 2] !== '<'
+    ) {
+      const rest = command.slice(i);
+      const match = /^<<-?\s*(?:(['"])([A-Za-z_][\w-]*)\1|\\?([A-Za-z_][\w-]*))/.exec(rest);
+      if (match) {
+        const delimiter = match[2] || match[3];
+        if (delimiter) {
+          pendingDelimiters.push(delimiter);
+        }
+        out += match[0];
+        i += match[0].length;
+        continue;
+      }
+    }
+
+    if (char === '\n') {
+      out += '\n';
+      i += 1;
+      while (pendingDelimiters.length > 0 && i < command.length) {
+        const delimiter = pendingDelimiters.shift()!;
+        while (i < command.length) {
+          const lineEnd = command.indexOf('\n', i);
+          const rawLine = lineEnd === -1 ? command.slice(i) : command.slice(i, lineEnd);
+          i = lineEnd === -1 ? command.length : lineEnd + 1;
+          if (rawLine.replace(/\r$/, '').trim() === delimiter) {
+            break;
+          }
+        }
+      }
+      continue;
+    }
+
+    out += char;
+    i += 1;
+  }
+
+  return out;
+}
+
+/**
+ * Strips leading shell comments, subshell/group brackets, `env`/`command`/`time`/`nohup` wrappers,
+ * and leading `KEY=VALUE` variable assignments from a single command segment.
+ */
+export function stripLeadingCommandWrappers(command: string): string {
+  let s = command.trim();
+  while (s.startsWith('#')) {
+    const nl = s.indexOf('\n');
+    if (nl === -1) {
+      return '';
+    }
+    s = s.slice(nl + 1).trim();
+  }
+  s = s.replace(/^[({]+/, '').replace(/[)}]+$/, '').trim();
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const wrapperMatch = /^(?:env|command|time|nohup)\s+/.exec(s);
+    if (wrapperMatch) {
+      s = s.slice(wrapperMatch[0].length).trimStart();
+      changed = true;
+    }
+    const envMatch = /^[A-Za-z_][A-Za-z0-9_]*=(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s"']*)\s+/.exec(s);
+    if (envMatch) {
+      s = s.slice(envMatch[0].length).trimStart();
+      changed = true;
+    }
+  }
+  return s.replace(/^[({]+/, '').replace(/[)}]+$/, '').trim();
+}
+
 export function matchesCommandPrefix(command: string, prefixes: string[]): boolean {
   const normalized = command.trim();
+  const unwrapped = stripLeadingCommandWrappers(normalized);
+  const candidates = unwrapped && unwrapped !== normalized ? [normalized, unwrapped] : [normalized];
   return prefixes.some((prefix) => {
     const trimmed = prefix.trim();
     if (!trimmed) {
@@ -437,22 +627,35 @@ export function matchesCommandPrefix(command: string, prefixes: string[]): boole
     if (trimmed === '*') {
       return true;
     }
-    return normalized === trimmed || normalized.startsWith(`${trimmed} `) || (/[\s/=-]$/.test(trimmed) && normalized.startsWith(trimmed));
+    return candidates.some(
+      (candidate) =>
+        candidate === trimmed ||
+        candidate.startsWith(`${trimmed} `) ||
+        (/[\s/=-]$/.test(trimmed) && candidate.startsWith(trimmed))
+    );
   });
 }
 
 /** Splits chained shell commands so each segment is checked against the allow list. */
 export function splitCommandChain(command: string): string[] {
+  const withoutHeredocs = stripHeredocBodies(command).replace(/\\\r?\n/g, ' ');
   const segments: string[] = [];
   let current = '';
   let quote: string | undefined;
-  for (let i = 0; i < command.length; i += 1) {
-    const char = command[i];
+  let subshellDepth = 0;
+
+  for (let i = 0; i < withoutHeredocs.length; i += 1) {
+    const char = withoutHeredocs[i];
     if (quote) {
       current += char;
-      if (char === quote && command[i - 1] !== '\\') {
+      if (char === quote && (quote === '\'' || withoutHeredocs[i - 1] !== '\\')) {
         quote = undefined;
       }
+      continue;
+    }
+    if (char === '\\' && i + 1 < withoutHeredocs.length) {
+      current += char + withoutHeredocs[i + 1];
+      i += 1;
       continue;
     }
     if (char === '"' || char === '\'' || char === '`') {
@@ -460,7 +663,22 @@ export function splitCommandChain(command: string): string[] {
       current += char;
       continue;
     }
-    const two = command.slice(i, i + 2);
+    if (char === '$' && withoutHeredocs[i + 1] === '(') {
+      subshellDepth += 1;
+      current += '$(';
+      i += 1;
+      continue;
+    }
+    if (subshellDepth > 0) {
+      if (char === '(') {
+        subshellDepth += 1;
+      } else if (char === ')') {
+        subshellDepth -= 1;
+      }
+      current += char;
+      continue;
+    }
+    const two = withoutHeredocs.slice(i, i + 2);
     if (two === '&&' || two === '||') {
       segments.push(current);
       current = '';
@@ -472,21 +690,219 @@ export function splitCommandChain(command: string): string[] {
       current = '';
       continue;
     }
+    if (
+      char === '&' &&
+      withoutHeredocs[i - 1] !== '>' &&
+      withoutHeredocs[i - 1] !== '<' &&
+      withoutHeredocs[i + 1] !== '>' &&
+      withoutHeredocs[i + 1] !== '&'
+    ) {
+      segments.push(current);
+      current = '';
+      continue;
+    }
     current += char;
   }
   segments.push(current);
-  return segments.map((segment) => segment.trim()).filter(Boolean);
+  return segments
+    .map((segment) => {
+      let s = segment.trim();
+      while (s.startsWith('#')) {
+        const nl = s.indexOf('\n');
+        if (nl === -1) {
+          return '';
+        }
+        s = s.slice(nl + 1).trim();
+      }
+      return s;
+    })
+    .filter(Boolean);
+}
+
+function extractCommandSubstitutions(shellCommand: string): { valid: boolean; subcommands: string[] } {
+  const subcommands: string[] = [];
+  let quote: '"' | '\'' | undefined;
+
+  for (let i = 0; i < shellCommand.length; i += 1) {
+    const ch = shellCommand[i];
+    if (quote === '\'') {
+      if (ch === '\'') {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (ch === '\\' && i + 1 < shellCommand.length) {
+      i += 1;
+      continue;
+    }
+    if (ch === '"' || ch === '\'') {
+      quote = quote === ch ? undefined : ch;
+      continue;
+    }
+    if (ch === '$' && shellCommand[i + 1] === '(') {
+      let depth = 1;
+      let j = i + 2;
+      let innerQuote: '"' | '\'' | undefined;
+      while (j < shellCommand.length && depth > 0) {
+        const c = shellCommand[j];
+        if (innerQuote === '\'') {
+          if (c === '\'') {
+            innerQuote = undefined;
+          }
+          j += 1;
+          continue;
+        }
+        if (c === '\\' && j + 1 < shellCommand.length) {
+          j += 2;
+          continue;
+        }
+        if (c === '"' || c === '\'') {
+          innerQuote = innerQuote === c ? undefined : c;
+          j += 1;
+          continue;
+        }
+        if (c === '(') {
+          depth += 1;
+        } else if (c === ')') {
+          depth -= 1;
+        }
+        j += 1;
+      }
+      if (depth !== 0) {
+        return { valid: false, subcommands: [] };
+      }
+      const inner = shellCommand.slice(i + 2, j - 1).trim();
+      if (!inner) {
+        return { valid: false, subcommands: [] };
+      }
+      subcommands.push(inner);
+      const nested = extractCommandSubstitutions(inner);
+      if (!nested.valid) {
+        return { valid: false, subcommands: [] };
+      }
+      subcommands.push(...nested.subcommands);
+      i = j - 1;
+      continue;
+    }
+    if (ch === '`') {
+      let j = i + 1;
+      while (j < shellCommand.length) {
+        if (shellCommand[j] === '\\' && j + 1 < shellCommand.length) {
+          j += 2;
+          continue;
+        }
+        if (shellCommand[j] === '`') {
+          break;
+        }
+        j += 1;
+      }
+      if (j >= shellCommand.length) {
+        return { valid: false, subcommands: [] };
+      }
+      const inner = shellCommand.slice(i + 1, j).trim();
+      if (!inner) {
+        return { valid: false, subcommands: [] };
+      }
+      subcommands.push(inner);
+      i = j;
+    }
+  }
+  return { valid: true, subcommands };
+}
+
+const DEFAULT_SAFE_DEV_PREFIXES = [
+  'git status',
+  'git diff',
+  'git log',
+  'git branch',
+  'git show',
+  'npm test',
+  'npm run test',
+  'npm run lint',
+  'npm run build',
+  'npm run check',
+  'npm run typecheck',
+  'npx tsc',
+  'tsc --noEmit',
+  'pytest',
+  'python -m pytest',
+  'python3 -m pytest',
+  'go test',
+  'go vet',
+  'cargo test',
+  'cargo check',
+  'cargo clippy',
+];
+
+function isPureEnvAssignment(segment: string): boolean {
+  const s = segment.trim().replace(/^[({]+/, '').replace(/[)}]+$/, '').trim();
+  return /^[A-Za-z_][A-Za-z0-9_]*=(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s"']*)$/.test(s);
+}
+
+function isSafeNavigationSegment(segment: string): boolean {
+  const s = stripLeadingCommandWrappers(segment);
+  return /^(?:cd(?:\s+[^;&|`$()]+)?|pwd|true|:)$/.test(s);
 }
 
 export function isCommandAutoApproved(command: string, allowed: string[], denied: string[]): boolean {
-  if (/\$\(|`|>\s*\/|\bsudo\b/.test(command)) {
+  const shellPart = stripHeredocBodies(command);
+  const subs = extractCommandSubstitutions(shellPart);
+  if (!subs.valid) {
     return false;
   }
-  const segments = splitCommandChain(command);
-  if (segments.length === 0) {
+
+  const mainSegments = splitCommandChain(shellPart);
+  if (mainSegments.length === 0) {
     return false;
   }
-  return segments.every((segment) => matchesCommandPrefix(segment, allowed) && !matchesCommandPrefix(segment, denied));
+
+  const subSegments: string[] = [];
+  for (const sub of subs.subcommands) {
+    const parts = splitCommandChain(sub);
+    if (parts.length === 0) {
+      return false;
+    }
+    subSegments.push(...parts);
+  }
+
+  const allSegments = [...mainSegments, ...subSegments];
+  const explicitSudoAllowed = allowed.some((p) => {
+    const t = p.trim();
+    return t === 'sudo' || t.startsWith('sudo ');
+  });
+
+  for (const segment of allSegments) {
+    if (matchesCommandPrefix(segment, denied)) {
+      return false;
+    }
+    const unwrapped = stripLeadingCommandWrappers(segment);
+    if (/^sudo(?:\s|$)/.test(unwrapped) && !explicitSudoAllowed) {
+      return false;
+    }
+  }
+
+  const allowAll = allowed.some((p) => p.trim() === '*');
+  if (allowAll) {
+    return true;
+  }
+
+  // In prefix mode, reject arbitrary root redirects except safe targets (/dev/null, /tmp/*, /var/tmp/*).
+  if (/(?:^|[^\d])>{1,2}\s*\/(?!dev\/null\b|tmp\/|var\/tmp\/)/.test(shellPart)) {
+    return false;
+  }
+
+  const effectiveAllowed = [...allowed, ...DEFAULT_SAFE_DEV_PREFIXES];
+  const hasActionMain = mainSegments.some((seg) => !isPureEnvAssignment(seg) && !isSafeNavigationSegment(seg));
+  if (!hasActionMain) {
+    return mainSegments.every((seg) => isSafeNavigationSegment(seg) || matchesCommandPrefix(seg, effectiveAllowed));
+  }
+
+  return allSegments.every(
+    (segment) =>
+      isPureEnvAssignment(segment)
+      || isSafeNavigationSegment(segment)
+      || matchesCommandPrefix(segment, effectiveAllowed)
+  );
 }
 
 /** Default shell runner used by the VS Code host. */

@@ -20,6 +20,7 @@ import {
   StreamResponseMeta,
 } from '../api/types';
 import { AccountManager } from '../storage/accountManager';
+import { parseAssistantMessage } from './toolParser';
 
 export interface ThreadState extends FollowUpThread {
   accountId: string;
@@ -64,6 +65,7 @@ interface Attempt {
   requestMode: PerplexityRequestMode;
   sources: QuerySource[];
   useFollowUp: boolean;
+  retryCount?: number;
 }
 
 export class TransportError extends Error {
@@ -159,7 +161,7 @@ export class PerplexityTransport {
   }
 
   private async _run(request: CompletionRequest, attempt: Attempt, tried: Set<string>): Promise<CompletionResult> {
-    const key = `${attempt.account.id}|${attempt.modelId}|${attempt.requestMode}|${attempt.sources.join(',')}|${attempt.useFollowUp}`;
+    const key = `${attempt.account.id}|${attempt.modelId}|${attempt.requestMode}|${attempt.sources.join(',')}|${attempt.useFollowUp}|${attempt.retryCount || 0}`;
     if (tried.has(key)) {
       throw new TransportError('Perplexity rejected every fallback for this request.', 'failed');
     }
@@ -240,9 +242,16 @@ export class PerplexityTransport {
           }
           settled = true;
           request.signal.removeEventListener('abort', onAbort);
-          const finalText = fullContent && fullContent.length >= text.length ? fullContent : text;
+          const finalText = fullContent && fullContent.trim().length > 0
+            ? (text.startsWith(fullContent) ? text : fullContent)
+            : text;
           if (!finalText.trim()) {
             reject(new Error('Perplexity returned an empty answer.'));
+            return;
+          }
+          const parsed = parseAssistantMessage(finalText);
+          if (parsed.tool?.partial) {
+            reject(new Error(`Perplexity returned an incomplete tool call (<${parsed.tool.name}> was cut off).`));
             return;
           }
           resolve({ text: finalText, meta, citations: [...citations] });
@@ -277,6 +286,7 @@ export class PerplexityTransport {
     const isAccessDenied = Boolean(flags.isAccessDenied)
       || ['rejected by perplexity', 'not available for the current account', 'access denied', 'forbidden', '400'].some((n) => lowered.includes(n));
     const isEmpty = lowered.includes('empty answer');
+    const isTruncated = lowered.includes('incomplete tool call') || lowered.includes('was cut off');
 
     // 1. A broken follow-up thread: resend the self-contained prompt as a new thread.
     if (attempt.useFollowUp) {
@@ -284,8 +294,21 @@ export class PerplexityTransport {
       return { ...attempt, useFollowUp: false };
     }
 
-    // 2. Some accounts reject searches without sources; retry with web search enabled.
-    if (attempt.sources.length === 0 && (isAccessDenied || isEmpty)) {
+    // 2. Retry transient empty or truncated-tool-call answers up to 2 times.
+    if ((isEmpty || isTruncated) && (attempt.retryCount || 0) < 2) {
+      const nextSources = attempt.sources.length === 0 && isEmpty ? (['web'] as QuerySource[]) : attempt.sources;
+      if (attempt.sources.length === 0 && isEmpty) {
+        this.emptySourcesRejected = true;
+      }
+      return {
+        ...attempt,
+        sources: nextSources,
+        retryCount: (attempt.retryCount || 0) + 1,
+      };
+    }
+
+    // 3. Some accounts reject searches without sources; retry with web search enabled.
+    if (attempt.sources.length === 0 && isAccessDenied) {
       this.emptySourcesRejected = true;
       return { ...attempt, sources: ['web'] };
     }
