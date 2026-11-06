@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { resolveWorkspacePath, splitCommandChain } from '../agent/tools';
+import { resolveWorkspacePath, splitCommandChain, stripHeredocBodies, stripLeadingCommandWrappers } from '../agent/tools';
 import { CLAUDE_TOOL_NAMES, EDIT_TOOLS, GateToolCall, GateVerdict, META_TOOLS, PermissionMode, READ_TOOLS } from './types';
 
 /**
@@ -156,16 +156,23 @@ export function pathMatches(specifier: string, absPath: string, root: string): b
 /** Claude Code Bash specifier: "cmd:*" prefix, "*" wildcards, otherwise exact. */
 export function commandMatches(specifier: string, command: string): boolean {
   const normalized = command.trim().replace(/\s+/g, ' ');
+  const unwrapped = stripLeadingCommandWrappers(normalized).replace(/\s+/g, ' ');
+  const candidates = unwrapped && unwrapped !== normalized ? [normalized, unwrapped] : [normalized];
   const spec = specifier.trim().replace(/\s+/g, ' ');
   if (spec.endsWith(':*')) {
     const prefix = spec.slice(0, -2).trim();
-    return normalized === prefix || normalized.startsWith(`${prefix} `) || normalized.startsWith(prefix) && /[\s/=:-]$/.test(prefix);
+    return candidates.some(
+      (candidate) =>
+        candidate === prefix ||
+        candidate.startsWith(`${prefix} `) ||
+        (candidate.startsWith(prefix) && /[\s/=:-]$/.test(prefix))
+    );
   }
   if (spec.includes('*')) {
     const regex = new RegExp(`^${spec.split('*').map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`);
-    return regex.test(normalized);
+    return candidates.some((candidate) => regex.test(candidate));
   }
-  return normalized === spec;
+  return candidates.some((candidate) => candidate === spec);
 }
 
 export interface ResolvedToolTarget {
@@ -244,15 +251,26 @@ function ruleMatches(rule: PermissionRule, tool: GateToolCall, target: ResolvedT
 
 /** Shell segments that look like they touch a protected secret file. */
 export function commandTouchesSecret(command: string): string | undefined {
-  const tokens = command.split(/[\s"'`=<>|;&()]+/).filter(Boolean);
+  const shellOnly = stripHeredocBodies(command)
+    .replace(/(?:^|\s)-m\s+(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g, ' ');
+  const tokens = shellOnly.split(/[\s"'`=<>|;&()]+/).filter(Boolean);
   for (const token of tokens) {
+    if (/[{}[\],:;!?+*]/.test(token)) {
+      continue;
+    }
     const base = token.split('/').pop() || token;
     for (const pattern of SECRET_PATTERNS) {
       if (pattern.includes('/')) {
         if (token.includes(pattern.replace('/**', '/'))) return token;
         continue;
       }
-      if (pathGlobToRegex(pattern).test(base) && !/^\.env\.(example|sample|template|dist)$/i.test(base)) {
+      if (pattern === '*.key' && !token.includes('/')) {
+        if (/^(?:private|secret|server|client|tls|ssl|ca|host|auth|master|root|signing|cert|service|api|id)[-_.]?.*\.key$/i.test(base)) {
+          return token;
+        }
+        continue;
+      }
+      if (pathGlobToRegex(pattern).test(base) && !/^\.env\.(example|sample|template|dist|schema|test)$/i.test(base)) {
         return token;
       }
     }

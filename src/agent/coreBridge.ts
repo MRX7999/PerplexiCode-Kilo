@@ -56,7 +56,12 @@ export class CoreBridge {
     return new CoreGate({
       cwd: options.cwd,
       settings,
-      permissionMode: () => this.permissionMode,
+      permissionMode: () => {
+        const mode = this.permissionMode;
+        if (mode !== 'default') return mode;
+        const fromSettings = settings.permissions.defaultMode;
+        return fromSettings && PERMISSION_MODES.includes(fromSettings) ? fromSettings : 'default';
+      },
       toolAllowList: agent?.tools,
       extraContext: agent
         ? options.parentId

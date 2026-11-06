@@ -32,7 +32,7 @@ import {
   WriteResult,
 } from '../core/library';
 import { TaskStore } from './taskStore';
-import { listFilesTool, readFileTool, resolveWorkspacePath, toPosixRelative } from './tools';
+import { listFilesTool, readFileTool, replaceExistingFunctionOnInsert, resolveWorkspacePath, toPosixRelative } from './tools';
 import { PerplexityTransport, TransportError } from './transport';
 import { AgentSettings, ModelSelection, PersistedTask, UiMessage } from './types';
 import type { TodoItem } from './toolParser';
@@ -202,8 +202,16 @@ export class AgentController implements vscode.Disposable {
         todo: config.get<boolean>('autoApprove.todo', true),
         retry: config.get<boolean>('autoApprove.retry', true),
       },
-      allowedCommands: config.get<string[]>('allowedCommands', []),
-      deniedCommands: config.get<string[]>('deniedCommands', []),
+      allowedCommands: config.get<string[]>('allowedCommands', [
+        'git status',
+        'git diff',
+        'git log',
+        'npm test',
+        'npm run lint',
+        'npm run build',
+        'tsc --noEmit',
+      ]),
+      deniedCommands: config.get<string[]>('deniedCommands', ['rm -rf /', 'sudo rm', ':(){:|:&};:']),
       maxRequests: clamp(config.get<number>('maxRequestsPerTask', 40), 1, 500),
       maxReadLines: clamp(config.get<number>('maxReadFileLines', 500), 50, 20000),
       commandTimeoutSec: clamp(config.get<number>('commandTimeoutSeconds', 120), 0, 3600),
@@ -220,12 +228,16 @@ export class AgentController implements vscode.Disposable {
   }
 
   private async updateSetting(key: string, value: unknown): Promise<void> {
+    if (key === 'permissionMode') {
+      this.core.setPermissionMode(undefined);
+    }
     const [section, ...rest] = key.split('.');
     const fullKey = section === 'root' ? `perplexicodeKilo.${rest.join('.')}` : `perplexicodeKilo.agent.${key}`;
     const target = await writeSetting(fullKey, value);
     if (target === 'fallback') {
       this.output.appendLine(`Saved ${fullKey} in the fallback store (setting not registered in this window yet; reload to finish the update).`);
     }
+    this.currentTask?.recheckPendingApproval();
   }
 
   private applyPlanOverride(): void {
@@ -269,7 +281,7 @@ export class AgentController implements vscode.Disposable {
     }
     this.selection.mode = mode;
     await this.saveSelection();
-    if (this.currentTask && !this.currentTask.isBusy) {
+    if (this.currentTask && (!this.currentTask.isBusy || this.currentTask.status.askKind === 'completion_result')) {
       this.currentTask.setMode(mode);
     }
     this.postState();
@@ -298,7 +310,10 @@ export class AgentController implements vscode.Disposable {
     if (!task) {
       return undefined;
     }
-    if (task.isBusy) {
+    if (task.isBusy && task.status.askKind === 'completion_result' && task.status.askId) {
+      task.respond(task.status.askId, { response: 'yes' });
+    }
+    if (task.isBusy && task.status.askKind !== 'completion_result') {
       throw new Error('The task is running; compact it when it is idle.');
     }
     const compacted = await compactMessages({ provider: this.transport, selection: this.getSelection(), messages: task.apiMessages, focus });
@@ -725,7 +740,10 @@ export class AgentController implements vscode.Disposable {
         break;
       case 'restoreCheckpoint': {
         const task = this.currentTask;
-        if (!task || task.isBusy) {
+        if (task && task.isBusy && task.status.askKind === 'completion_result' && task.status.askId) {
+          task.respond(task.status.askId, { response: 'yes' });
+        }
+        if (!task || (task.isBusy && task.status.askKind !== 'completion_result')) {
           void vscode.window.showWarningMessage('PerplexiCode: stop the task before restoring a checkpoint.');
           break;
         }
@@ -826,7 +844,20 @@ export class AgentController implements vscode.Disposable {
       case 'insertCode': {
         const editor = vscode.window.activeTextEditor;
         if (editor) {
-          await editor.edit((builder) => builder.replace(editor.selection, String(message.text || '')));
+          const snippet = String(message.text || '');
+          if (editor.selection.isEmpty) {
+            const docText = editor.document.getText();
+            const replaced = replaceExistingFunctionOnInsert(docText, editor.selection.active.line + 1, snippet);
+            if (replaced !== null) {
+              const fullRange = new vscode.Range(
+                editor.document.positionAt(0),
+                editor.document.positionAt(docText.length)
+              );
+              await editor.edit((builder) => builder.replace(fullRange, replaced));
+              break;
+            }
+          }
+          await editor.edit((builder) => builder.replace(editor.selection, snippet));
         }
         break;
       }

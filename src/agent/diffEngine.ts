@@ -28,6 +28,7 @@ const BLOCK_REGEX = /<{5,9} SEARCH>?[ \t]*\n([\s\S]*?)\n?={5,9}[ \t]*\n([\s\S]*?
 export function parseDiffBlocks(diff: string): DiffBlock[] {
   const normalized = diff.replace(/\r\n/g, '\n');
   const blocks: DiffBlock[] = [];
+  const seen = new Set<string>();
   let match: RegExpExecArray | null;
   BLOCK_REGEX.lastIndex = 0;
   while ((match = BLOCK_REGEX.exec(normalized)) !== null) {
@@ -44,7 +45,13 @@ export function parseDiffBlocks(diff: string): DiffBlock[] {
     if (endHeader) {
       search = search.slice(endHeader[0].length);
     }
-    blocks.push({ search, replace: match[2], startLine });
+    const replace = match[2];
+    const dedupKey = `${startLine ?? ''}\u0000${search}\u0000${replace}`;
+    if (seen.has(dedupKey)) {
+      continue;
+    }
+    seen.add(dedupKey);
+    blocks.push({ search, replace, startLine });
   }
   return blocks;
 }
@@ -73,7 +80,10 @@ export function applyDiff(original: string, diff: string): DiffApplyResult {
 
     if (block.search.trim() === '') {
       if (block.startLine && block.startLine >= 1) {
-        lines.splice(block.startLine - 1, 0, ...replaceLines);
+        const insertAt = Math.min(lines.length, Math.max(0, block.startLine - 1));
+        if (!sliceMatchesNonEmpty(lines, insertAt, replaceLines)) {
+          lines.splice(insertAt, 0, ...replaceLines);
+        }
         applied += 1;
         continue;
       }
@@ -83,6 +93,11 @@ export function applyDiff(original: string, diff: string): DiffApplyResult {
 
     const location = locate(lines, searchLines, block.startLine);
     if (!location) {
+      // If SEARCH was not found, check whether REPLACE is already present near start_line (idempotent retry).
+      if (replaceLines.length > 0 && locate(lines, replaceLines, block.startLine)) {
+        applied += 1;
+        continue;
+      }
       failures.push(`Block ${index + 1}: SEARCH content not found${block.startLine ? ` near line ${block.startLine}` : ''}. ${bestMatchHint(lines, searchLines)}`);
       continue;
     }
@@ -90,7 +105,14 @@ export function applyDiff(original: string, diff: string): DiffApplyResult {
     const adjusted = location.indentDelta !== undefined
       ? reindent(replaceLines, location.indentDelta)
       : replaceLines;
-    lines = [...lines.slice(0, location.start), ...adjusted, ...lines.slice(location.start + searchLines.length)];
+
+    if (isAnchorExtensionAlreadyApplied(lines, location.start, searchLines, adjusted)) {
+      applied += 1;
+      continue;
+    }
+
+    const span = resolveReplacementSpan(lines, location.start, searchLines, adjusted);
+    lines = [...lines.slice(0, span.start), ...adjusted, ...lines.slice(span.end)];
     applied += 1;
   }
 
@@ -104,6 +126,277 @@ export function applyDiff(original: string, diff: string): DiffApplyResult {
     applied,
     failures,
   };
+}
+
+function trimBlankEdges(lines: string[]): string[] {
+  let start = 0;
+  let end = lines.length;
+  while (start < end && lines[start].trim() === '') {
+    start += 1;
+  }
+  while (end > start && lines[end - 1].trim() === '') {
+    end -= 1;
+  }
+  return lines.slice(start, end);
+}
+
+function sliceMatchesNonEmpty(lines: string[], startIndex: number, expected: string[]): boolean {
+  const core = trimBlankEdges(expected);
+  if (core.length === 0) {
+    return false;
+  }
+  let cursor = startIndex;
+  while (cursor < lines.length && lines[cursor].trim() === '') {
+    cursor += 1;
+  }
+  if (cursor + core.length > lines.length) {
+    return false;
+  }
+  return core.every((line, offset) => lines[cursor + offset].trim() === line.trim());
+}
+
+function sliceMatchesBeforeNonEmpty(lines: string[], endIndex: number, expected: string[]): boolean {
+  const core = trimBlankEdges(expected);
+  if (core.length === 0) {
+    return false;
+  }
+  let cursor = endIndex;
+  while (cursor > 0 && lines[cursor - 1].trim() === '') {
+    cursor -= 1;
+  }
+  const start = cursor - core.length;
+  if (start < 0) {
+    return false;
+  }
+  return core.every((line, offset) => lines[start + offset].trim() === line.trim());
+}
+
+/**
+ * Detects when a diff block extends an existing anchor (`SEARCH` is a prefix or suffix of `REPLACE`)
+ * and the added lines are already present right after or before the anchor in `lines`.
+ */
+function isAnchorExtensionAlreadyApplied(lines: string[], start: number, searchLines: string[], replaceLines: string[]): boolean {
+  if (replaceLines.length <= searchLines.length) {
+    return false;
+  }
+  const prefixMatches = searchLines.every((line, idx) => replaceLines[idx].trim() === line.trim());
+  if (prefixMatches) {
+    const addedAfter = replaceLines.slice(searchLines.length);
+    if (sliceMatchesNonEmpty(lines, start + searchLines.length, addedAfter)) {
+      return true;
+    }
+  }
+  const offset = replaceLines.length - searchLines.length;
+  const suffixMatches = searchLines.every((line, idx) => replaceLines[offset + idx].trim() === line.trim());
+  if (suffixMatches) {
+    const addedBefore = replaceLines.slice(0, offset);
+    if (sliceMatchesBeforeNonEmpty(lines, start, addedBefore)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export interface FunctionHeaderInfo {
+  key: string;
+  name: string;
+  indent: string;
+  lineIndex: number;
+}
+
+const FUNCTION_HEADER_PATTERNS: RegExp[] = [
+  /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*[<(]/,
+  /^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>\s*\{/,
+  /^\s*func\s+(?:\(\s*(?:[A-Za-z_]\w*\s+)?\*?([A-Za-z_]\w*)\s*\)\s*)?([A-Za-z_]\w*)\s*[([]/,
+  /^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:const\s+)?fn\s+([A-Za-z_]\w*)\s*[<(]/,
+  /^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\(/,
+];
+
+export function parseFunctionHeaderLine(line: string): { key: string; name: string; indent: string } | undefined {
+  const indent = leadingWhitespace(line);
+  for (let i = 0; i < FUNCTION_HEADER_PATTERNS.length; i += 1) {
+    const match = line.match(FUNCTION_HEADER_PATTERNS[i]);
+    if (match) {
+      if (i === 2) {
+        const receiver = match[1] || '';
+        const name = match[2];
+        return { key: receiver ? `${receiver}.${name}` : name, name, indent };
+      }
+      const name = match[1];
+      return { key: name, name, indent };
+    }
+  }
+  return undefined;
+}
+
+export function extractSingleFunctionHeader(lines: string[]): FunctionHeaderInfo | undefined {
+  for (let i = 0; i < lines.length; i += 1) {
+    const trimmed = lines[i].trim();
+    if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('#') || trimmed.startsWith('/*') || trimmed.startsWith('*') || trimmed.startsWith('@') || trimmed.startsWith('#[')) {
+      continue;
+    }
+    const parsed = parseFunctionHeaderLine(lines[i]);
+    return parsed ? { ...parsed, lineIndex: i } : undefined;
+  }
+  return undefined;
+}
+
+function countLineBraces(line: string): number {
+  let depth = 0;
+  let quote: string | undefined;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (quote) {
+      if (ch === quote && line[i - 1] !== '\\') {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (ch === '/' && line[i + 1] === '/') {
+      break;
+    }
+    if (ch === '"' || ch === '\'' || ch === '`') {
+      quote = ch;
+      continue;
+    }
+    if (ch === '{') {
+      depth += 1;
+    } else if (ch === '}') {
+      depth -= 1;
+    }
+  }
+  return depth;
+}
+
+function netBraceBalance(lines: string[]): { balance: number; sawOpen: boolean } {
+  let balance = 0;
+  let sawOpen = false;
+  for (const line of lines) {
+    for (let i = 0; i < line.length; i += 1) {
+      if (line[i] === '{') {
+        sawOpen = true;
+      }
+    }
+    balance += countLineBraces(line);
+  }
+  return { balance, sawOpen };
+}
+
+/**
+ * Finds the exclusive end line index of a function block starting at `headerIndex` in `lines`.
+ */
+export function findFunctionBlockEnd(lines: string[], headerIndex: number): number | undefined {
+  const header = parseFunctionHeaderLine(lines[headerIndex]);
+  if (!header) {
+    return undefined;
+  }
+  if (/^\s*(?:async\s+)?def\s+/.test(lines[headerIndex])) {
+    let end = headerIndex + 1;
+    while (end < lines.length) {
+      const trimmed = lines[end].trim();
+      if (!trimmed) {
+        end += 1;
+        continue;
+      }
+      const indent = leadingWhitespace(lines[end]);
+      if (indent.length <= header.indent.length && !trimmed.startsWith('#')) {
+        break;
+      }
+      end += 1;
+    }
+    while (end > headerIndex + 1 && lines[end - 1].trim() === '') {
+      end -= 1;
+    }
+    return end > headerIndex ? end : undefined;
+  }
+
+  let balance = 0;
+  let sawOpen = false;
+  const maxEnd = Math.min(lines.length, headerIndex + 300);
+  for (let i = headerIndex; i < maxEnd; i += 1) {
+    const line = lines[i];
+    if (line.includes('{')) {
+      sawOpen = true;
+    }
+    balance += countLineBraces(line);
+    if (sawOpen && balance === 0) {
+      return i + 1;
+    }
+  }
+  return undefined;
+}
+
+function resolveReplacementSpan(
+  lines: string[],
+  start: number,
+  searchLines: string[],
+  replaceLines: string[]
+): { start: number; end: number } {
+  const defaultEnd = start + searchLines.length;
+
+  // Case 1: `SEARCH` only included the opening lines of a function (unclosed `{`), while `REPLACE`
+  // provided the complete function body closing at `}` (net brace balance 0).
+  const searchHeader = extractSingleFunctionHeader(searchLines);
+  const replaceHeader = extractSingleFunctionHeader(replaceLines);
+  if (searchHeader && replaceHeader && searchHeader.key === replaceHeader.key) {
+    const searchBraces = netBraceBalance(searchLines);
+    const replaceBraces = netBraceBalance(replaceLines);
+    const coreReplace = trimBlankEdges(replaceLines);
+    const lastReplaceLine = coreReplace[coreReplace.length - 1]?.trim() || '';
+    if (searchBraces.sawOpen && searchBraces.balance > 0 && replaceBraces.sawOpen && replaceBraces.balance === 0 && lastReplaceLine === '}') {
+      const fullEnd = findFunctionBlockEnd(lines, start + searchHeader.lineIndex);
+      if (fullEnd !== undefined && fullEnd > defaultEnd) {
+        return { start, end: fullEnd };
+      }
+    }
+  }
+
+  // Case 2: `REPLACE` keeps `SEARCH` as a prefix and appends a complete function `F`, while `F`
+  // already exists immediately after `SEARCH` in `lines` (model used `SEARCH` as an anchor above `F`).
+  if (replaceLines.length > searchLines.length && searchLines.every((line, idx) => replaceLines[idx].trim() === line.trim())) {
+    const addedAfter = trimBlankEdges(replaceLines.slice(searchLines.length));
+    const addedFn = extractSingleFunctionHeader(addedAfter);
+    if (addedFn && addedFn.lineIndex === 0) {
+      const addedEnd = findFunctionBlockEnd(addedAfter, 0);
+      if (addedEnd === addedAfter.length) {
+        let nextLine = defaultEnd;
+        while (nextLine < lines.length && lines[nextLine].trim() === '') {
+          nextLine += 1;
+        }
+        const existingFn = nextLine < lines.length ? parseFunctionHeaderLine(lines[nextLine]) : undefined;
+        if (existingFn && existingFn.key === addedFn.key) {
+          const existingEnd = findFunctionBlockEnd(lines, nextLine);
+          if (existingEnd !== undefined) {
+            return { start, end: existingEnd };
+          }
+        }
+      }
+    }
+  }
+
+  // Case 3: `REPLACE` keeps `SEARCH` as a suffix and prepends a complete function `F`, while `F`
+  // already exists immediately before `SEARCH` in `lines`.
+  const suffixOffset = replaceLines.length - searchLines.length;
+  if (suffixOffset > 0 && searchLines.every((line, idx) => replaceLines[suffixOffset + idx].trim() === line.trim())) {
+    const addedBefore = trimBlankEdges(replaceLines.slice(0, suffixOffset));
+    const addedFn = extractSingleFunctionHeader(addedBefore);
+    if (addedFn && addedFn.lineIndex === 0) {
+      const addedEnd = findFunctionBlockEnd(addedBefore, 0);
+      if (addedEnd === addedBefore.length) {
+        for (let scan = Math.max(0, start - 200); scan < start; scan += 1) {
+          const existingFn = parseFunctionHeaderLine(lines[scan]);
+          if (existingFn && existingFn.key === addedFn.key) {
+            const existingEnd = findFunctionBlockEnd(lines, scan);
+            if (existingEnd !== undefined && lines.slice(existingEnd, start).every((l) => l.trim() === '')) {
+              return { start: scan, end: defaultEnd };
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return { start, end: defaultEnd };
 }
 
 interface Location {

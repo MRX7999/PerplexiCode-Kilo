@@ -287,7 +287,15 @@ function applyState(next: AppState & { includeMessages: boolean }): void {
     renderHistory();
   }
   if (view === 'settings') {
-    renderSettings();
+    const active = document.activeElement as HTMLElement | null;
+    const isEditingTextInSettings = Boolean(
+      active
+      && $('view-settings').contains(active)
+      && (active.tagName === 'TEXTAREA' || (active.tagName === 'INPUT' && (active as HTMLInputElement).type !== 'checkbox'))
+    );
+    if (!isEditingTextInSettings) {
+      renderSettings();
+    }
   }
   if (view === 'library') {
     const key = JSON.stringify(next.library || null);
@@ -681,7 +689,12 @@ function renderAutoApprove(): void {
   const el = $('auto-approve');
   if (!state) return;
   const auto = state.settings.autoApprove;
+  const allowAllCommands = state.settings.allowedCommands.includes('*');
   const enabledNames = AUTO_APPROVE_ITEMS.filter(([key]) => auto[key]).map(([, label]) => label);
+  if (auto.execute && allowAllCommands) {
+    const idx = enabledNames.indexOf('Commands');
+    if (idx >= 0) enabledNames[idx] = 'All commands';
+  }
   el.innerHTML = `
     <div class="aa-head">
       <label class="switch small" title="Enable auto-approve"><input type="checkbox" data-setting="autoApprove.enabled" ${auto.enabled ? 'checked' : ''}><span></span></label>
@@ -689,7 +702,8 @@ function renderAutoApprove(): void {
     </div>
     ${autoApproveOpen ? `<div class="aa-body">${AUTO_APPROVE_ITEMS.map(([key, label, description]) => `
       <label class="aa-item" title="${escapeHtml(description)}"><input type="checkbox" data-setting="autoApprove.${key}" ${auto[key] ? 'checked' : ''}> ${escapeHtml(label)}</label>`).join('')}
-      <div class="aa-note muted">Allowed commands: ${state.settings.allowedCommands.length ? state.settings.allowedCommands.map((command: string) => `<code>${escapeHtml(command)}</code>`).join(' ') : 'none'} · <button class="link" data-action="settings-commands">edit</button></div>
+      <label class="aa-item" title="Allow all commands (*) except denied prefixes"><input type="checkbox" data-allow-all-commands ${allowAllCommands ? 'checked' : ''}> All commands (*)</label>
+      <div class="aa-note muted">Allowed commands: ${state.settings.allowedCommands.length ? state.settings.allowedCommands.map((command: string) => `<code>${escapeHtml(command)}</code>`).join(' ') : 'standard dev/test/git'} · <button class="link" data-action="settings-commands">edit</button></div>
     </div>` : ''}`;
 }
 
@@ -1041,7 +1055,8 @@ function renderSettings(): void {
       break;
     case 'commands':
       body = `
-        ${field('autoApprove.execute', 'Auto-approve commands', 'Run commands matching the allowed list without asking', checkbox('autoApprove.execute', s.autoApprove.execute))}
+        ${field('autoApprove.execute', 'Auto-approve commands', 'Run safe dev/build/test/git commands and allowed prefixes without asking', checkbox('autoApprove.execute', s.autoApprove.execute))}
+        ${field('', 'Allow all commands (*)', 'Auto-approve any command except denied prefixes below', `<label class="switch"><input type="checkbox" data-allow-all-commands ${s.allowedCommands.includes('*') ? 'checked' : ''}><span></span></label>`)}
         <div class="field column"><div class="field-label"><b>Allowed command prefixes</b><span class="muted">One per line, for example "npm test" or "git status". "*" allows everything.</span></div>
           <textarea class="setting-text" data-setting-list="allowedCommands" rows="5">${escapeHtml(s.allowedCommands.join('\n'))}</textarea></div>
         <div class="field column"><div class="field-label"><b>Denied command prefixes</b><span class="muted">Always ask for these, even if allowed.</span></div>
@@ -1483,6 +1498,46 @@ document.addEventListener('click', (event) => {
   }
 });
 
+let settingSaveTimer: number | undefined;
+function postSettingFromControl(target: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement): boolean {
+  const data = target.dataset;
+  if (target.hasAttribute('data-allow-all-commands')) {
+    const checked = (target as HTMLInputElement).checked;
+    const current = (state?.settings.allowedCommands || []).filter((item: string) => item !== '*');
+    const next = checked ? ['*', ...current] : current;
+    post({ type: 'updateSetting', key: 'allowedCommands', value: next });
+    if (checked && !state?.settings.autoApprove.execute) {
+      post({ type: 'updateSetting', key: 'autoApprove.execute', value: true });
+    }
+    return true;
+  }
+  if (data.setting) {
+    post({ type: 'updateSetting', key: data.setting, value: (target as HTMLInputElement).checked });
+    return true;
+  }
+  if (data.settingNumber) {
+    post({ type: 'updateSetting', key: data.settingNumber, value: Number(target.value) });
+    return true;
+  }
+  if (data.settingSelect) {
+    post({ type: 'updateSetting', key: data.settingSelect, value: target.value });
+    return true;
+  }
+  if (data.settingText) {
+    post({ type: 'updateSetting', key: data.settingText, value: target.value });
+    return true;
+  }
+  if (data.settingList) {
+    post({ type: 'updateSetting', key: data.settingList, value: target.value.split('\n').map((line) => line.trim()).filter(Boolean) });
+    return true;
+  }
+  if (data.modeInstructions) {
+    post({ type: 'updateSetting', key: 'modeInstructions', value: { ...(state?.settings.modeInstructions || {}), [data.modeInstructions]: target.value } });
+    return true;
+  }
+  return false;
+}
+
 document.addEventListener('change', (event) => {
   const target = event.target as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
   if (target.id === 'thinking-toggle') {
@@ -1494,19 +1549,11 @@ document.addEventListener('change', (event) => {
     formValues[data.formField] = target.value;
     return;
   }
-  if (data.setting) {
-    post({ type: 'updateSetting', key: data.setting, value: (target as HTMLInputElement).checked });
-  } else if (data.settingNumber) {
-    post({ type: 'updateSetting', key: data.settingNumber, value: Number(target.value) });
-  } else if (data.settingSelect) {
-    post({ type: 'updateSetting', key: data.settingSelect, value: target.value });
-  } else if (data.settingText) {
-    post({ type: 'updateSetting', key: data.settingText, value: target.value });
-  } else if (data.settingList) {
-    post({ type: 'updateSetting', key: data.settingList, value: target.value.split('\n').map((line) => line.trim()).filter(Boolean) });
-  } else if (data.modeInstructions) {
-    post({ type: 'updateSetting', key: 'modeInstructions', value: { ...(state?.settings.modeInstructions || {}), [data.modeInstructions]: target.value } });
-  } else if (target.matches('[data-rotation]')) {
+  window.clearTimeout(settingSaveTimer);
+  if (postSettingFromControl(target)) {
+    return;
+  }
+  if (target.matches('[data-rotation]')) {
     post({ type: 'setRotation', strategy: target.value });
   }
 });
@@ -1515,6 +1562,13 @@ document.addEventListener('input', (event) => {
   const target = event.target as HTMLInputElement;
   if (target.dataset.formField) {
     formValues[target.dataset.formField] = target.value;
+    return;
+  }
+  if (target.dataset.settingList || target.dataset.settingText || target.dataset.settingNumber || target.dataset.modeInstructions) {
+    window.clearTimeout(settingSaveTimer);
+    settingSaveTimer = window.setTimeout(() => {
+      postSettingFromControl(target);
+    }, 350);
     return;
   }
   if (target.id === 'library-search') {

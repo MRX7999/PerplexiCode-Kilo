@@ -15,6 +15,7 @@ import {
   isCommandAutoApproved,
   listFilesTool,
   readFileTool,
+  replaceExistingFunctionOnInsert,
   searchFilesTool,
   splitCommandChain,
   truncateOutput,
@@ -557,6 +558,190 @@ test('transport: Max model on a Pro-only pool falls back to Best', async () => {
   assert.equal(result.text, 'fallback');
   assert.equal(calls[0].model, 'turbo');
   assert.ok(infos.some((m) => m.includes('Best')), infos.join('|'));
+});
+
+test('parser: strips echoed Perplexity search/code fences before a real tool call', () => {
+  const raw = [
+    '```xml\n<search_files><path>.</path><regex>old</regex></search_files>\n```',
+    'I will read the target file now.',
+    '<read_file>\n<path>src/main.ts</path>\n</read_file>',
+  ].join('\n');
+  const parsed = parseAssistantMessage(raw);
+  assert.equal(parsed.tool?.name, 'read_file');
+  assert.equal(parsed.tool?.params.path, 'src/main.ts');
+  assert.ok(!parsed.text.includes('search_files'));
+});
+
+test('diff & insert: prevents function duplication on anchor extensions, partial function search, and insert_content', () => {
+  const file = [
+    'export function alpha(): number {',
+    '  return 1;',
+    '}',
+    '',
+    'export function beta(x: number): number {',
+    '  const doubled = x * 2;',
+    '  return doubled;',
+    '}',
+  ].join('\n');
+
+  // 1) Partial SEARCH (only function header) + full function REPLACE must replace the whole function, not leave a duplicate tail
+  const partialDiff = [
+    '<<<<<<< SEARCH',
+    'export function beta(x: number): number {',
+    '=======',
+    'export function beta(x: number): number {',
+    '  return x * 3;',
+    '}',
+    '>>>>>>> REPLACE',
+  ].join('\n');
+  const r1 = applyDiff(file, partialDiff);
+  assert.equal(r1.success, true);
+  assert.equal((r1.content!.match(/export function beta/g) || []).length, 1);
+  assert.ok(r1.content!.includes('return x * 3;'));
+  assert.ok(!r1.content!.includes('const doubled = x * 2;'));
+
+  // 2) Anchor SEARCH (alpha) + appended function (beta) in REPLACE when beta already follows alpha
+  const anchorDiff = [
+    '<<<<<<< SEARCH',
+    'export function alpha(): number {',
+    '  return 1;',
+    '}',
+    '=======',
+    'export function alpha(): number {',
+    '  return 1;',
+    '}',
+    '',
+    'export function beta(x: number): number {',
+    '  return x + 10;',
+    '}',
+    '>>>>>>> REPLACE',
+  ].join('\n');
+  const r2 = applyDiff(file, anchorDiff);
+  assert.equal(r2.success, true);
+  assert.equal((r2.content!.match(/export function beta/g) || []).length, 1);
+  assert.ok(r2.content!.includes('return x + 10;'));
+
+  // 3) Re-applying an anchor extension that is already present is idempotent
+  const r2Again = applyDiff(r2.content!, anchorDiff);
+  assert.equal(r2Again.success, true);
+  assert.equal((r2Again.content!.match(/export function beta/g) || []).length, 1);
+
+  // 4) insertContent with an updated function definition replaces existing function instead of duplicating
+  const updatedBeta = [
+    'export function beta(x: number): number {',
+    '  return x * 100;',
+    '}',
+  ].join('\n');
+  const afterInsert = insertContent(file, 5, updatedBeta);
+  assert.equal((afterInsert.match(/export function beta/g) || []).length, 1);
+  assert.ok(afterInsert.includes('return x * 100;'));
+  assert.ok(!afterInsert.includes('const doubled = x * 2;'));
+
+  // 5) UI Insert button helper replaceExistingFunctionOnInsert replaces existing function in file
+  const uiReplaced = replaceExistingFunctionOnInsert(file, 1, updatedBeta);
+  assert.ok(uiReplaced !== null);
+  assert.equal((uiReplaced!.match(/export function beta/g) || []).length, 1);
+
+  // 6) insertContent idempotency when the exact block is already present at the target line
+  const importLine = "import { helper } from './helper';";
+  const withImport = insertContent(file, 1, importLine);
+  const withImportAgain = insertContent(withImport, 1, importLine);
+  assert.equal((withImportAgain.match(/import \{ helper \}/g) || []).length, 1);
+});
+
+test('tools: auto-approves compound dev commands, env prefixes, cd chains, and heredocs while blocking dangerous subcommands', () => {
+  const allowed = ['npm test'];
+  const denied = ['rm -rf /', 'sudo rm'];
+  assert.equal(isCommandAutoApproved('cd packages/api && CI=1 npm test -- --grep auth 2>&1', allowed, denied), true);
+  assert.equal(isCommandAutoApproved('pytest -q && git status', [], denied), true);
+  assert.equal(isCommandAutoApproved('go test ./...', [], denied), true);
+  assert.equal(isCommandAutoApproved("cat << 'EOF' > out.txt\nrm -rf /\nEOF", ['*'], denied), true);
+  assert.equal(isCommandAutoApproved('npm test && sudo rm -rf /tmp/x', ['*'], denied), false);
+  assert.equal(isCommandAutoApproved('echo $(sudo rm -rf /tmp/x)', ['*'], denied), false);
+});
+
+test('agent: Cyrillic unfinished mid-task reply triggers continuation reminder; recheckPendingApproval unblocks waiting ask', async () => {
+  const cwd = makeWorkspace();
+  const run = runTask({
+    cwd,
+    prompt: 'Проверь файл и заверши задачу',
+    replies: [
+      '<read_file>\n<path>math.ts</path>\n</read_file>',
+      'Сейчас я проверю содержимое и завершу задачу:',
+      '<attempt_completion>\n<result>Готово.</result>\n</attempt_completion>',
+    ],
+  });
+  await run.start();
+  await run.settle();
+  assert.equal(run.provider.requests.length, 3);
+  assert.equal(run.task.completionResult, 'Готово.');
+
+  // Also verify recheckPendingApproval unblocks a command waiting for approval when settings update
+  let allowAll = false;
+  const host = new NodeHost(cwd);
+  const provider = new ScriptedProvider([
+    '<execute_command>\n<command>custom_tool --version</command>\n</execute_command>',
+    '<attempt_completion>\n<result>Command ran.</result>\n</attempt_completion>',
+  ]);
+  const task = new AgentTask({
+    mode: 'code',
+    host,
+    provider,
+    getSelection: () => ({ baseModelId: 'turbo', thinking: false, webSearch: false }),
+    getModelLabel: () => 'Best',
+    getSettings: () => ({
+      ...settings({ write: true, execute: true }),
+      allowedCommands: allowAll ? ['*'] : ['npm test'],
+    }),
+    callbacks: {
+      onMessage: () => undefined,
+      onState: (owner) => {
+        if (owner.status.state === 'waiting' && owner.status.askKind === 'command' && !allowAll) {
+          allowAll = true;
+          setTimeout(() => owner.recheckPendingApproval(), 0);
+        } else if (owner.status.state === 'waiting' && owner.status.askKind === 'completion_result' && owner.status.askId) {
+          const askId = owner.status.askId;
+          setTimeout(() => owner.respond(askId, { response: 'yes' }), 0);
+        }
+      },
+    },
+  });
+  // Stub runCommand so custom_tool succeeds
+  host.runCommand = async () => ({ exitCode: 0, output: 'v1.0.0\n', timedOut: false });
+  await task.start('Run custom tool');
+  await new Promise<void>((resolve) => {
+    const timer = setInterval(() => {
+      if (!task.isBusy && task.status.state !== 'running' && task.status.state !== 'waiting' && task.status.requestCount > 0) {
+        clearInterval(timer);
+        resolve();
+      }
+    }, 10);
+  });
+  assert.equal(task.completionResult, 'Command ran.');
+});
+
+test('transport: retries automatically on empty completion or cut-off XML tool call', async () => {
+  setRuntimeModelCatalog(getFallbackModelCatalog());
+  let attempt = 0;
+  const { transport, calls } = makeTransport([fakeAccount('a')], () => {
+    attempt += 1;
+    if (attempt === 1) {
+      return { text: '   ' };
+    }
+    if (attempt === 2) {
+      return { text: 'Let me write the file:\n<write_to_file>\n<path>src/index.ts</path>\n<content>export const x = 1;' };
+    }
+    return { text: '<write_to_file>\n<path>src/index.ts</path>\n<content>export const x = 1;</content>\n</write_to_file>' };
+  });
+  const result = await transport.complete({
+    fullPrompt: 'FULL',
+    baseModelId: 'claude55sonnet',
+    thinking: false,
+    webSearch: false,
+    signal: new AbortController().signal,
+  });
+  assert.equal(calls.length, 3);
+  assert.ok(result.text.includes('</write_to_file>'));
 });
 
 // -------------------------------------------------------------------------------------------

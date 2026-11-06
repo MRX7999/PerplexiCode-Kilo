@@ -24,7 +24,7 @@ const VERSION: string = (() => {
   try {
     return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version;
   } catch {
-    return '3.1.0';
+    return '3.2.0';
   }
 })();
 

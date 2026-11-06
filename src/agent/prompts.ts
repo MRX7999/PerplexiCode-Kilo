@@ -104,7 +104,7 @@ Usage:
 <line_count>3</line_count>
 </write_to_file>`,
   insert_content: `## insert_content
-Insert new lines into a file without modifying existing content.
+Insert new lines into a file without modifying existing content. Do not use insert_content to update an existing function or block — use apply_diff instead so the old implementation is replaced rather than duplicated.
 Parameters:
 - path: (required)
 - line: (required) 1-based line number to insert before; 0 appends to the end
@@ -125,7 +125,7 @@ Usage:
 <command>npm test</command>
 </execute_command>`,
   ask_followup_question: `## ask_followup_question
-Ask the user a question when you need information to proceed. Provide 2-4 concrete suggested answers, ordered by priority. Use it sparingly: prefer tools to find answers yourself.
+Ask the user a question ONLY when a critical requirement is ambiguous and cannot be determined by reading the workspace. Provide 2-4 concrete suggested answers, ordered by priority. Never use ask_followup_question to ask permission before running a command, editing a file, or continuing to the next step — the IDE permission system handles approvals automatically, so invoke the tool directly.
 Parameters:
 - question: (required)
 - follow_up: (required) <suggest> elements; a suggestion may switch mode with mode="slug"

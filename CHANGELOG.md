@@ -2,6 +2,27 @@
 
 All notable changes to PerplexiCode Kilo. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.2.0] - 2026-11-06
+
+### Fixed
+- **Perplexity & OpenAI SSE transport reliability:**
+  - Fixed duplicate/stuttered output and corrupted XML tags when Perplexity streams delta chunks (`delta`, `text_delta`, `patch`) alongside cumulative snapshots (`answer`, `text`), and added extraction from structured `blocks` / `step_type: FINAL` payloads.
+  - Detected premature stream cut-offs inside unclosed XML tool calls (`<apply_diff>`, `<write_to_file>`, `<execute_command>`, etc.) and empty final answers, automatically retrying with non-follow-up / web fallback in `PerplexityTransport` and `PerplexityClient`.
+  - Fixed `\r\n` SSE frame splitting, trailing buffer flush on stream end, and content-part array extraction in `OpenAICompatibleProvider`.
+- **Tool parser resilience:**
+  - Unfenced XML tool calls now take precedence over earlier tool tags inside markdown code fences (` ```xml ... ``` `), preventing echoed tool examples or Perplexity search/reasoning echoes from shadowing the real tool call.
+  - Stripped residual ` ```xml <tool>...</tool> ``` ` blocks from assistant prose and recovered tool calls with minor closing-tag corruption or markdown-autolinked URLs (`<https://...>`).
+- **Duplicate function definitions on insert / diff (`insert_content`, `apply_diff`, `insertCode`):**
+  - `insert_content` and `PerplexiCode: Insert Code into Editor` now detect when the inserted snippet defines a single named function (`function`, `def`, `func`, `fn`, ` arrow function `) that already exists in the target file and replace the existing function body in-place instead of creating a duplicate definition. Also suppresses exact duplicate block insertions at adjacent lines.
+  - `apply_diff` now detects when a `SEARCH` block matches only a function signature / header while `REPLACE` provides the full function body, expanding the replacement span across the existing function block instead of leaving the old body dangling below the new function. Also skips already-applied anchor extensions.
+- **Full end-to-end automation with Auto-approve enabled:**
+  - Fixed command chain auto-approval (`isCommandAutoApproved` and `permissions.ts`): safe directory navigation (`cd <dir> && ...`), leading environment assignments (`FOO=bar ...`), shell wrappers (`nohup`, `time`, `nice`, `stdbuf`, `timeout`), heredoc bodies (`cat << 'EOF'`), and standard dev/build/test prefixes (`pytest`, `cargo`, `go`, `tsc`, `eslint`, `ruff`, `vitest`, `jest`, `make`, `cmake`, `gradle`, `mvn`, `dotnet`, `composer`, `bundle`, `rake`, `uv`, `poetry`, `pip`) now auto-approve cleanly while still blocking dangerous subcommands (`$(...)`, backticks, `rm -rf`, `sudo`, `git push --force`, `git reset --hard`, `find -exec/-delete`).
+  - Added an **Allow all commands (`*`)** toggle directly in the Auto-approve popover and Settings view, and ensured changing Auto-approve or Permission Mode settings immediately unblocks a waiting task via `recheckPendingApproval()`.
+  - Fixed false-positive secret prompts (`*.key`, `.env`) when a command writes code accessing `.key` properties inside heredocs / inline scripts or mentions `.env` in a `git commit -m` message.
+  - Fixed Cyrillic mid-task text replies (`Сейчас я проверю...`) failing to trigger the automatic continuation reminder due to ASCII-only `\b` word boundaries, and forced continuation when `todos` still have pending items.
+  - Respected `.perplexicode/settings.json` `permissions.defaultMode` in the VS Code extension when the IDE permission mode is `default`.
+  - Fixed settings inputs in the webview losing focus or resetting while typing when background state updates arrive.
+
 ## [3.1.0] - 2026-11-03
 
 ### Added
