@@ -2,7 +2,7 @@
 
 All notable changes to PerplexiCode Kilo. Versions follow [Semantic Versioning](https://semver.org/).
 
-## [3.4.0] - Unreleased
+## [3.4.0] - 2026-11-07
 
 ### Added
 - **Curated MCP catalog** in the Library → MCP tab and `pcode mcp catalog [category|query]`, with Development, Web, Productivity, Security and Pentest categories. Entries include upstream documentation, prerequisites, use cases, setup notes, risk labels and source-check dates. This is not a usage ranking or an upstream security audit.

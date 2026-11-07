@@ -5,7 +5,7 @@
 <img src="docs/visuals/hero.png" alt="PerplexiCode Kilo: one agent core for the IDE and pcode CLI, with MCP integrations and configurable approvals" width="100%" />
 
 [![Release](https://img.shields.io/github/v/release/MRX7999/PerplexiCode-Kilo?label=release&color=20b8cd)](https://github.com/MRX7999/PerplexiCode-Kilo/releases/latest)
-[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-3.3.0-007acc)](https://marketplace.visualstudio.com/items?itemName=MRX7999.perplexicode-kilo)
+[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-3.4.0-007acc)](https://marketplace.visualstudio.com/items?itemName=MRX7999.perplexicode-kilo)
 [![Open VSX](https://img.shields.io/open-vsx/v/MRX7999/perplexicode-kilo?label=Open%20VSX&color=a60ee5)](https://open-vsx.org/extension/MRX7999/perplexicode-kilo)
 [![Open VSX downloads](https://img.shields.io/open-vsx/dt/MRX7999/perplexicode-kilo?label=installs&color=5eead4)](https://open-vsx.org/extension/MRX7999/perplexicode-kilo)
 [![CI](https://img.shields.io/github/actions/workflow/status/MRX7999/PerplexiCode-Kilo/ci.yml?branch=master&label=CI)](https://github.com/MRX7999/PerplexiCode-Kilo/actions/workflows/ci.yml)
