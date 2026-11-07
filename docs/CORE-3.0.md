@@ -276,6 +276,29 @@ one (ASI → Comet browser agent → Search) and reports the mode that was actua
 reused for follow-ups only while the route is unchanged. Settings: `computeMode` in the settings layers,
 `perplexicodeKilo.computeMode`, `--compute <mode>`, REPL `/compute [mode]`.
 
+## Curated MCP catalog (3.4)
+
+`src/core/mcpCatalog.ts` provides shared templates and setup guides to the CLI and IDE.
+`pcode mcp catalog [category|query]` lists requirements, notes and upstream documentation.
+`pcode mcp install <id> [-s user|project|local] [--set KEY=value]` writes a configuration without
+connecting, downloading software or changing permissions. `--set` accepts non-secret template
+parameters only; token values must be supplied through the process environment. Existing server
+names are rejected rather than overwritten. Setup-only entries direct users to native app/plugin
+instructions and do not generate a fabricated executable config.
+Templates are enabled by default: the next task can connect them and download/run declared
+npm/uv packages. The native confirmation discloses this, and existing project stdio trust checks
+remain in force. Configuration-only describes installation, not a promise never to execute later.
+
+The IDE uses native prompts for parameters and SecretStorage for credentials; the webview receives
+only catalog metadata and sends an entry ID plus scope, not secret values. Stored credentials are
+bound to the exact source file, server name and config through `src/core/mcpCredentials.ts`.
+`loadMcpServers` / `McpRegistry` accept a `serverEnv` callback so one server's stored credentials
+cannot expand placeholders in another server's config. Editing a config invalidates that binding.
+IDE secrets are not exported to CLI sessions or written to `.mcp.json`.
+
+See the [Security MCP and Parrot OS guide](MCP-SECURITY-PARROT.md) for security integrations,
+prerequisites, native setup examples and the limits of the compatibility checks.
+
 ## CLI reference
 
 ```bash
@@ -327,11 +350,11 @@ OpenAI-compatible provider settings: `PCODE_OPENAI_BASE_URL` (default `http://12
 
 ## Tests
 
-`npm test` runs four suites (96 tests):
+`npm test` runs six suites:
 
 - `agent`: the 2.x agent loop.
 - `settingsStore`.
-- `core`: 27 cases covering permissions, real `sh` hooks, settings layering, subagents, skills,
+- `core`: 34 cases covering permissions, real `sh` hooks, settings layering, subagents, skills,
   memory, the journal, verification, read batching, CLI argument parsing, gated agent sessions
   (deny, plan, acceptEdits, verify loop, Stop and UserPromptSubmit hooks, subagent tool list, resume,
   compaction), the OpenAI SSE and JSON transport against a local mock server, and end-to-end runs of
@@ -342,3 +365,11 @@ OpenAI-compatible provider settings: `PCODE_OPENAI_BASE_URL` (default `http://12
   cover the transports; the rest covers config layering and saving, trust, permission rules, the tool
   parser, `glob_files` / `search_and_replace` / `web_fetch`, gated agent sessions that call MCP tools,
   CLI argument parsing and `pcode mcp add|list|get|remove` end to end.
+- `mcp-catalog`: catalog metadata, config building, credential placeholder validation, safe
+  installation, existing-file preservation and CLI catalog/install end-to-end checks.
+- `mcp-credentials`: SecretStorage round trips, file and server isolation, edit invalidation,
+  removal and malformed-file handling. These tests use an in-memory SecretStorage adapter.
+
+`node test/webview-render.mjs` separately exercises the real webview bundle in headless Chromium,
+including catalog search, category filters and bridge messages. It does not replace testing in a
+live editor or a Parrot OS VM, and no external security scans are part of these test suites.

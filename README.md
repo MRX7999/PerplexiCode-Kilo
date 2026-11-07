@@ -18,7 +18,7 @@ Plan, write, run and debug code with GPT-6.1 Sol, Claude Opus 5.5, Gemini 4 Argo
 [![Antigravity IDE](https://img.shields.io/badge/Antigravity%20IDE-supported-4285f4)](https://antigravity.google/download)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-[Install](#install) · [Features](#features) · [MCP & Compute modes](#33-mcp-servers-and-compute-modes) · [Agents, Skills & Presets](#31-agents-skills--presets) · [Models](#models) · [Modes](#modes) · [Commands](#commands-and-shortcuts) · [Settings](#settings) · [Build](#build-from-source) · [FAQ](#troubleshooting)
+[Install](#install) · [Features](#features) · [MCP catalog](#34-mcp-catalog-security-and-parrot-os) · [MCP & Compute modes](#33-mcp-servers-and-compute-modes) · [Agents, Skills & Presets](#31-agents-skills--presets) · [Models](#models) · [Modes](#modes) · [Commands](#commands-and-shortcuts) · [Settings](#settings) · [Build](#build-from-source) · [FAQ](#troubleshooting)
 
 <img src="docs/images/hero.png" alt="PerplexiCode welcome screen with task presets, preset library, subagents and a task run by a subagent" width="100%" />
 
@@ -170,6 +170,27 @@ Sessions are kept in the editor's [SecretStorage](https://code.visualstudio.com/
 <sub>Screenshots are rendered from the test fixture (`npm run test:webview`) with sample data.</sub>
 
 ---
+
+## 3.4: MCP catalog, security and Parrot OS
+
+The MCP tab now includes a curated catalog with searchable Development, Web, Productivity, Security and Pentest categories. Each entry links to upstream documentation and explains its runtime requirements, use case, setup caveats and source-check date. This is a selection of useful integrations, not a measured popularity ranking or a security audit.
+
+- **Configuration templates:** Project / Global buttons collect parameters in native IDE prompts. Tokens are entered in password inputs and stored in VS Code SecretStorage; JSON files contain only `${ENV_VAR}` references. The binding includes the exact config and file, so another server or an edited command/URL cannot silently reuse the saved token. CLI runs supply their own environment variables, not IDE credentials.
+- **Setup guides:** Native tools, plugins and integrations requiring additional setup are explicitly labelled Setup guide. They are not presented as one-click installations.
+- **Security / Pentest:** Dedicated entries describe code and dependency checks, threat intelligence, web testing, network inventory and reverse engineering. Read the [Security MCP and Parrot OS guide](docs/MCP-SECURITY-PARROT.md) for prerequisites, exact upstream examples and where each tool is useful.
+- **No execution during installation:** Installing a catalog template saves an enabled config only. It does not download software, start a process, scan a target or add permission rules. Your next task can connect enabled servers and download/run the declared npm/uv package, subject to the existing workspace trust guard for project stdio servers. Existing server names are not overwritten.
+
+```bash
+pcode mcp catalog                   # all entries, requirements and documentation
+pcode mcp catalog security
+pcode mcp catalog pentest
+pcode mcp install context7 -s user  # adds configuration only
+pcode mcp install filesystem --set DIRECTORY=/absolute/path/to/allowed/files
+```
+
+Catalog tokens must come from the environment, never `--set`, `--env` or `--header` on `mcp install`. Use the manual `pcode mcp add` command after completing a native tool's setup guide. Security tools should run as an ordinary user in a lab or on explicitly authorised targets; Parrot OS compatibility is documented as prerequisites and upstream Linux support, not a claim of VM testing.
+
+[`.env.example`](.env.example) lists the supported token variable names. PerplexiCode does not automatically load dotenv files: export the needed variables in your CLI environment, or use the IDE's native password prompts. Populated `.env` files are excluded from Git and VSIX packaging.
 
 ## 3.3: MCP servers and compute modes
 

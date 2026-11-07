@@ -65,7 +65,14 @@ interface McpServerEntry {
   resources: Array<{ uri: string; name: string; description: string }>;
   prompts: Array<{ name: string; description: string }>;
 }
-interface McpState { enabled: boolean; trusted: boolean; servers: McpServerEntry[] }
+type McpCatalogCategory = 'development' | 'web' | 'productivity' | 'security' | 'pentest';
+interface McpCatalogEntry {
+  id: string; title: string; description: string; category: McpCatalogCategory; docsUrl: string;
+  requirements: string[]; notes: string; risk: 'standard' | 'sensitive' | 'active';
+  inputs: Array<{ key: string; label: string; secret: boolean; required: boolean; default?: string }>;
+  checkedAt: string; installable: boolean; installed: boolean;
+}
+interface McpState { enabled: boolean; trusted: boolean; servers: McpServerEntry[]; catalog?: McpCatalogEntry[] }
 
 type LibraryScope = 'project' | 'user';
 interface LibraryState {
@@ -142,6 +149,7 @@ let view: ViewName = 'chat';
 type LibraryTab = 'presets' | 'agents' | 'skills' | 'mcp';
 let libraryTab: LibraryTab = 'presets';
 let libraryQuery = '';
+let mcpCatalogCategory: 'all' | McpCatalogCategory = 'all';
 let libraryForm: undefined | 'agent' | 'skill' | 'preset' | 'mcp';
 let libraryKey = '';
 const formValues: Record<string, string> = {};
@@ -317,7 +325,7 @@ function applyState(next: AppState & { includeMessages: boolean }): void {
     }
   }
   if (view === 'library') {
-    const key = JSON.stringify(next.library || null);
+    const key = libraryStateKey();
     if (key !== libraryKey) {
       renderLibrary();
     }
@@ -1374,7 +1382,7 @@ function skillsTabHtml(library: LibraryState): string {
 function renderLibrary(): void {
   const el = $('view-library');
   const library = state?.library;
-  libraryKey = JSON.stringify(library || null);
+  libraryKey = libraryStateKey();
   if (!library) {
     el.innerHTML = `<div class="view-header"><button class="icon-btn" data-action="chat">${icons.chevronLeft}</button><h3>Agents, Skills & Presets</h3></div><div class="empty muted">Loading…</div>`;
     return;
@@ -1386,9 +1394,48 @@ function renderLibrary(): void {
     <div class="lib-tabs">${LIBRARY_TABS.map(([id, label, icon]) => `<button class="lib-tab ${libraryTab === id ? 'active' : ''}" data-lib-tab="${id}">${icons[icon]}<span>${label}</span><span class="count">${counts[id]}</span></button>`).join('')}</div>
     <div class="view-body">
       ${!library.workspace ? `<div class="notice info">${icons.folder}<div>No folder open: items are installed globally (~/.perplexicode). Open a folder to install per project.</div></div>` : ''}
-      <input class="search" id="library-search" placeholder="Filter…" value="${escapeHtml(libraryQuery)}">
+      <input class="search" id="library-search" aria-label="${libraryTab === 'mcp' ? 'Search saved MCP servers and catalog' : 'Filter library'}" placeholder="${libraryTab === 'mcp' ? 'Search servers and catalog…' : 'Filter…'}" value="${escapeHtml(libraryQuery)}">
       ${body}
     </div>`;
+}
+
+function libraryStateKey(): string {
+  return JSON.stringify({ library: state?.library || null, mcp: state?.mcp || null, workspace: state?.workspace || null });
+}
+
+const MCP_CATEGORIES: Array<['all' | McpCatalogCategory, string]> = [
+  ['all', 'All'], ['development', 'Development'], ['web', 'Web'], ['productivity', 'Productivity'], ['security', 'Security'], ['pentest', 'Pentest'],
+];
+
+function mcpCatalogHtml(mcp: McpState): string {
+  const all = mcp.catalog || [];
+  const entries = all.filter((entry) => (mcpCatalogCategory === 'all' || entry.category === mcpCatalogCategory)
+    && matchesQuery(entry.id, entry.title, entry.description, entry.category, ...entry.requirements, entry.notes));
+  const riskLabel = { standard: 'Standard access', sensitive: 'Sensitive access', active: 'Active security testing' };
+  return `<section class="mcp-catalog" aria-label="MCP catalog">
+    <div class="section-title mcp-catalog-heading">Catalog <span class="muted">(${entries.length} of ${all.length})</span><span class="spacer"></span><button class="btn ghost small" data-action="mcp-parrot-guide" data-testid="mcp-parrot-guide">Parrot OS guide ${icons.file}</button></div>
+    <div class="notice info mcp-catalog-notice">${icons.info}<div>Adds configuration only. Packages and security tools are not installed or run. Approval rules stay unchanged.</div></div>
+    <p class="muted mcp-catalog-connection-note">Enabled servers may connect on your next task and download/run the declared npm or uv package. Review requirements and documentation before connecting.</p>
+    <div class="mcp-category-filters" role="group" aria-label="Filter MCP catalog by category">
+      ${MCP_CATEGORIES.map(([id, label]) => `<button class="btn ghost small ${mcpCatalogCategory === id ? 'active' : ''}" data-mcp-category="${id}" data-testid="mcp-category-${id}" aria-pressed="${mcpCatalogCategory === id}">${label}</button>`).join('')}
+    </div>
+    ${entries.length === 0 ? `<div class="empty-inline muted" role="status">${all.length ? 'No catalog entries match this category and search. Choose All or change the search.' : 'No catalog entries available. Add a server manually above.'}</div>` : entries.map((entry) => `
+      <article class="lib-card mcp-catalog-card" data-catalog-id="${escapeHtml(entry.id)}" data-category="${escapeHtml(entry.category)}" data-testid="mcp-catalog-${escapeHtml(entry.id)}">
+        <div class="lib-card-head"><b>${escapeHtml(entry.title)}</b><span class="badge">${escapeHtml(MCP_CATEGORIES.find(([id]) => id === entry.category)?.[1] || entry.category)}</span>
+          ${entry.installed ? '<span class="badge new" data-testid="mcp-installed">Installed</span>' : !entry.installable ? '<span class="badge" data-testid="mcp-setup-guide">Setup guide</span>' : ''}</div>
+        <div class="mcp-catalog-description">${escapeHtml(entry.description)}</div>
+        <div class="mcp-catalog-detail"><span class="muted">Runtime requirements:</span> ${entry.requirements.length ? escapeHtml(entry.requirements.join(' · ')) : 'See documentation.'}</div>
+        ${entry.notes ? `<div class="mcp-catalog-detail"><span class="muted">Notes:</span> ${escapeHtml(entry.notes)}</div>` : ''}
+        <div class="mcp-catalog-meta"><span class="mcp-risk ${entry.risk !== 'standard' ? 'mcp-risk-warning' : ''}">${entry.risk !== 'standard' ? icons.warning : icons.info}${riskLabel[entry.risk]}</span><span class="muted">Docs checked ${escapeHtml(entry.checkedAt)}</span></div>
+        <div class="mcp-catalog-actions">
+          <button class="btn ghost small" data-url="${escapeHtml(entry.docsUrl)}" data-testid="mcp-docs-${escapeHtml(entry.id)}" title="Open documentation for ${escapeHtml(entry.title)}">Docs ${icons.external}</button>
+          <span class="spacer"></span>
+          ${entry.installable && !entry.installed ? `
+            <button class="btn primary small" data-mcp-catalog-install="${escapeHtml(entry.id)}" data-scope="project" data-testid="mcp-install-project-${escapeHtml(entry.id)}" ${state?.workspace ? '' : 'disabled title="Open a folder first"'}>Install in project</button>
+            <button class="btn secondary small" data-mcp-catalog-install="${escapeHtml(entry.id)}" data-scope="user" data-testid="mcp-install-global-${escapeHtml(entry.id)}" title="Add configuration for all projects">Global</button>` : ''}
+        </div>
+      </article>`).join('')}
+  </section>`;
 }
 
 function mcpTabHtml(): string {
@@ -1412,13 +1459,13 @@ function mcpTabHtml(): string {
     return `<div class="notice info">${icons.info}<div>MCP is disabled (<code>perplexicodeKilo.mcp.enabled</code>).</div></div>`;
   }
   return `
-    <div class="section-title">MCP servers<span class="spacer"></span>
+    <div class="section-title mcp-saved-heading">Saved servers<span class="spacer"></span>
       <button class="btn ghost small" data-mcp-connect="" title="Connect every configured server">${icons.refresh} Connect all</button>
       ${libraryForm === 'mcp' ? '' : `<button class="btn primary small" data-lib-form="mcp">${icons.plus} Add server</button>`}</div>
     <p class="muted small">Claude Code compatible: <code>~/.claude.json</code>, <code>~/.claude/.mcp.json</code>, <code>~/.perplexicode/mcp.json</code>, <code>.mcp.json</code>, <code>.mcp.local.json</code> and the <code>mcpServers</code> block of settings files. Tools are exposed to the agent as <code>mcp__&lt;server&gt;__&lt;tool&gt;</code>; permission rules use the same names.</p>
     ${!mcp.trusted ? `<div class="notice info">${icons.warning}<div>This workspace is not trusted: project stdio servers stay off until you trust it (Workspace Trust).</div></div>` : ''}
     ${form}
-    ${servers.length === 0 ? `<div class="empty muted">No MCP servers configured${libraryQuery ? ' match the filter' : ''}. Add one above or run <code>pcode mcp add &lt;name&gt; -- &lt;command&gt;</code>.</div>` : servers.map((server) => `
+    ${servers.length === 0 ? `<div class="empty-inline muted">No MCP servers ${libraryQuery ? 'match the search' : 'configured'}. Add one above or choose a catalog entry below.</div>` : servers.map((server) => `
       <div class="lib-card mcp-card">
         <div class="lib-card-head">${icons.plug}<b>${escapeHtml(server.name)}</b>${statusBadge(server)}<span class="badge">${escapeHtml(server.type)}</span><span class="badge">${escapeHtml(server.scope)}</span><span class="spacer"></span>
           <button class="icon-btn" data-mcp-connect="${escapeHtml(server.name)}" title="${server.status === 'connected' ? 'Reconnect' : 'Connect'}">${icons.refresh}</button>
@@ -1430,7 +1477,8 @@ function mcpTabHtml(): string {
         ${server.tools.length ? `<div class="mcp-tools">${server.tools.map((tool) => `<span class="chip" title="${escapeHtml(tool.description)}"><code>${escapeHtml(tool.name)}</code></span>`).join('')}</div>` : ''}
         ${server.resources.length ? `<div class="muted small">${server.resources.length} resource${server.resources.length === 1 ? '' : 's'}: ${server.resources.slice(0, 5).map((resource) => `<code>${escapeHtml(resource.uri)}</code>`).join(', ')}${server.resources.length > 5 ? ', …' : ''}</div>` : ''}
         ${server.prompts.length ? `<div class="muted small">${server.prompts.length} prompt${server.prompts.length === 1 ? '' : 's'}: ${server.prompts.slice(0, 5).map((prompt) => `<code>${escapeHtml(prompt.name)}</code>`).join(', ')}</div>` : ''}
-      </div>`).join('')}`;
+      </div>`).join('')}
+    ${mcpCatalogHtml(mcp)}`;
 }
 
 function submitLibraryForm(kind: 'agent' | 'skill' | 'preset' | 'mcp'): void {
@@ -1486,7 +1534,7 @@ function setView(next: ViewName): void {
 
 document.addEventListener('click', (event) => {
   const target = event.target as HTMLElement;
-  const el = target.closest('[data-action],[data-mode],[data-model],[data-toggle],[data-toggle-tool],[data-copy],[data-insert],[data-url],[data-file],[data-restore],[data-suggest],[data-ask-primary],[data-ask-secondary],[data-open-task],[data-delete-task],[data-export-task],[data-tab],[data-slash],[data-mention],[data-remove-account],[data-toggle-account],[data-run],[data-preset],[data-preset-delete],[data-install],[data-install-bundle],[data-lib-open],[data-lib-remove],[data-lib-tab],[data-lib-form],[data-agent-pick],[data-clear-chip],#more-models,#mode-btn,#model-btn,#compute-btn,[data-compute],[data-mcp-connect],[data-mcp-remove],[data-mcp-file],#web-btn,#enhance-btn,#send-btn,#task-title-toggle,#task-export,#task-close,#todos-toggle,#aa-toggle') as HTMLElement | null;
+  const el = target.closest('[data-action],[data-mode],[data-model],[data-toggle],[data-toggle-tool],[data-copy],[data-insert],[data-url],[data-file],[data-restore],[data-suggest],[data-ask-primary],[data-ask-secondary],[data-open-task],[data-delete-task],[data-export-task],[data-tab],[data-slash],[data-mention],[data-remove-account],[data-toggle-account],[data-run],[data-preset],[data-preset-delete],[data-install],[data-install-bundle],[data-lib-open],[data-lib-remove],[data-lib-tab],[data-lib-form],[data-agent-pick],[data-clear-chip],#more-models,#mode-btn,#model-btn,#compute-btn,[data-compute],[data-mcp-connect],[data-mcp-remove],[data-mcp-file],[data-mcp-category],[data-mcp-catalog-install],#web-btn,#enhance-btn,#send-btn,#task-title-toggle,#task-export,#task-close,#todos-toggle,#aa-toggle') as HTMLElement | null;
 
   if (!target.closest('#model-menu') && !target.closest('#model-btn') && modelMenuOpen) {
     modelMenuOpen = false;
@@ -1517,6 +1565,19 @@ document.addEventListener('click', (event) => {
   if (data.mcpConnect !== undefined) { post({ type: 'mcpConnect', name: data.mcpConnect || undefined }); showToast(data.mcpConnect ? `Connecting ${data.mcpConnect}…` : 'Connecting MCP servers…'); return; }
   if (data.mcpRemove) { post({ type: 'mcpRemove', name: data.mcpRemove, scope: data.scope }); return; }
   if (data.mcpFile) { post({ type: 'openMcpFile', file: data.mcpFile }); return; }
+  if (data.mcpCategory && MCP_CATEGORIES.some(([id]) => id === data.mcpCategory)) {
+    mcpCatalogCategory = data.mcpCategory as typeof mcpCatalogCategory;
+    renderLibrary();
+    document.querySelector<HTMLButtonElement>(`[data-mcp-category="${mcpCatalogCategory}"]`)?.focus({ preventScroll: true });
+    return;
+  }
+  if (data.mcpCatalogInstall) {
+    const entry = state?.mcp?.catalog?.find((item) => item.id === data.mcpCatalogInstall);
+    if (entry?.installable && !entry.installed && (data.scope === 'user' || (data.scope === 'project' && state?.workspace))) {
+      post({ type: 'mcpCatalogInstall', id: entry.id, scope: data.scope });
+    }
+    return;
+  }
   if (el.id === 'more-models') { showMoreModels = !showMoreModels; renderModelMenu(); return; }
   if (el.id === 'web-btn') { cycleWebSearch(); return; }
   if (el.id === 'enhance-btn') {
@@ -1637,6 +1698,7 @@ document.addEventListener('click', (event) => {
   if (data.toggleAccount) { post({ type: 'toggleAccount', id: data.toggleAccount }); return; }
 
   switch (data.action) {
+    case 'mcp-parrot-guide': post({ type: 'mcpParrotGuide' }); break;
     case 'addAccount': post({ type: 'addAccount' }); break;
     case 'manageAccounts': post({ type: 'manageAccounts' }); break;
     case 'refreshAccounts': post({ type: 'refreshAccounts' }); showToast('Refreshing models and quotas…'); break;

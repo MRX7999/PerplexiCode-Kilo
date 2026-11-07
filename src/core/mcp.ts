@@ -213,6 +213,8 @@ export interface LoadMcpConfigOptions {
   home?: string;
   extraConfigs?: string[];
   env?: NodeJS.ProcessEnv;
+  /** Extra credentials bound to this server and source file, never shared with other servers. */
+  serverEnv?: (name: string, scope: McpServerScope, sourceFile: string, rawSpec: unknown) => NodeJS.ProcessEnv;
   /** Only use servers from `extraConfigs` (Claude Code `--strict-mcp-config`). */
   strict?: boolean;
 }
@@ -227,7 +229,8 @@ export function loadMcpServers(cwd: string, options: LoadMcpConfigOptions = {}):
     if (!map) return;
     for (const [name, raw] of Object.entries(map)) {
       if (!name.trim()) continue;
-      const entry = parseServerEntry(name, raw, scope, sourceFile, env);
+      const scopedEnv = options.serverEnv?.(name, scope, sourceFile, raw);
+      const entry = parseServerEntry(name, raw, scope, sourceFile, scopedEnv ? { ...env, ...scopedEnv } : env);
       if (entry) {
         byName.set(entry.name, entry);
       }
@@ -527,7 +530,7 @@ class StdioMcpConnection implements McpConnection {
     const initResult = await this.request('initialize', {
       protocolVersion: '2024-11-05',
       capabilities: {},
-      clientInfo: { name: 'perplexicode-kilo', version: '3.3.0' },
+      clientInfo: { name: 'perplexicode-kilo', version: '3.4.0' },
     }, timeoutMs) as Record<string, unknown> | undefined;
 
     await this.notify('notifications/initialized', {});
@@ -712,7 +715,7 @@ class HttpMcpConnection implements McpConnection {
     const initResult = await this.request('initialize', {
       protocolVersion: '2024-11-05',
       capabilities: {},
-      clientInfo: { name: 'perplexicode-kilo', version: '3.3.0' },
+      clientInfo: { name: 'perplexicode-kilo', version: '3.4.0' },
     }, timeoutMs) as Record<string, unknown> | undefined;
 
     await this.notify('notifications/initialized', {}).catch(() => undefined);
@@ -850,6 +853,7 @@ export interface McpRegistryOptions {
   /** Only use servers from `extraConfigs` (Claude Code `--strict-mcp-config`). */
   strict?: boolean;
   env?: NodeJS.ProcessEnv;
+  serverEnv?: LoadMcpConfigOptions['serverEnv'];
   log?: (line: string) => void;
 }
 
@@ -860,6 +864,7 @@ export class McpRegistry {
   private readonly extraConfigs: string[];
   private readonly strict: boolean;
   private readonly env: NodeJS.ProcessEnv;
+  private readonly serverEnv?: LoadMcpConfigOptions['serverEnv'];
   private readonly log: (line: string) => void;
   private readonly connections = new Map<string, McpConnection>();
   private readonly states = new Map<string, McpServerState>();
@@ -872,6 +877,7 @@ export class McpRegistry {
     this.extraConfigs = options.extraConfigs || [];
     this.strict = options.strict ?? false;
     this.env = options.env || process.env;
+    this.serverEnv = options.serverEnv;
     this.log = options.log || (() => undefined);
     this.reloadConfigs();
   }
@@ -886,6 +892,7 @@ export class McpRegistry {
       extraConfigs: this.extraConfigs,
       strict: this.strict,
       env: this.env,
+      serverEnv: this.serverEnv,
     });
     const seen = new Set<string>();
     for (const config of configs) {

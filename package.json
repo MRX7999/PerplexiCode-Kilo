@@ -2,7 +2,7 @@
   "name": "perplexicode-kilo",
   "displayName": "PerplexiCode Kilo",
   "description": "Kilo Code-style autonomous coding agent (Code / Architect / Ask / Debug / Orchestrator / Review modes, tools, diffs, checkpoints, auto-approve) powered by your Perplexity Pro/Max subscription and its latest models.",
-  "version": "3.3.0",
+  "version": "3.4.0",
   "publisher": "MRX7999",
   "engines": {
     "vscode": "^1.85.0"

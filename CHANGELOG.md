@@ -2,6 +2,17 @@
 
 All notable changes to PerplexiCode Kilo. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.4.0] - Unreleased
+
+### Added
+- **Curated MCP catalog** in the Library → MCP tab and `pcode mcp catalog [category|query]`, with Development, Web, Productivity, Security and Pentest categories. Entries include upstream documentation, prerequisites, use cases, setup notes, risk labels and source-check dates. This is not a usage ranking or an upstream security audit.
+- **Catalog configuration installation:** Project / Global actions in the IDE and `pcode mcp install <id> [-s user|project|local] [--set KEY=value]`. Installation adds configuration only, never downloads software, starts servers, scans targets or grants permission rules. Native integrations have explicit Setup guide states instead of misleading install buttons. Existing configurations are preserved and duplicate names are rejected.
+- **IDE credential storage:** Native password prompts keep catalog tokens in VS Code SecretStorage while config files retain environment-variable references. Credentials are bound to the source file, server name and exact saved config; edits invalidate the binding and unrelated servers cannot reuse it. CLI catalog installations require environment variables and reject token arguments.
+- **Security and Parrot OS guide** included in the VSIX and accessible from the catalog, covering authorised security workflows, native tools and plugins, prerequisites and the distinction between source verification and runtime testing.
+
+### Fixed
+- **Narrow library navigation:** Tabs wrap within the sidebar instead of overflowing.
+
 ## [3.3.0] - 2026-11-07
 
 ### Added
