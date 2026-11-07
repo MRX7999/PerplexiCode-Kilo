@@ -1,5 +1,7 @@
 import * as cp from 'child_process';
 import * as fs from 'fs';
+import * as http from 'http';
+import * as https from 'https';
 import * as path from 'path';
 import { extractSingleFunctionHeader, findFunctionBlockEnd, parseFunctionHeaderLine } from './diffEngine';
 
@@ -978,3 +980,252 @@ export function spawnShellCommand(
     child.on('close', (code) => finish(code));
   });
 }
+
+/**
+ * Claude Code compatible `Glob` tool: finds files matching a glob pattern in the workspace.
+ */
+export async function globFilesTool(
+  host: AgentHost,
+  relPath: string,
+  pattern: string,
+  limit = 400
+): Promise<string> {
+  const root = resolveWorkspacePath(host.cwd, relPath || '.');
+  const stat = await fs.promises.stat(root).catch(() => undefined);
+  if (!stat || !stat.isDirectory()) {
+    throw new Error(`Directory not found: ${relPath || '.'}`);
+  }
+  const cleanPattern = (pattern || '**/*').trim();
+  const matcher = globToRegex(cleanPattern);
+  const results: Array<{ rel: string; mtimeMs: number }> = [];
+  const queue: string[] = [root];
+  let scanned = 0;
+
+  while (queue.length > 0 && scanned < 10_000) {
+    const dir = queue.shift()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.name === '.DS_Store') continue;
+      const abs = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!IGNORED_DIRS.has(entry.name) && !(entry.name.startsWith('.') && entry.name !== '.github' && entry.name !== '.vscode' && entry.name !== '.claude' && entry.name !== '.perplexicode')) {
+          queue.push(abs);
+        }
+        continue;
+      }
+      scanned += 1;
+      const relFromRoot = toPosixRelative(root, abs);
+      const relFromCwd = toPosixRelative(host.cwd, abs);
+      if (matcher.test(relFromRoot) || matcher.test(entry.name) || matcher.test(relFromCwd)) {
+        const fileStat = await fs.promises.stat(abs).catch(() => undefined);
+        results.push({ rel: relFromCwd, mtimeMs: fileStat?.mtimeMs || 0 });
+      }
+    }
+  }
+
+  if (results.length === 0) {
+    return 'No matching files found.';
+  }
+  results.sort((a, b) => b.mtimeMs - a.mtimeMs || a.rel.localeCompare(b.rel));
+  const sliced = results.slice(0, limit).map((item) => item.rel);
+  const suffix = results.length > limit ? `\n\n[Showing ${limit} of ${results.length} matching files.]` : '';
+  return sliced.join('\n') + suffix;
+}
+
+export interface SearchReplaceOperation {
+  search: string;
+  replace: string;
+  useRegex?: boolean;
+  ignoreCase?: boolean;
+}
+
+/**
+ * Performs one or more search/replace operations (`search_and_replace` / `MultiEdit`).
+ */
+export function searchAndReplaceContent(
+  original: string,
+  options: {
+    search?: string;
+    replace?: string;
+    useRegex?: boolean;
+    ignoreCase?: boolean;
+    startLine?: number;
+    endLine?: number;
+    operations?: SearchReplaceOperation[];
+  }
+): { content: string; replacements: number } {
+  const crlf = original.includes('\r\n');
+  const normalized = original.replace(/\r\n/g, '\n');
+  const ops: SearchReplaceOperation[] = Array.isArray(options.operations) && options.operations.length > 0
+    ? options.operations
+    : options.search !== undefined
+      ? [{
+        search: options.search,
+        replace: options.replace ?? '',
+        useRegex: options.useRegex,
+        ignoreCase: options.ignoreCase,
+      }]
+      : [];
+
+  if (ops.length === 0 || ops.every((op) => !op.search)) {
+    throw new Error('search_and_replace requires a non-empty <search> string or <operations> JSON array.');
+  }
+
+  const lines = normalized.split('\n');
+  const startIdx = options.startLine ? Math.max(0, options.startLine - 1) : 0;
+  const endIdx = options.endLine ? Math.min(lines.length, options.endLine) : lines.length;
+  let targetSlice = lines.slice(startIdx, endIdx).join('\n');
+  let totalReplacements = 0;
+
+  for (const op of ops) {
+    if (!op.search) continue;
+    const normSearch = op.search.replace(/\r\n/g, '\n');
+    const normReplace = (op.replace ?? '').replace(/\r\n/g, '\n');
+    const flags = `g${op.ignoreCase ? 'i' : ''}`;
+    let regex: RegExp;
+    try {
+      regex = op.useRegex
+        ? new RegExp(normSearch, flags)
+        : new RegExp(normSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), flags);
+    } catch (error) {
+      throw new Error(`Invalid regular expression in search_and_replace: ${(error as Error).message}`);
+    }
+    const matches = targetSlice.match(regex);
+    if (matches && matches.length > 0) {
+      totalReplacements += matches.length;
+      // Literal mode must not interpret $& / $1 in the replacement; regex mode keeps back-references.
+      targetSlice = op.useRegex ? targetSlice.replace(regex, normReplace) : targetSlice.replace(regex, () => normReplace);
+    }
+  }
+
+  if (totalReplacements === 0) {
+    throw new Error('No matches found for search_and_replace.');
+  }
+
+  const rebuilt = [
+    ...lines.slice(0, startIdx),
+    targetSlice,
+    ...lines.slice(endIdx),
+  ].join('\n');
+
+  return {
+    content: crlf ? rebuilt.replace(/\n/g, '\r\n') : rebuilt,
+    replacements: totalReplacements,
+  };
+}
+
+/**
+ * Claude Code compatible `WebFetch` tool: fetches an HTTP/HTTPS URL and converts HTML to readable text.
+ */
+export async function webFetchTool(
+  rawUrl: string,
+  options: { maxChars?: number; signal?: AbortSignal; timeoutMs?: number } = {}
+): Promise<string> {
+  const maxChars = options.maxChars || 30_000;
+  const timeoutMs = options.timeoutMs || 20_000;
+  let currentUrl = rawUrl.trim();
+  if (!/^https?:\/\//i.test(currentUrl)) {
+    throw new Error(`web_fetch requires an http:// or https:// URL (got '${rawUrl}').`);
+  }
+  if (options.signal?.aborted) {
+    throw new Error('Aborted');
+  }
+
+  for (let redirects = 0; redirects <= 5; redirects += 1) {
+    const parsedUrl = new URL(currentUrl);
+    const result = await new Promise<{ statusCode: number; headers: http.IncomingHttpHeaders; body: string }>((resolve, reject) => {
+      const client = parsedUrl.protocol === 'https:' ? https : http;
+      const req = client.request(
+        {
+          method: 'GET',
+          hostname: parsedUrl.hostname,
+          port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
+          path: `${parsedUrl.pathname}${parsedUrl.search}`,
+          headers: {
+            'User-Agent': 'PerplexiCode-Kilo/3.3 (+https://github.com/MRX7999/PerplexiCode-Kilo)',
+            'Accept': 'text/markdown, text/html, application/json, text/plain;q=0.9, */*;q=0.8',
+          },
+          timeout: timeoutMs,
+        },
+        (res) => {
+          let data = '';
+          res.setEncoding('utf8');
+          res.on('data', (chunk: string) => {
+            if (data.length < maxChars * 6) {
+              data += chunk;
+            }
+          });
+          res.on('end', () => resolve({ statusCode: res.statusCode || 0, headers: res.headers, body: data }));
+          res.on('error', reject);
+        }
+      );
+      if (options.signal) {
+        options.signal.addEventListener('abort', () => req.destroy(new Error('Aborted')), { once: true });
+      }
+      req.on('error', reject);
+      req.on('timeout', () => req.destroy(new Error(`Request to ${currentUrl} timed out`)));
+      req.end();
+    });
+
+    if ([301, 302, 303, 307, 308].includes(result.statusCode) && result.headers.location) {
+      currentUrl = new URL(result.headers.location, currentUrl).toString();
+      continue;
+    }
+
+    if (result.statusCode >= 400 || result.statusCode === 0) {
+      throw new Error(`HTTP ${result.statusCode} when fetching ${currentUrl}`);
+    }
+
+    const contentType = String(result.headers['content-type'] || '').toLowerCase();
+    let text = result.body;
+    if (contentType.includes('application/json')) {
+      try {
+        text = JSON.stringify(JSON.parse(result.body), null, 2);
+      } catch {
+        // keep raw
+      }
+    } else if (contentType.includes('text/html') || /<html|<body|<div|<p\b/i.test(result.body)) {
+      text = htmlToReadableText(result.body);
+    }
+
+    if (text.length > maxChars) {
+      return `${text.slice(0, maxChars)}\n\n[Content truncated at ${maxChars} chars from ${currentUrl}]`;
+    }
+    return text || '(empty response)';
+  }
+
+  throw new Error(`Too many redirects when fetching ${rawUrl}`);
+}
+
+export function htmlToReadableText(html: string): string {
+  return html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '')
+    .replace(/<svg\b[^>]*>[\s\S]*?<\/svg>/gi, '')
+    .replace(/<h1\b[^>]*>([\s\S]*?)<\/h1>/gi, '\n# $1\n')
+    .replace(/<h2\b[^>]*>([\s\S]*?)<\/h2>/gi, '\n## $1\n')
+    .replace(/<h3\b[^>]*>([\s\S]*?)<\/h3>/gi, '\n### $1\n')
+    .replace(/<li\b[^>]*>([\s\S]*?)<\/li>/gi, '\n- $1')
+    .replace(/<pre\b[^>]*>([\s\S]*?)<\/pre>/gi, '\n```\n$1\n```\n')
+    .replace(/<code\b[^>]*>([\s\S]*?)<\/code>/gi, '`$1`')
+    .replace(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, '$2 ($1)')
+    .replace(/<(br|hr)\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|section|article|tr|header|footer|main|blockquote)>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+

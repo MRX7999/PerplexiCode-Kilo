@@ -1,6 +1,7 @@
 import type { ThreadState } from './transport';
 import type { TodoItem } from './toolParser';
 import type { ApiMessage } from './prompts';
+import type { ComputeMode } from '../api/types';
 
 export type DiffLine = { type: ' ' | '+' | '-' | '@'; text: string };
 
@@ -30,6 +31,10 @@ export interface ToolInfo {
   mode?: string;
   reason?: string;
   outsideWorkspace?: boolean;
+  /** MCP server name (use_mcp_tool / access_mcp_resource). */
+  server?: string;
+  /** Target URL (web_fetch) or resource URI. */
+  url?: string;
 }
 
 export interface UiMessage {
@@ -78,6 +83,10 @@ export interface AutoApproveSettings {
   subtasks: boolean;
   todo: boolean;
   retry: boolean;
+  /** 3.3: MCP tool calls and resource reads. */
+  mcp: boolean;
+  /** 3.3: web_fetch. */
+  web: boolean;
 }
 
 export interface AgentSettings {
@@ -102,6 +111,8 @@ export interface ModelSelection {
   baseModelId: string;
   thinking: boolean;
   webSearch: boolean | undefined;
+  /** 3.3: Perplexity compute mode (search / computer light-standard-high-ultra / research / labs). */
+  computeMode?: ComputeMode;
 }
 
 export interface TaskStatus {

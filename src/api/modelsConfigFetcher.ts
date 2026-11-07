@@ -4,6 +4,8 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   AccountSession,
+  PerplexityComputerHarnessEntry,
+  PerplexityComputerHarnessMode,
   PerplexityModelConfigEntry,
   PerplexityModelDefinition,
   PerplexityModelsConfigSnapshot,
@@ -240,6 +242,7 @@ export function normalizeModelsConfigPayload(value: unknown): PerplexityModelsCo
   const agenticResearchCompareModels = Array.isArray(record.agentic_research_compare_models)
     ? record.agentic_research_compare_models.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
     : undefined;
+  const computerHarness = normalizeComputerHarness(record.computer_harness);
 
   return {
     fetchedAt: new Date().toISOString(),
@@ -248,7 +251,42 @@ export function normalizeModelsConfigPayload(value: unknown): PerplexityModelsCo
     config,
     default_models: defaultModels,
     agentic_research_compare_models: agenticResearchCompareModels,
+    computer_harness: computerHarness,
   };
+}
+
+function normalizeComputerHarness(value: unknown): PerplexityModelsConfigSnapshot['computer_harness'] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const rawModes = record.modes && typeof record.modes === 'object' && !Array.isArray(record.modes)
+    ? record.modes as Record<string, unknown>
+    : undefined;
+  const modes: Partial<Record<PerplexityComputerHarnessMode, PerplexityComputerHarnessEntry>> = {};
+  for (const key of ['light', 'standard', 'high', 'ultra'] as const) {
+    const entry = rawModes?.[key];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      continue;
+    }
+    const obj = entry as Record<string, unknown>;
+    if (typeof obj.orchestrator_model !== 'string' || !obj.orchestrator_model.trim()) {
+      continue;
+    }
+    modes[key] = {
+      orchestrator_model: obj.orchestrator_model.trim(),
+      orchestrator_effort: typeof obj.orchestrator_effort === 'string' ? obj.orchestrator_effort.trim() : null,
+      label: typeof obj.label === 'string' && obj.label.trim() ? obj.label.trim() : key,
+      description: typeof obj.description === 'string' ? obj.description.trim() : null,
+    };
+  }
+  if (Object.keys(modes).length === 0) {
+    return undefined;
+  }
+  const defaultMode = typeof record.default_mode === 'string' && ['light', 'standard', 'high', 'ultra'].includes(record.default_mode)
+    ? record.default_mode as PerplexityComputerHarnessMode
+    : undefined;
+  return { default_mode: defaultMode, modes };
 }
 
 function normalizeModelsRecord(value: unknown): Record<string, PerplexityModelDefinition> {

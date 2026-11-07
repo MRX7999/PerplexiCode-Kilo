@@ -21,12 +21,26 @@ export const TOOL_PARAMS: Record<string, string[]> = {
   switch_mode: ['mode_slug', 'reason'],
   new_task: ['mode', 'message', 'todos'],
   update_todo_list: ['todos'],
+  // 3.3: Claude Code parity tools
+  glob_files: ['path', 'pattern'],
+  search_and_replace: ['path', 'search', 'replace', 'use_regex', 'ignore_case', 'start_line', 'end_line', 'operations'],
+  web_fetch: ['url', 'prompt'],
+  // 3.3: Model Context Protocol
+  use_mcp_tool: ['server_name', 'tool_name', 'arguments'],
+  access_mcp_resource: ['server_name', 'uri'],
+  list_mcp_resources: ['server_name'],
 };
 
 export const TOOL_NAMES = Object.keys(TOOL_PARAMS);
 
+/**
+ * Direct Claude Code style MCP tool tags: `<mcp__server__tool>…</mcp__server__tool>`. The body is
+ * either an `<arguments>` JSON object or one tag per argument. They are normalized to use_mcp_tool.
+ */
+export const MCP_DIRECT_TAG = /<(mcp__[a-zA-Z0-9_-]+?__[a-zA-Z0-9_.-]+)>/g;
+
 /** Parameters whose value may legitimately contain markup, newlines or other tags. */
-const BODY_PARAMS = new Set(['content', 'diff', 'result', 'message', 'todos', 'follow_up', 'question']);
+const BODY_PARAMS = new Set(['content', 'diff', 'result', 'message', 'todos', 'follow_up', 'question', 'arguments', 'search', 'replace', 'operations', 'prompt']);
 
 export interface ParsedToolUse {
   name: string;
@@ -49,7 +63,7 @@ export interface ParsedAssistantMessage {
   source?: string;
 }
 
-const READ_ONLY_TOOLS = new Set(['read_file', 'list_files', 'search_files', 'list_code_definition_names']);
+const READ_ONLY_TOOLS = new Set(['read_file', 'list_files', 'search_files', 'list_code_definition_names', 'glob_files']);
 
 export function parseAssistantMessage(raw: string, options: { partial?: boolean } = {}): ParsedAssistantMessage {
   let source = raw;
@@ -145,10 +159,10 @@ function findFirstTool(source: string): { name: string; index: number } | undefi
   let bestUnfenced: { name: string; index: number } | undefined;
   let bestFenced: { name: string; index: number } | undefined;
 
-  for (const name of TOOL_NAMES) {
-    const regex = new RegExp(`<${name}>`, 'g');
+  const consider = (name: string, regex: RegExp) => {
     let match: RegExpExecArray | null;
     while ((match = regex.exec(source)) !== null) {
+      const matchedName = match[1] || name;
       // Ignore inline mentions inside backticks such as `<read_file>`.
       const prev = source[match.index - 1];
       const next = source[match.index + match[0].length];
@@ -160,16 +174,21 @@ function findFirstTool(source: string): { name: string; index: number } | undefi
       }
       if (insideFence(match.index)) {
         if (!bestFenced || match.index < bestFenced.index) {
-          bestFenced = { name, index: match.index };
+          bestFenced = { name: matchedName, index: match.index };
         }
         continue;
       }
       if (!bestUnfenced || match.index < bestUnfenced.index) {
-        bestUnfenced = { name, index: match.index };
+        bestUnfenced = { name: matchedName, index: match.index };
       }
       break;
     }
+  };
+
+  for (const name of TOOL_NAMES) {
+    consider(name, new RegExp(`<${name}>`, 'g'));
   }
+  consider('', new RegExp(MCP_DIRECT_TAG.source, 'g'));
   return bestUnfenced || bestFenced;
 }
 
@@ -179,10 +198,79 @@ function countTools(source: string): number {
     const matches = source.match(new RegExp(`<${name}>`, 'g'));
     count += matches ? matches.length : 0;
   }
+  const direct = source.match(new RegExp(MCP_DIRECT_TAG.source, 'g'));
+  count += direct ? direct.length : 0;
   return count;
 }
 
+export function isMcpDirectToolName(name: string): boolean {
+  return /^mcp__[a-zA-Z0-9_-]+?__[a-zA-Z0-9_.-]+$/.test(name);
+}
+
+/**
+ * `<mcp__server__tool>` blocks: `<arguments>{json}</arguments>` or one `<key>value</key>` per argument.
+ * The result is a normal use_mcp_tool call.
+ */
+function extractMcpDirectTool(source: string, name: string, start: number): ParsedToolUse {
+  const openTag = `<${name}>`;
+  const closeTag = `</${name}>`;
+  const bodyStart = start + openTag.length;
+  const closeIndex = source.indexOf(closeTag, bodyStart);
+  const partial = closeIndex === -1;
+  const body = source.slice(bodyStart, partial ? source.length : closeIndex);
+  const match = name.match(/^mcp__([a-zA-Z0-9_-]+?)__([a-zA-Z0-9_.-]+)$/)!;
+  const params: Record<string, string> = { server_name: match[1], tool_name: match[2] };
+  const argumentsMatch = body.match(/<arguments>([\s\S]*?)<\/arguments>/);
+  if (argumentsMatch) {
+    params.arguments = trimBody(argumentsMatch[1]);
+  } else {
+    const collected: Record<string, unknown> = {};
+    const childRegex = /<([a-zA-Z_][a-zA-Z0-9_.-]*)>([\s\S]*?)<\/\1>/g;
+    let child: RegExpExecArray | null;
+    let any = false;
+    while ((child = childRegex.exec(body)) !== null) {
+      any = true;
+      collected[child[1]] = coerceMcpArgument(trimBody(child[2]));
+    }
+    const trimmed = body.trim();
+    if (!any && trimmed.startsWith('{')) {
+      params.arguments = trimmed;
+    } else {
+      params.arguments = JSON.stringify(collected);
+    }
+  }
+  return {
+    name: 'use_mcp_tool',
+    params: finalizeParams('use_mcp_tool', params),
+    partial,
+    start,
+    end: partial ? source.length : closeIndex + closeTag.length,
+  };
+}
+
+/** Numbers, booleans, null and JSON objects/arrays written as tag bodies become typed arguments. */
+export function coerceMcpArgument(value: string): unknown {
+  const trimmed = value.trim();
+  if (trimmed === 'true') return true;
+  if (trimmed === 'false') return false;
+  if (trimmed === 'null') return null;
+  if (/^-?\d+(\.\d+)?$/.test(trimmed) && Number.isFinite(Number(trimmed)) && Math.abs(Number(trimmed)) < Number.MAX_SAFE_INTEGER) {
+    return Number(trimmed);
+  }
+  if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      return value;
+    }
+  }
+  return value;
+}
+
 function extractTool(source: string, name: string, start: number): ParsedToolUse {
+  if (isMcpDirectToolName(name)) {
+    return extractMcpDirectTool(source, name, start);
+  }
   const openTag = `<${name}>`;
   const closeTag = `</${name}>`;
   const bodyStart = start + openTag.length;
@@ -312,6 +400,24 @@ function finalizeParams(name: string, params: Record<string, string>): Record<st
   if (typeof params.command === 'string') {
     params.command = unwrapAutoLinkedUrls(decodeEntities(params.command));
   }
+  if (typeof params.url === 'string') {
+    params.url = unwrapAutoLinkedUrls(decodeEntities(params.url)).replace(/^["'`<]|[>"'`]$/g, '').trim();
+  }
+  if (typeof params.uri === 'string') {
+    params.uri = unwrapAutoLinkedUrls(decodeEntities(params.uri)).replace(/^["'`<]|[>"'`]$/g, '').trim();
+  }
+  if (typeof params.server_name === 'string') {
+    params.server_name = params.server_name.trim().replace(/^["'`]|["'`]$/g, '');
+  }
+  if (typeof params.tool_name === 'string') {
+    params.tool_name = params.tool_name.trim().replace(/^["'`]|["'`]$/g, '');
+  }
+  if (name === 'use_mcp_tool' && typeof params.arguments === 'string') {
+    params.arguments = stripWrappingFence(decodeEntities(params.arguments)).trim();
+  }
+  if (name === 'search_and_replace' && typeof params.operations === 'string') {
+    params.operations = stripWrappingFence(params.operations).trim();
+  }
   const isMarkdownPath = Boolean(params.path && /\.(md|mdx|markdown)$/i.test(params.path));
   if ((name === 'write_to_file' || name === 'insert_content') && typeof params.content === 'string') {
     params.content = stripWrappingFence(params.content);
@@ -348,13 +454,13 @@ function splitThinking(text: string, partial: boolean): { text: string; reasonin
   }
   if (partial) {
     // Hide a tool tag that is still being streamed ("<read_fi").
-    output = output.replace(/<[a-z_]*$/, '');
+    output = output.replace(/<[a-zA-Z0-9_-]*$/, '');
   }
   return { text: output, reasoning: reasoningParts.filter(Boolean).join('\n\n') };
 }
 
 function cleanupProse(text: string): string {
-  const toolNamesGroup = TOOL_NAMES.map(escapeRegex).join('|');
+  const toolNamesGroup = `${TOOL_NAMES.map(escapeRegex).join('|')}|mcp__[a-zA-Z0-9_-]+?__[a-zA-Z0-9_.-]+`;
   const echoedFence = new RegExp(`\`\`\`(?:xml|html)?\\s*<(${toolNamesGroup})>[\\s\\S]*?<\\/\\1>\\s*\`\`\``, 'gi');
   return text
     .replace(echoedFence, '')

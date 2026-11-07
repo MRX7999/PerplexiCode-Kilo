@@ -365,3 +365,19 @@ a:hover { text-decoration: underline; }
 .form-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .form-row .form-field { min-width: 140px; }
 .form-actions { display: flex; justify-content: flex-end; gap: 6px; }
+
+/* 3.3: compute mode pill + MCP library tab */
+.compute-pill { background: transparent; border: 1px solid transparent; max-width: 140px; }
+.compute-pill:hover { border-color: var(--border); }
+.compute-pill.on { color: var(--vscode-textLink-foreground); border-color: var(--border); }
+.compute-menu { min-width: 270px; right: 0; left: auto; }
+.compute-menu .menu-section:first-child { border-top: none; margin-top: 0; }
+.compute-menu .menu-foot code { font-size: 0.9em; }
+.mcp-card .lib-card-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.mcp-card .lib-card-head .icon { flex-shrink: 0; }
+.mcp-tools { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+.mcp-tools .chip code { font-size: 0.9em; }
+.badge.state.mcp-connected { color: var(--vscode-testing-iconPassed, #3fb950); }
+.badge.state.mcp-error { color: var(--error); }
+.badge.state.mcp-untrusted, .badge.state.mcp-disabled { color: var(--vscode-editorWarning-foreground, #d29922); }
+.error-text.small { display: block; white-space: pre-wrap; word-break: break-word; }

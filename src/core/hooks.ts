@@ -2,7 +2,7 @@ import * as cp from 'child_process';
 import * as path from 'path';
 import { resolveWorkspacePath } from '../agent/tools';
 import { HookEvent, HookMatcher } from './settings';
-import { CLAUDE_TOOL_NAMES, GateToolCall, PermissionDecision, PermissionMode } from './types';
+import { CLAUDE_TOOL_NAMES, claudeToolName, GateToolCall, PermissionDecision, PermissionMode } from './types';
 
 /**
  * Claude Code compatible command hooks.
@@ -109,12 +109,61 @@ export function toClaudeToolInput(tool: GateToolCall, cwd: string): Record<strin
       return { path: filePath };
     case 'new_task':
       return { subagent_type: p.mode, prompt: p.message, description: (p.message || '').slice(0, 80) };
+    case 'glob_files':
+      return { pattern: p.pattern, path: filePath };
+    case 'search_and_replace': {
+      const edits = parseSearchReplaceOperations(p);
+      return { file_path: filePath, edits };
+    }
+    case 'web_fetch':
+      return { url: p.url, prompt: p.prompt || '' };
+    case 'use_mcp_tool':
+      return parseMcpArguments(p.arguments);
+    case 'access_mcp_resource':
+      return { server: p.server_name, uri: p.uri };
+    case 'list_mcp_resources':
+      return { server: p.server_name };
     default:
       return { ...p };
   }
 }
 
-export function matcherApplies(matcher: string | undefined, nativeName: string | undefined): boolean {
+/** `<operations>` JSON array or the single search/replace pair, as MultiEdit `edits`. */
+export function parseSearchReplaceOperations(p: Record<string, string>): Array<{ old_string: string; new_string: string; use_regex?: boolean; ignore_case?: boolean }> {
+  if (p.operations) {
+    try {
+      const parsed = JSON.parse(p.operations);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .filter((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === 'object'))
+          .map((entry) => ({
+            old_string: String(entry.search ?? entry.old_string ?? ''),
+            new_string: String(entry.replace ?? entry.new_string ?? ''),
+            use_regex: entry.use_regex === true || entry.useRegex === true || entry.regex === true,
+            ignore_case: entry.ignore_case === true || entry.ignoreCase === true,
+          }));
+      }
+    } catch {
+      // fall through to the single pair
+    }
+  }
+  return [{ old_string: p.search ?? '', new_string: p.replace ?? '', use_regex: p.use_regex === 'true', ignore_case: p.ignore_case === 'true' }];
+}
+
+/** MCP tool arguments: a JSON object string; invalid or empty input becomes {} (the task reports the error). */
+export function parseMcpArguments(raw: string | undefined): Record<string, unknown> {
+  if (!raw || !raw.trim()) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : { value: parsed };
+  } catch {
+    return { _raw: raw };
+  }
+}
+
+export function matcherApplies(matcher: string | undefined, nativeName: string | undefined, tool?: GateToolCall): boolean {
   if (!matcher || matcher === '*' || matcher.trim() === '') {
     return true;
   }
@@ -122,8 +171,11 @@ export function matcherApplies(matcher: string | undefined, nativeName: string |
     return true;
   }
   const names = [nativeName, CLAUDE_TOOL_NAMES[nativeName]].filter(Boolean) as string[];
-  if (nativeName === 'apply_diff' || nativeName === 'insert_content') {
-    names.push('MultiEdit');
+  if (tool) {
+    names.push(claudeToolName(tool));
+  }
+  if (nativeName === 'apply_diff' || nativeName === 'insert_content' || nativeName === 'search_and_replace') {
+    names.push('MultiEdit', 'Edit');
   }
   try {
     const regex = new RegExp(`^(?:${matcher})$`);
@@ -150,9 +202,9 @@ export class HookEngine {
     return Object.values(this.hooks).reduce((sum, list) => sum + (list || []).reduce((inner, entry) => inner + entry.hooks.length, 0), 0);
   }
 
-  async run(event: HookEvent, input: HookInputBase & Record<string, unknown>, toolName?: string): Promise<HookDecision> {
+  async run(event: HookEvent, input: HookInputBase & Record<string, unknown>, toolName?: string, tool?: GateToolCall): Promise<HookDecision> {
     const decision: HookDecision = { results: [] };
-    const matchers = (this.hooks[event] || []).filter((entry) => matcherApplies(entry.matcher, toolName));
+    const matchers = (this.hooks[event] || []).filter((entry) => matcherApplies(entry.matcher, toolName, tool));
     if (matchers.length === 0) {
       return decision;
     }

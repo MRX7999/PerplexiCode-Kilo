@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { resolveWorkspacePath, splitCommandChain, stripHeredocBodies, stripLeadingCommandWrappers } from '../agent/tools';
-import { CLAUDE_TOOL_NAMES, EDIT_TOOLS, GateToolCall, GateVerdict, META_TOOLS, PermissionMode, READ_TOOLS } from './types';
+import { CLAUDE_TOOL_NAMES, claudeToolName, EDIT_TOOLS, GateToolCall, GateVerdict, MCP_TOOLS, META_TOOLS, PermissionMode, READ_TOOLS, WEB_TOOLS } from './types';
 
 /**
  * Claude Code style permission rules: allow / ask / deny lists with `Tool(specifier)` syntax.
@@ -16,6 +16,9 @@ import { CLAUDE_TOOL_NAMES, EDIT_TOOLS, GateToolCall, GateVerdict, META_TOOLS, P
  *   Read(~/.ssh/**)          home directory;  Read(//etc/**) absolute path
  *   Task(reviewer)           delegation to a subagent / mode
  *   apply_diff(...)          native tool names work too
+ *   mcp__github__get_issue   one MCP tool (Claude Code naming);  mcp__github / mcp__github__*  whole server
+ *   mcp                      every MCP tool, resource read and resource listing
+ *   WebFetch(domain:x.com)   web_fetch of that host (and subdomains);  WebFetch  any URL
  *
  * Evaluation order: deny (including the built-in secrets list) > permission mode "plan" > ask >
  * allow > modes "bypassPermissions"/"acceptEdits" > no opinion (legacy auto-approve settings).
@@ -48,7 +51,8 @@ export const SECRET_PATTERNS = [
 
 export function parseRule(raw: string): PermissionRule | undefined {
   const trimmed = raw.trim();
-  const match = trimmed.match(/^([A-Za-z_][\w-]*)(?:\(([\s\S]*)\))?$/);
+  // Tool names may contain `.` and `*` for MCP rules such as mcp__server__* or mcp__srv__tool.v2.
+  const match = trimmed.match(/^([A-Za-z_][\w.*-]*)(?:\(([\s\S]*)\))?$/);
   if (!match) {
     return undefined;
   }
@@ -56,7 +60,7 @@ export function parseRule(raw: string): PermissionRule | undefined {
   return { raw: trimmed, tool: match[1], specifier: specifier === '' || specifier === '*' ? undefined : specifier };
 }
 
-export type ToolCategory = 'read' | 'edit' | 'bash' | 'task' | 'meta' | 'other';
+export type ToolCategory = 'read' | 'edit' | 'bash' | 'task' | 'meta' | 'mcp' | 'web' | 'other';
 
 export function toolCategory(name: string): ToolCategory {
   if (READ_TOOLS.has(name)) return 'read';
@@ -64,11 +68,30 @@ export function toolCategory(name: string): ToolCategory {
   if (name === 'execute_command') return 'bash';
   if (name === 'new_task') return 'task';
   if (META_TOOLS.has(name)) return 'meta';
+  if (MCP_TOOLS.has(name)) return 'mcp';
+  if (WEB_TOOLS.has(name)) return 'web';
   return 'other';
 }
 
-/** Does a rule's tool name cover this native tool? */
-export function ruleCoversTool(ruleTool: string, nativeName: string): boolean {
+/** `mcp__server__tool`, `mcp__server__*`, `mcp__server` or `mcp`. */
+export function parseMcpRuleTool(ruleTool: string): { server?: string; tool?: string } | undefined {
+  const lowered = ruleTool.toLowerCase();
+  if (lowered === 'mcp') {
+    return {};
+  }
+  const match = ruleTool.match(/^mcp__([a-zA-Z0-9_-]+?)(?:__([a-zA-Z0-9_.*-]+))?$/);
+  if (!match) {
+    return undefined;
+  }
+  return { server: match[1], tool: match[2] && match[2] !== '*' ? match[2] : undefined };
+}
+
+function mcpSegment(value: string | undefined): string {
+  return (value || '').trim().replace(/[^a-zA-Z0-9_-]+/g, '_').toLowerCase();
+}
+
+/** Does a rule's tool name cover this native tool? `tool` is needed for MCP rules (server/tool names). */
+export function ruleCoversTool(ruleTool: string, nativeName: string, tool?: GateToolCall): boolean {
   if (ruleTool === nativeName || ruleTool === '*') {
     return true;
   }
@@ -83,9 +106,49 @@ export function ruleCoversTool(ruleTool: string, nativeName: string): boolean {
       return lowered === 'bash' || lowered === 'shell';
     case 'task':
       return lowered === 'task' || lowered === 'agent';
+    case 'mcp': {
+      const rule = parseMcpRuleTool(ruleTool);
+      if (!rule) {
+        return CLAUDE_TOOL_NAMES[nativeName]?.toLowerCase() === lowered;
+      }
+      if (rule.server === undefined) {
+        return true;
+      }
+      const server = mcpSegment(tool?.params.server_name);
+      if (!server || mcpSegment(rule.server) !== server) {
+        return false;
+      }
+      if (rule.tool === undefined) {
+        return true;
+      }
+      // Resource tools are covered by server-wide rules only.
+      return nativeName === 'use_mcp_tool' && mcpSegment(rule.tool) === mcpSegment(tool?.params.tool_name);
+    }
+    case 'web':
+      return lowered === 'webfetch' || lowered === 'web' || lowered === 'fetch';
     default:
       return CLAUDE_TOOL_NAMES[nativeName]?.toLowerCase() === lowered;
   }
+}
+
+/** Claude Code WebFetch specifier: `domain:example.com` (also matches subdomains) or a URL glob. */
+export function urlMatches(specifier: string, url: string): boolean {
+  const spec = specifier.trim();
+  let host = '';
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    host = '';
+  }
+  if (/^domain:/i.test(spec)) {
+    const domain = spec.slice('domain:'.length).trim().toLowerCase().replace(/^\*\./, '');
+    return Boolean(host) && (host === domain || host.endsWith(`.${domain}`));
+  }
+  if (spec.includes('*')) {
+    const regex = new RegExp(`^${spec.split('*').map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`, 'i');
+    return regex.test(url) || regex.test(host);
+  }
+  return url === spec || host === spec.toLowerCase();
 }
 
 /** gitignore-like glob to RegExp over posix paths. */
@@ -183,6 +246,11 @@ export interface ResolvedToolTarget {
   realPath?: string;
   command?: string;
   subagent?: string;
+  /** MCP server / tool names (use_mcp_tool, access_mcp_resource, list_mcp_resources). */
+  mcpServer?: string;
+  mcpTool?: string;
+  /** Target URL of web_fetch. */
+  url?: string;
   insideWorkspace: boolean;
 }
 
@@ -226,11 +294,17 @@ export function resolveTarget(tool: GateToolCall, cwd: string, additionalDirecto
   if (category === 'task') {
     return { category, subagent: (tool.params.mode || '').trim(), insideWorkspace: true };
   }
+  if (category === 'mcp') {
+    return { category, mcpServer: (tool.params.server_name || '').trim(), mcpTool: (tool.params.tool_name || '').trim(), insideWorkspace: true };
+  }
+  if (category === 'web') {
+    return { category, url: (tool.params.url || '').trim(), insideWorkspace: true };
+  }
   return { category, insideWorkspace: true };
 }
 
 function ruleMatches(rule: PermissionRule, tool: GateToolCall, target: ResolvedToolTarget, cwd: string, segment?: string): boolean {
-  if (!ruleCoversTool(rule.tool, tool.name)) {
+  if (!ruleCoversTool(rule.tool, tool.name, tool)) {
     return false;
   }
   if (rule.specifier === undefined) {
@@ -244,6 +318,20 @@ function ruleMatches(rule: PermissionRule, tool: GateToolCall, target: ResolvedT
       return commandMatches(rule.specifier, segment ?? target.command ?? '');
     case 'task':
       return rule.specifier === target.subagent;
+    case 'mcp': {
+      // mcp(server) / mcp(server__tool) / mcp(server:tool)
+      const spec = rule.specifier.replace(':', '__');
+      const parsed = parseMcpRuleTool(spec.startsWith('mcp__') ? spec : `mcp__${spec}`);
+      if (!parsed || parsed.server === undefined) {
+        return false;
+      }
+      if (mcpSegment(parsed.server) !== mcpSegment(target.mcpServer)) {
+        return false;
+      }
+      return parsed.tool === undefined || (tool.name === 'use_mcp_tool' && mcpSegment(parsed.tool) === mcpSegment(target.mcpTool));
+    }
+    case 'web':
+      return Boolean(target.url && urlMatches(rule.specifier, target.url));
     default:
       return false;
   }
@@ -278,13 +366,14 @@ export function commandTouchesSecret(command: string): string | undefined {
   return undefined;
 }
 
-function toolAllowed(list: string[] | undefined, nativeName: string): boolean {
+function toolAllowed(list: string[] | undefined, tool: GateToolCall): boolean {
+  const nativeName = tool.name;
   if (!list || toolCategory(nativeName) === 'meta') {
     return true;
   }
   return list.some((entry) => {
     const rule = parseRule(entry);
-    return Boolean(rule && ruleCoversTool(rule.tool, nativeName));
+    return Boolean(rule && ruleCoversTool(rule.tool, nativeName, tool));
   });
 }
 
@@ -295,8 +384,8 @@ export function evaluatePermission(config: PermissionConfig, tool: GateToolCall,
   const ask = parse(config.ask);
   const allow = parse(config.allow);
 
-  if (!toolAllowed(config.toolAllowList, tool.name)) {
-    return { decision: 'deny', reason: `Tool '${tool.name}' is not in this agent's tool list (${config.toolAllowList!.join(', ')}).`, source: 'agent.tools' };
+  if (!toolAllowed(config.toolAllowList, tool)) {
+    return { decision: 'deny', reason: `Tool '${claudeToolName(tool)}' is not in this agent's tool list (${config.toolAllowList!.join(', ')}).`, source: 'agent.tools' };
   }
   if (target.category === 'meta') {
     return {};
@@ -322,6 +411,10 @@ export function evaluatePermission(config: PermissionConfig, tool: GateToolCall,
   // 2. Plan mode is read-only.
   if (config.mode === 'plan' && (target.category === 'edit' || target.category === 'bash')) {
     return { decision: 'deny', reason: 'Plan mode is read-only: do not edit files or run commands. Investigate with read tools and present the plan with attempt_completion; the user will switch modes to execute it.', source: 'mode: plan' };
+  }
+  // MCP tools may have side effects; in plan mode they need an explicit allow rule (resource reads are fine).
+  if (config.mode === 'plan' && tool.name === 'use_mcp_tool' && !allow.some((rule) => ruleMatches(rule, tool, target, cwd))) {
+    return { decision: 'deny', reason: `Plan mode: MCP tool ${claudeToolName(tool)} is not allowed unless a permission rule allows it explicitly. Read MCP resources or present the plan instead.`, source: 'mode: plan' };
   }
 
   // 3. Ask rules.

@@ -16,6 +16,17 @@ export type PerplexitySearchMode =
   | 'browser_agent'
   | 'asi';
 export type PerplexityRequestMode = 'CONCISE' | 'COPILOT' | 'ASI';
+export type ComputeMode =
+  | 'search'
+  | 'computer'
+  | 'light'
+  | 'standard'
+  | 'high'
+  | 'ultra'
+  | 'research'
+  | 'agentic_research'
+  | 'labs';
+export type PerplexityComputerHarnessMode = 'light' | 'standard' | 'high' | 'ultra';
 export type QuotaBucket =
   | 'free_queries'
   | 'pro_search'
@@ -165,6 +176,13 @@ export interface PerplexityModelDefinition {
   provider?: string | null;
 }
 
+export interface PerplexityComputerHarnessEntry {
+  orchestrator_model: string;
+  orchestrator_effort?: string | null;
+  label: string;
+  description?: string | null;
+}
+
 export interface PerplexityModelsConfigSnapshot {
   fetchedAt?: string;
   config_schema?: string;
@@ -172,4 +190,8 @@ export interface PerplexityModelsConfigSnapshot {
   config: PerplexityModelConfigEntry[];
   default_models?: Partial<Record<PerplexitySearchMode, string>>;
   agentic_research_compare_models?: string[];
+  computer_harness?: {
+    default_mode?: PerplexityComputerHarnessMode;
+    modes?: Partial<Record<PerplexityComputerHarnessMode, PerplexityComputerHarnessEntry>>;
+  };
 }

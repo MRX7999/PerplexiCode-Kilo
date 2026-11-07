@@ -17,7 +17,7 @@ interface UiMessage {
   type: 'user' | 'text' | 'reasoning' | 'tool' | 'command' | 'completion' | 'followup' | 'error' | 'info' | 'checkpoint' | 'subtask' | 'api_req';
   text?: string;
   partial?: boolean;
-  tool?: { name: string; path?: string; title: string; content?: string; diff?: DiffLine[]; added?: number; removed?: number; isNewFile?: boolean; mode?: string; reason?: string; outsideWorkspace?: boolean };
+  tool?: { name: string; path?: string; title: string; content?: string; diff?: DiffLine[]; added?: number; removed?: number; isNewFile?: boolean; mode?: string; reason?: string; outsideWorkspace?: boolean; server?: string; url?: string };
   command?: { command: string; cwd?: string; output?: string; exitCode?: number | null; running?: boolean };
   suggestions?: Array<{ text: string; mode?: string }>;
   ask?: { kind: AskKind; resolved: boolean; response?: string; autoApproved?: boolean };
@@ -43,7 +43,12 @@ interface AppState {
   mode: string;
   modes: Array<{ slug: string; name: string; description: string; icon: string }>;
   models: ModelEntry[];
-  selection: { modelId: string; thinking: boolean; webSearch: boolean | null; modelLabel: string; modeWebSearchDefault: boolean };
+  selection: {
+    modelId: string; thinking: boolean; webSearch: boolean | null; modelLabel: string; modeWebSearchDefault: boolean;
+    computeMode?: string; computeRoute?: { modelId: string; requiredPlan: string; quotaBucket: string };
+  };
+  computeModes?: Array<{ id: string; label: string; shortLabel: string; description: string; requiredPlan: string; quotaBucket: string }>;
+  mcp?: McpState;
   settings: any;
   general: { subscriptionPlan: string; rotationStrategy: string; revealEditedFiles: boolean; modelsSnapshot: string };
   accounts: Array<{ id: string; alias: string; status: string; plan: string; email?: string; queriesToday: number; queriesTotal: number; lastUsedAt?: string; quotas: Record<string, string> }>;
@@ -52,6 +57,15 @@ interface AppState {
   library?: LibraryState;
   permissionMode?: string;
 }
+
+interface McpServerEntry {
+  name: string; type: string; scope: string; sourceFile: string; target: string; status: string; error?: string;
+  serverInfo?: { name?: string; version?: string };
+  tools: Array<{ name: string; qualifiedName: string; description: string }>;
+  resources: Array<{ uri: string; name: string; description: string }>;
+  prompts: Array<{ name: string; description: string }>;
+}
+interface McpState { enabled: boolean; trusted: boolean; servers: McpServerEntry[] }
 
 type LibraryScope = 'project' | 'user';
 interface LibraryState {
@@ -125,10 +139,10 @@ let messages: UiMessage[] = [];
 let currentTaskId: string | undefined;
 type ViewName = 'chat' | 'history' | 'settings' | 'library';
 let view: ViewName = 'chat';
-type LibraryTab = 'presets' | 'agents' | 'skills';
+type LibraryTab = 'presets' | 'agents' | 'skills' | 'mcp';
 let libraryTab: LibraryTab = 'presets';
 let libraryQuery = '';
-let libraryForm: undefined | 'agent' | 'skill' | 'preset';
+let libraryForm: undefined | 'agent' | 'skill' | 'preset' | 'mcp';
 let libraryKey = '';
 const formValues: Record<string, string> = {};
 /** Preset picked on the welcome screen / library; the next send runs it. */
@@ -138,6 +152,7 @@ let activeAgent: string | undefined;
 let settingsTab = 'accounts';
 let historyQuery = '';
 let modelMenuOpen = false;
+let computeMenuOpen = false;
 let modeMenuOpen = false;
 let showMoreModels = false;
 let autoApproveOpen = false;
@@ -175,6 +190,10 @@ root.innerHTML = `
             <div class="selector-wrap grow">
               <button id="model-btn" class="pill model-pill"></button>
               <div id="model-menu" class="menu model-menu hidden"></div>
+            </div>
+            <div class="selector-wrap">
+              <button id="compute-btn" class="pill compute-pill" title="Compute mode"></button>
+              <div id="compute-menu" class="menu compute-menu hidden"></div>
             </div>
             <button id="web-btn" class="icon-btn toggle" title="Web search"></button>
             <button id="enhance-btn" class="icon-btn" title="Enhance prompt">${icons.sparkle}</button>
@@ -362,10 +381,12 @@ function statusIcon(message: UiMessage): string {
 
 function toolIcon(name: string): string {
   if (name === 'read_file') return icons.file;
-  if (name === 'list_files' || name === 'list_code_definition_names') return icons.folder;
+  if (name === 'list_files' || name === 'list_code_definition_names' || name === 'glob_files') return icons.folder;
   if (name === 'search_files') return icons.search;
   if (name === 'write_to_file' || name === 'insert_content') return icons.edit;
-  if (name === 'apply_diff') return icons.diff;
+  if (name === 'apply_diff' || name === 'search_and_replace') return icons.diff;
+  if (name === 'web_fetch') return icons.globe;
+  if (name === 'use_mcp_tool' || name === 'access_mcp_resource' || name === 'list_mcp_resources') return icons.plug;
   if (name === 'update_todo_list') return icons.todo;
   if (name === 'switch_mode') return modeIcon(stateModeIcon(''));
   if (name === 'new_task') return icons.subtask;
@@ -462,7 +483,13 @@ function toolHtml(message: UiMessage): string {
   const tool = message.tool!;
   const isEdit = Boolean(tool.diff);
   const open = message.status === 'pending' ? !collapsed.has(message.id) : expanded.has(message.id);
-  const pathHtml = tool.path ? `<span class="tool-path" data-file="${escapeHtml(tool.path)}">${escapeHtml(tool.path)}</span>` : '';
+  const pathHtml = tool.path
+    ? `<span class="tool-path" data-file="${escapeHtml(tool.path)}">${escapeHtml(tool.path)}</span>`
+    : tool.url && tool.name === 'web_fetch'
+      ? `<span class="tool-path"><a href="#" data-url="${escapeHtml(tool.url)}" title="${escapeHtml(tool.url)}">${escapeHtml(tool.url.replace(/^https?:\/\//, '').slice(0, 80))}</a></span>`
+      : tool.url
+        ? `<span class="tool-path" title="${escapeHtml(tool.url)}">${escapeHtml(tool.url.slice(0, 80))}${tool.server ? ` <span class="muted">(${escapeHtml(tool.server)})</span>` : ''}</span>`
+        : tool.server && tool.name === 'list_mcp_resources' ? `<span class="tool-path">${escapeHtml(tool.server)}</span>` : '';
   const stats = isEdit ? `<span class="diff-stats"><span class="add">+${tool.added || 0}</span> <span class="del">-${tool.removed || 0}</span></span>` : '';
   const verb = toolVerb(tool, message);
   let body = '';
@@ -499,6 +526,12 @@ function toolVerb(tool: NonNullable<UiMessage['tool']>, message: UiMessage): str
     case 'write_to_file': return tool.isNewFile ? (pending ? 'PerplexiCode wants to create' : 'Created') : (pending ? 'PerplexiCode wants to rewrite' : 'Rewrote');
     case 'apply_diff': return message.status === 'error' ? 'Edit failed' : pending ? 'PerplexiCode wants to edit' : 'Edited';
     case 'insert_content': return pending ? 'PerplexiCode wants to insert into' : 'Inserted into';
+    case 'glob_files': return `${pending ? 'Wants to match' : 'Matched'} ${tool.title.replace(/^Glob\s+/i, '').split(' in ')[0]} in`;
+    case 'search_and_replace': return message.status === 'error' ? 'Search & replace failed' : pending ? 'PerplexiCode wants to search & replace in' : 'Replaced in';
+    case 'web_fetch': return pending ? 'PerplexiCode wants to fetch' : message.status === 'error' ? 'Fetch failed' : 'Fetched';
+    case 'use_mcp_tool': return pending ? `Wants to call ${tool.title.replace(/^MCP\s+/, '')}` : message.status === 'error' ? `${tool.title} failed` : tool.title;
+    case 'access_mcp_resource': return pending ? 'Wants to read MCP resource' : 'Read MCP resource';
+    case 'list_mcp_resources': return pending ? 'Wants to list MCP resources' : 'Listed MCP resources';
     case 'switch_mode': return tool.title + (tool.mode ? '' : '');
     case 'new_task': return tool.title;
     default: return tool.title;
@@ -683,6 +716,8 @@ const AUTO_APPROVE_ITEMS: Array<[string, string, string]> = [
   ['subtasks', 'Subtasks', 'Create and complete subtasks'],
   ['retry', 'Retry', 'Retry failed requests automatically'],
   ['readOutsideWorkspace', 'Outside reads', 'Read files outside the workspace'],
+  ['mcp', 'MCP', 'Call MCP server tools and read MCP resources'],
+  ['web', 'Web', 'Fetch URLs with web_fetch'],
 ];
 
 function renderAutoApprove(): void {
@@ -717,6 +752,12 @@ function renderComposer(): void {
   $('mode-btn').innerHTML = `${modeIcon(mode.icon)}<span>${escapeHtml(mode.name)}</span>${icons.chevronDown}`;
   const model = state.models.find((entry) => entry.id === state!.selection.modelId);
   $('model-btn').innerHTML = `${providerIcon(model?.provider, state.selection.modelId)}<span class="ellipsis">${escapeHtml(state.selection.modelLabel)}</span>${model?.requiredPlan === 'max' ? '<span class="badge max">Max</span>' : ''}${icons.chevronDown}`;
+  const computeId = state.selection.computeMode || 'search';
+  const compute = (state.computeModes || []).find((entry) => entry.id === computeId);
+  const computeBtn = $('compute-btn');
+  computeBtn.innerHTML = `${icons.cpu}<span class="ellipsis">${escapeHtml(compute?.shortLabel || computeId)}</span>${icons.chevronDown}`;
+  computeBtn.classList.toggle('on', computeId !== 'search');
+  computeBtn.title = `Compute mode: ${compute?.label || computeId}${state.selection.computeRoute && state.selection.computeRoute.modelId !== state.selection.modelId ? ` → ${state.selection.computeRoute.modelId}` : ''} — click to change`;
   const webOn = state.selection.webSearch === null ? state.selection.modeWebSearchDefault && state.settings.webSearch !== 'never' || state.settings.webSearch === 'always' : state.selection.webSearch;
   const webBtn = $('web-btn');
   webBtn.innerHTML = icons.globe + (state.selection.webSearch === null ? '<span class="auto-dot"></span>' : '');
@@ -740,6 +781,31 @@ function renderComposer(): void {
   renderComposerChips();
   renderModeMenu();
   renderModelMenu();
+  renderComputeMenu();
+}
+
+function renderComputeMenu(): void {
+  const menu = $('compute-menu');
+  menu.classList.toggle('hidden', !computeMenuOpen);
+  if (!computeMenuOpen || !state) return;
+  const current = state.selection.computeMode || 'search';
+  const modes = state.computeModes || [];
+  const groups: Array<[string, string[]]> = [
+    ['Search', ['search']],
+    ['Computer (ASI harness)', ['light', 'standard', 'high', 'ultra', 'computer']],
+    ['Research & Labs', ['research', 'agentic_research', 'labs']],
+  ];
+  const item = (mode: NonNullable<AppState['computeModes']>[number]) => `
+    <button class="menu-item ${mode.id === current ? 'selected' : ''}" data-compute="${mode.id}" title="${escapeHtml(mode.description)}">
+      ${icons.cpu}<div class="menu-text"><b>${escapeHtml(mode.label)}</b><span>${escapeHtml(mode.description)}</span></div>
+      ${mode.requiredPlan === 'max' ? '<span class="badge max">Max</span>' : mode.requiredPlan === 'pro' ? '<span class="badge">Pro</span>' : ''}
+      ${mode.id === current ? `<span class="check">${icons.check}</span>` : ''}
+    </button>`;
+  const route = state.selection.computeRoute;
+  menu.innerHTML = groups.map(([title, ids]) => {
+    const entries = ids.map((id) => modes.find((mode) => mode.id === id)).filter((mode): mode is NonNullable<typeof mode> => Boolean(mode));
+    return entries.length ? `<div class="menu-section">${title}</div>${entries.map(item).join('')}` : '';
+  }).join('') + `<div class="menu-foot muted">${route && current !== 'search' ? `Routes to <code>${escapeHtml(route.modelId)}</code> · ${escapeHtml(route.requiredPlan)} plan · falls back to Search when unavailable` : 'Standard Pro search with the selected model'}</div>`;
 }
 
 function renderComposerChips(): void {
@@ -856,6 +922,8 @@ const SLASH_COMMANDS = () => [
   { label: '/history', value: 'history', description: 'Open task history' },
   { label: '/settings', value: 'settings', description: 'Open settings' },
   { label: '/web', value: 'web', description: 'Toggle web search (auto → on → off)' },
+  { label: '/compute', value: 'compute', description: `Compute mode: ${(state?.computeModes || []).map((mode) => mode.id).join(', ') || 'search, light, standard, high, ultra, research, labs'}` },
+  { label: '/mcp', value: 'library:mcp', description: 'MCP servers, tools and resources' },
   { label: '/presets', value: 'library:presets', description: 'Task presets' },
   { label: '/agents', value: 'library:agents', description: 'Install or create subagents' },
   { label: '/skills', value: 'library:skills', description: 'Install or create skills' },
@@ -891,6 +959,27 @@ function applySlash(value: string, restText = ''): void {
   } else if (value === 'web') {
     cycleWebSearch();
     input.value = restText;
+  } else if (value === 'compute') {
+    const wanted = restText.trim().split(/\s+/)[0]?.toLowerCase();
+    const modes = state?.computeModes || [];
+    if (!wanted) {
+      computeMenuOpen = true;
+      modeMenuOpen = false;
+      modelMenuOpen = false;
+      renderComposer();
+      input.value = '';
+    } else {
+      const aliases: Record<string, string> = { computer: 'standard', compute: 'standard', asi: 'standard', max: 'ultra', default: 'search', auto: 'search', deep_research: 'research', agentic: 'agentic_research', studio: 'labs' };
+      const id = modes.some((mode) => mode.id === wanted) ? wanted : aliases[wanted];
+      if (id) {
+        post({ type: 'setComputeMode', mode: id });
+        showToast(`Compute mode: ${modes.find((mode) => mode.id === id)?.label || id}`);
+        input.value = restText.slice(wanted.length).trim();
+      } else {
+        showToast(`Unknown compute mode "${wanted}" (${modes.map((mode) => mode.id).join(', ')})`);
+        input.value = '';
+      }
+    }
   } else if (value.startsWith('library:')) {
     libraryTab = value.slice(8) as LibraryTab;
     setView('library');
@@ -1034,6 +1123,7 @@ function renderSettings(): void {
               <span>Pro searches</span><b>${escapeHtml(account.quotas.pro)}</b>
               <span>Research</span><b>${escapeHtml(account.quotas.research)}</b>
               <span>Labs</span><b>${escapeHtml(account.quotas.labs)}</b>
+              <span>Computer</span><b>${escapeHtml(account.quotas.computer || 'Unknown')}</b>
               <span>Today / total</span><b>${account.queriesToday} / ${account.queriesTotal}</b>
             </div>
           </div>`).join('')}
@@ -1121,6 +1211,7 @@ const LIBRARY_TABS: Array<[LibraryTab, string, string]> = [
   ['presets', 'Task presets', 'preset'],
   ['agents', 'Subagents', 'agent'],
   ['skills', 'Skills', 'skill'],
+  ['mcp', 'MCP', 'plug'],
 ];
 
 const SCOPE_LABEL: Record<LibraryScope, string> = { project: 'project', user: 'global' };
@@ -1288,8 +1379,8 @@ function renderLibrary(): void {
     el.innerHTML = `<div class="view-header"><button class="icon-btn" data-action="chat">${icons.chevronLeft}</button><h3>Agents, Skills & Presets</h3></div><div class="empty muted">Loading…</div>`;
     return;
   }
-  const counts: Record<string, number> = { presets: library.taskPresets.length, agents: library.agents.length, skills: library.skills.length };
-  const body = libraryTab === 'presets' ? presetsTabHtml(library) : libraryTab === 'agents' ? agentsTabHtml(library) : skillsTabHtml(library);
+  const counts: Record<string, number> = { presets: library.taskPresets.length, agents: library.agents.length, skills: library.skills.length, mcp: state?.mcp?.servers.length || 0 };
+  const body = libraryTab === 'presets' ? presetsTabHtml(library) : libraryTab === 'agents' ? agentsTabHtml(library) : libraryTab === 'skills' ? skillsTabHtml(library) : mcpTabHtml();
   el.innerHTML = `
     <div class="view-header"><button class="icon-btn" data-action="chat">${icons.chevronLeft}</button><h3>Agents, Skills & Presets</h3><span class="spacer"></span><button class="btn primary small" data-action="chat">Done</button></div>
     <div class="lib-tabs">${LIBRARY_TABS.map(([id, label, icon]) => `<button class="lib-tab ${libraryTab === id ? 'active' : ''}" data-lib-tab="${id}">${icons[icon]}<span>${label}</span><span class="count">${counts[id]}</span></button>`).join('')}</div>
@@ -1300,7 +1391,69 @@ function renderLibrary(): void {
     </div>`;
 }
 
-function submitLibraryForm(kind: 'agent' | 'skill' | 'preset'): void {
+function mcpTabHtml(): string {
+  const mcp = state?.mcp;
+  const servers = (mcp?.servers || []).filter((server) => matchesQuery(server.name, server.target, ...server.tools.map((tool) => tool.name)));
+  const statusBadge = (server: McpServerEntry) => {
+    const label = server.status === 'connected' ? `connected · ${server.tools.length} tools` : server.status === 'untrusted' ? 'untrusted workspace' : server.status;
+    return `<span class="badge state mcp-${escapeHtml(server.status)}">${escapeHtml(label)}</span>`;
+  };
+  const form = libraryForm === 'mcp' ? `
+    <div class="lib-form">
+      <div class="section-title">Add MCP server</div>
+      ${formField('name', 'Name', textInput('name', 'e.g. github'), 'letters, digits, - _ .')}
+      ${formField('target', 'Command or URL', textInput('target', 'npx -y @modelcontextprotocol/server-github   or   https://mcp.example.com/mcp'), 'stdio command line, or an http(s) URL for a remote server')}
+      ${formField('transport', 'Transport', selectInput('transport', [['auto', 'Auto (command → stdio, URL → http)'], ['stdio', 'stdio'], ['http', 'Streamable HTTP'], ['sse', 'SSE']], 'auto'))}
+      ${formField('env', 'Environment / headers', textArea('env', 2, 'GITHUB_TOKEN=${GITHUB_TOKEN}'), 'KEY=VALUE per line for stdio env · "Header: value" per line for http')}
+      ${formField('scope', 'Save to', selectInput('scope', [...(state?.workspace ? [['project', '.mcp.json in the workspace (shared, Claude Code compatible)'] as [string, string], ['local', '.perplexicode/settings.local.json (this machine only)'] as [string, string]] : []), ['user', '~/.perplexicode/mcp.json (all projects)']], state?.workspace ? 'project' : 'user'))}
+      <div class="form-actions"><button class="btn ghost small" data-action="lib-cancel">Cancel</button><button class="btn primary small" data-action="lib-submit-mcp">Add server</button></div>
+    </div>` : '';
+  if (!mcp?.enabled) {
+    return `<div class="notice info">${icons.info}<div>MCP is disabled (<code>perplexicodeKilo.mcp.enabled</code>).</div></div>`;
+  }
+  return `
+    <div class="section-title">MCP servers<span class="spacer"></span>
+      <button class="btn ghost small" data-mcp-connect="" title="Connect every configured server">${icons.refresh} Connect all</button>
+      ${libraryForm === 'mcp' ? '' : `<button class="btn primary small" data-lib-form="mcp">${icons.plus} Add server</button>`}</div>
+    <p class="muted small">Claude Code compatible: <code>~/.claude.json</code>, <code>~/.claude/.mcp.json</code>, <code>~/.perplexicode/mcp.json</code>, <code>.mcp.json</code>, <code>.mcp.local.json</code> and the <code>mcpServers</code> block of settings files. Tools are exposed to the agent as <code>mcp__&lt;server&gt;__&lt;tool&gt;</code>; permission rules use the same names.</p>
+    ${!mcp.trusted ? `<div class="notice info">${icons.warning}<div>This workspace is not trusted: project stdio servers stay off until you trust it (Workspace Trust).</div></div>` : ''}
+    ${form}
+    ${servers.length === 0 ? `<div class="empty muted">No MCP servers configured${libraryQuery ? ' match the filter' : ''}. Add one above or run <code>pcode mcp add &lt;name&gt; -- &lt;command&gt;</code>.</div>` : servers.map((server) => `
+      <div class="lib-card mcp-card">
+        <div class="lib-card-head">${icons.plug}<b>${escapeHtml(server.name)}</b>${statusBadge(server)}<span class="badge">${escapeHtml(server.type)}</span><span class="badge">${escapeHtml(server.scope)}</span><span class="spacer"></span>
+          <button class="icon-btn" data-mcp-connect="${escapeHtml(server.name)}" title="${server.status === 'connected' ? 'Reconnect' : 'Connect'}">${icons.refresh}</button>
+          <button class="icon-btn" data-mcp-file="${escapeHtml(server.sourceFile)}" title="Open ${escapeHtml(server.sourceFile)}">${icons.file}</button>
+          <button class="icon-btn" data-mcp-remove="${escapeHtml(server.name)}" data-scope="${escapeHtml(server.scope)}" title="Remove from config">${icons.trash}</button></div>
+        <div class="muted small ellipsis" title="${escapeHtml(server.target)}"><code>${escapeHtml(server.target)}</code></div>
+        ${server.error ? `<div class="error-text small">${escapeHtml(server.error)}</div>` : ''}
+        ${server.serverInfo?.name ? `<div class="muted small">${escapeHtml(server.serverInfo.name)}${server.serverInfo.version ? ` ${escapeHtml(server.serverInfo.version)}` : ''}</div>` : ''}
+        ${server.tools.length ? `<div class="mcp-tools">${server.tools.map((tool) => `<span class="chip" title="${escapeHtml(tool.description)}"><code>${escapeHtml(tool.name)}</code></span>`).join('')}</div>` : ''}
+        ${server.resources.length ? `<div class="muted small">${server.resources.length} resource${server.resources.length === 1 ? '' : 's'}: ${server.resources.slice(0, 5).map((resource) => `<code>${escapeHtml(resource.uri)}</code>`).join(', ')}${server.resources.length > 5 ? ', …' : ''}</div>` : ''}
+        ${server.prompts.length ? `<div class="muted small">${server.prompts.length} prompt${server.prompts.length === 1 ? '' : 's'}: ${server.prompts.slice(0, 5).map((prompt) => `<code>${escapeHtml(prompt.name)}</code>`).join(', ')}</div>` : ''}
+      </div>`).join('')}`;
+}
+
+function submitLibraryForm(kind: 'agent' | 'skill' | 'preset' | 'mcp'): void {
+  if (kind === 'mcp') {
+    if (!(formValues.name || '').trim() || !(formValues.target || '').trim()) {
+      showToast('Name and command/URL are required');
+      return;
+    }
+    const isUrl = /^https?:\/\//i.test((formValues.target || '').trim());
+    post({
+      type: 'mcpAdd',
+      name: formValues.name,
+      target: formValues.target,
+      transport: formValues.transport && formValues.transport !== 'auto' ? formValues.transport : undefined,
+      env: isUrl ? undefined : formValues.env,
+      headers: isUrl ? formValues.env : undefined,
+      scope: formValues.scope || (state?.workspace ? 'project' : 'user'),
+    });
+    libraryForm = undefined;
+    for (const key of Object.keys(formValues)) delete formValues[key];
+    renderLibrary();
+    return;
+  }
   if (kind === 'preset') {
     post({ type: 'savePreset', title: formValues.title || '', description: formValues.description || '', mode: formValues.mode || 'code', agent: formValues.agent || undefined, prompt: formValues.prompt || '', scope: formValues.scope || 'user' });
     libraryForm = undefined;
@@ -1333,7 +1486,7 @@ function setView(next: ViewName): void {
 
 document.addEventListener('click', (event) => {
   const target = event.target as HTMLElement;
-  const el = target.closest('[data-action],[data-mode],[data-model],[data-toggle],[data-toggle-tool],[data-copy],[data-insert],[data-url],[data-file],[data-restore],[data-suggest],[data-ask-primary],[data-ask-secondary],[data-open-task],[data-delete-task],[data-export-task],[data-tab],[data-slash],[data-mention],[data-remove-account],[data-toggle-account],[data-run],[data-preset],[data-preset-delete],[data-install],[data-install-bundle],[data-lib-open],[data-lib-remove],[data-lib-tab],[data-lib-form],[data-agent-pick],[data-clear-chip],#more-models,#mode-btn,#model-btn,#web-btn,#enhance-btn,#send-btn,#task-title-toggle,#task-export,#task-close,#todos-toggle,#aa-toggle') as HTMLElement | null;
+  const el = target.closest('[data-action],[data-mode],[data-model],[data-toggle],[data-toggle-tool],[data-copy],[data-insert],[data-url],[data-file],[data-restore],[data-suggest],[data-ask-primary],[data-ask-secondary],[data-open-task],[data-delete-task],[data-export-task],[data-tab],[data-slash],[data-mention],[data-remove-account],[data-toggle-account],[data-run],[data-preset],[data-preset-delete],[data-install],[data-install-bundle],[data-lib-open],[data-lib-remove],[data-lib-tab],[data-lib-form],[data-agent-pick],[data-clear-chip],#more-models,#mode-btn,#model-btn,#compute-btn,[data-compute],[data-mcp-connect],[data-mcp-remove],[data-mcp-file],#web-btn,#enhance-btn,#send-btn,#task-title-toggle,#task-export,#task-close,#todos-toggle,#aa-toggle') as HTMLElement | null;
 
   if (!target.closest('#model-menu') && !target.closest('#model-btn') && modelMenuOpen) {
     modelMenuOpen = false;
@@ -1343,11 +1496,27 @@ document.addEventListener('click', (event) => {
     modeMenuOpen = false;
     renderModeMenu();
   }
+  if (!target.closest('#compute-menu') && !target.closest('#compute-btn') && computeMenuOpen) {
+    computeMenuOpen = false;
+    renderComputeMenu();
+  }
   if (!el) return;
   const data = el.dataset;
 
-  if (el.id === 'mode-btn') { modeMenuOpen = !modeMenuOpen; modelMenuOpen = false; renderComposer(); return; }
-  if (el.id === 'model-btn') { modelMenuOpen = !modelMenuOpen; modeMenuOpen = false; renderComposer(); return; }
+  if (el.id === 'mode-btn') { modeMenuOpen = !modeMenuOpen; modelMenuOpen = false; computeMenuOpen = false; renderComposer(); return; }
+  if (el.id === 'model-btn') { modelMenuOpen = !modelMenuOpen; modeMenuOpen = false; computeMenuOpen = false; renderComposer(); return; }
+  if (el.id === 'compute-btn') { computeMenuOpen = !computeMenuOpen; modeMenuOpen = false; modelMenuOpen = false; renderComposer(); return; }
+  if (data.compute) {
+    post({ type: 'setComputeMode', mode: data.compute });
+    computeMenuOpen = false;
+    renderComputeMenu();
+    const picked = state?.computeModes?.find((mode) => mode.id === data.compute);
+    showToast(`Compute mode: ${picked?.label || data.compute}`);
+    return;
+  }
+  if (data.mcpConnect !== undefined) { post({ type: 'mcpConnect', name: data.mcpConnect || undefined }); showToast(data.mcpConnect ? `Connecting ${data.mcpConnect}…` : 'Connecting MCP servers…'); return; }
+  if (data.mcpRemove) { post({ type: 'mcpRemove', name: data.mcpRemove, scope: data.scope }); return; }
+  if (data.mcpFile) { post({ type: 'openMcpFile', file: data.mcpFile }); return; }
   if (el.id === 'more-models') { showMoreModels = !showMoreModels; renderModelMenu(); return; }
   if (el.id === 'web-btn') { cycleWebSearch(); return; }
   if (el.id === 'enhance-btn') {
@@ -1485,6 +1654,8 @@ document.addEventListener('click', (event) => {
     case 'lib-submit-preset': submitLibraryForm('preset'); break;
     case 'lib-submit-agent': submitLibraryForm('agent'); break;
     case 'lib-submit-skill': submitLibraryForm('skill'); break;
+    case 'lib-submit-mcp': submitLibraryForm('mcp'); break;
+    case 'library-mcp': libraryTab = 'mcp'; setView('library'); break;
     case 'install-starter':
       post({ type: 'installPresetBundle', agents: ['code-reviewer', 'test-writer', 'debugger', 'explorer'], skills: ['commit-message', 'write-tests', 'debug-playbook'], scope: state?.workspace ? 'project' : 'user' });
       break;
@@ -1642,7 +1813,8 @@ document.addEventListener('keydown', (event) => {
     post({ type: 'setMode', mode: next.slug });
     showToast(`${next.name} mode`);
   }
-  if (event.key === 'Escape' && (modelMenuOpen || modeMenuOpen)) {
+  if (event.key === 'Escape' && (modelMenuOpen || modeMenuOpen || computeMenuOpen)) {
+    computeMenuOpen = false;
     modelMenuOpen = false;
     modeMenuOpen = false;
     renderComposer();

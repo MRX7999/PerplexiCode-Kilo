@@ -4,13 +4,19 @@ import * as vscode from 'vscode';
 import { formatQuotaSummary, getQuotaItem, setPlanOverride } from '../api/capabilityFetcher';
 import {
   compareModels,
+  COMPUTE_MODES,
   getBundledSnapshotDate,
+  getComputeModeOption,
   getModelLabel,
+  isValidComputeModeInput,
   ModelInfo,
+  normalizeComputeMode,
+  resolveComputeRoute,
 } from '../api/modelCatalog';
 import { ModelFetcher } from '../api/modelFetcher';
 import { RotationEngine } from '../api/rotationEngine';
-import { AccountPlan, RotationStrategy } from '../api/types';
+import { AccountPlan, ComputeMode, RotationStrategy } from '../api/types';
+import { McpRegistry, McpServerState, removeMcpServerConfig, saveMcpServerConfig } from '../core/mcp';
 import { AccountManager } from '../storage/accountManager';
 import { DEFAULT_MODE_SLUG, getModeBySlug, MODES } from './modes';
 import { AgentTask, AskResponse } from './task';
@@ -49,6 +55,8 @@ interface StoredSelection {
   thinking: boolean;
   webSearch: boolean | null;
   mode: string;
+  /** 3.3: Perplexity compute mode (search | light | standard | high | ultra | research | labs). */
+  computeMode?: ComputeMode;
 }
 
 /**
@@ -74,6 +82,9 @@ export class AgentController implements vscode.Disposable {
   private readonly stateEmitter = new vscode.EventEmitter<void>();
   /** Fires whenever the UI state (selection, task, models) is re-published. */
   readonly onDidChangeState = this.stateEmitter.event;
+  /** 3.3 MCP registries, one per workspace folder (servers from ~/.claude.json, .mcp.json, settings). */
+  private readonly mcpRegistries = new Map<string, McpRegistry>();
+  private mcpTimer?: NodeJS.Timeout;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -88,11 +99,15 @@ export class AgentController implements vscode.Disposable {
     this.core = new CoreBridge((line) => this.output.appendLine(line));
     const stored = context.globalState.get<StoredSelection>(SELECTION_KEY);
     const configuredDefault = readSetting<string>('perplexicodeKilo.defaultModel', 'turbo');
+    const configuredCompute = readSetting<string>('perplexicodeKilo.computeMode', 'search');
     this.selection = {
       modelId: stored?.modelId || configuredDefault || 'turbo',
       thinking: stored?.thinking ?? false,
       webSearch: stored?.webSearch ?? null,
       mode: stored?.mode || DEFAULT_MODE_SLUG,
+      computeMode: stored?.computeMode && isValidComputeModeInput(stored.computeMode)
+        ? normalizeComputeMode(stored.computeMode)
+        : isValidComputeModeInput(configuredCompute) ? normalizeComputeMode(configuredCompute) : 'search',
     };
     this.disposables.push(vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration('perplexicodeKilo')) {
@@ -117,6 +132,22 @@ export class AgentController implements vscode.Disposable {
       if (event.affectsConfiguration('perplexicodeKilo.taskPresets')) {
         this.scheduleLibraryRefresh();
       }
+      if (event.affectsConfiguration('perplexicodeKilo.mcp')) {
+        this.scheduleMcpReload();
+      }
+    }));
+    // MCP server definitions edited by hand, by `pcode mcp add` or by Claude Code.
+    const mcpWatcher = vscode.workspace.createFileSystemWatcher('**/{.mcp.json,.mcp.local.json,.claude/.mcp.json,.claude/mcp.json,.perplexicode/mcp.json,.claude/settings.json,.claude/settings.local.json,.perplexicode/settings.json,.perplexicode/settings.local.json}');
+    const onMcpFile = () => this.scheduleMcpReload();
+    mcpWatcher.onDidCreate(onMcpFile);
+    mcpWatcher.onDidChange(onMcpFile);
+    mcpWatcher.onDidDelete(onMcpFile);
+    this.disposables.push(mcpWatcher);
+    this.disposables.push(vscode.workspace.onDidGrantWorkspaceTrust(() => {
+      for (const registry of this.mcpRegistries.values()) {
+        registry.setTrustProject(true);
+      }
+      this.scheduleMcpReload();
     }));
   }
 
@@ -124,6 +155,150 @@ export class AgentController implements vscode.Disposable {
     this.stateEmitter.dispose();
     this.disposables.forEach((disposable) => disposable.dispose());
     this.stack.forEach((task) => task.abort());
+    for (const registry of this.mcpRegistries.values()) {
+      void registry.closeAll().catch(() => undefined);
+    }
+    this.mcpRegistries.clear();
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // 3.3 MCP servers
+  // ---------------------------------------------------------------------------------------------
+
+  private mcpEnabled(): boolean {
+    return readSetting<boolean>('perplexicodeKilo.mcp.enabled', true);
+  }
+
+  /** Registry for a workspace folder; created lazily, servers connect on the first request that needs them. */
+  mcpFor(cwd: string): McpRegistry | undefined {
+    if (!this.mcpEnabled()) {
+      return undefined;
+    }
+    const key = path.resolve(cwd);
+    let registry = this.mcpRegistries.get(key);
+    if (!registry) {
+      registry = new McpRegistry({
+        cwd: key,
+        trustProject: vscode.workspace.isTrusted,
+        extraConfigs: readSetting<string[]>('perplexicodeKilo.mcp.extraConfigs', []),
+        log: (line) => this.output.appendLine(line),
+      });
+      this.mcpRegistries.set(key, registry);
+    }
+    return registry;
+  }
+
+  private scheduleMcpReload(): void {
+    if (this.mcpTimer) {
+      clearTimeout(this.mcpTimer);
+    }
+    this.mcpTimer = setTimeout(() => {
+      this.mcpTimer = undefined;
+      if (!this.mcpEnabled()) {
+        for (const registry of this.mcpRegistries.values()) {
+          void registry.closeAll().catch(() => undefined);
+        }
+        this.mcpRegistries.clear();
+      } else {
+        for (const registry of this.mcpRegistries.values()) {
+          registry.reloadConfigs();
+        }
+      }
+      this.postState();
+    }, 300);
+  }
+
+  private mcpStates(): McpServerState[] {
+    const cwd = this.currentTask?.toJSON().workspace || this.workspaceRoot() || os.homedir();
+    const registry = this.mcpFor(cwd);
+    if (!registry) {
+      return [];
+    }
+    registry.reloadConfigs();
+    return registry.getStates();
+  }
+
+  /** Connects every configured server (or one) and republishes the state. */
+  async mcpConnect(name?: string): Promise<void> {
+    const cwd = this.currentTask?.toJSON().workspace || this.workspaceRoot() || os.homedir();
+    const registry = this.mcpFor(cwd);
+    if (!registry) {
+      void vscode.window.showInformationMessage('PerplexiCode: MCP is disabled (perplexicodeKilo.mcp.enabled).');
+      return;
+    }
+    try {
+      if (name) {
+        await registry.connectServer(name);
+      } else {
+        await registry.connectAll();
+      }
+    } catch (error) {
+      this.output.appendLine(`[mcp] ${(error as Error).message}`);
+    } finally {
+      this.postState();
+    }
+  }
+
+  private async mcpAdd(message: { name?: string; target?: string; scope?: string; transport?: string; env?: string; headers?: string }): Promise<void> {
+    const name = String(message.name || '').trim();
+    const target = String(message.target || '').trim();
+    if (!name || !target) {
+      void vscode.window.showWarningMessage('PerplexiCode: an MCP server needs a name and a command or URL.');
+      return;
+    }
+    const cwd = this.workspaceRoot();
+    const scope = message.scope === 'user' || !cwd ? 'user' : message.scope === 'local' ? 'local' : 'project';
+    const isUrl = /^https?:\/\//i.test(target);
+    const transport = message.transport === 'http' || message.transport === 'sse' || message.transport === 'stdio'
+      ? message.transport
+      : isUrl ? 'http' : 'stdio';
+    if (transport === 'stdio' && isUrl) {
+      void vscode.window.showWarningMessage('PerplexiCode: stdio servers need a command, not a URL.');
+      return;
+    }
+    if (transport !== 'stdio' && !isUrl) {
+      void vscode.window.showWarningMessage('PerplexiCode: http/sse servers need an http(s) URL.');
+      return;
+    }
+    const parsePairs = (text: string | undefined, separator: '=' | ':'): Record<string, string> | undefined => {
+      const result: Record<string, string> = {};
+      for (const line of String(text || '').split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const index = trimmed.indexOf(separator);
+        if (index <= 0) throw new Error(`Expected KEY${separator}VALUE, got '${trimmed}'.`);
+        result[trimmed.slice(0, index).trim()] = trimmed.slice(index + 1).trim();
+      }
+      return Object.keys(result).length > 0 ? result : undefined;
+    };
+    try {
+      const parts = transport === 'stdio' ? splitCommandLine(target) : [target];
+      const file = saveMcpServerConfig(cwd || os.homedir(), name, {
+        type: transport,
+        command: transport === 'stdio' ? parts[0] : undefined,
+        args: transport === 'stdio' ? parts.slice(1) : undefined,
+        url: transport !== 'stdio' ? target : undefined,
+        env: parsePairs(message.env, '='),
+        headers: parsePairs(message.headers, ':'),
+      }, scope);
+      this.output.appendLine(`[mcp] saved ${name} (${transport}, ${scope}) → ${file}`);
+      await this.mcpConnect(name);
+    } catch (error) {
+      void vscode.window.showErrorMessage(`PerplexiCode: ${(error as Error).message}`);
+    }
+  }
+
+  private async mcpRemove(name: string, scope?: string): Promise<void> {
+    const confirm = await vscode.window.showWarningMessage(`Remove MCP server "${name}" from the configuration files?`, { modal: true }, 'Remove');
+    if (confirm !== 'Remove') {
+      return;
+    }
+    const cwd = this.workspaceRoot() || os.homedir();
+    const result = removeMcpServerConfig(cwd, name, scope === 'user' || scope === 'project' || scope === 'local' ? scope : undefined);
+    if (!result.removed) {
+      void vscode.window.showWarningMessage(`PerplexiCode: "${name}" was not found in a writable MCP config (it may come from ~/.claude.json).`);
+    }
+    this.scheduleMcpReload();
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -201,6 +376,8 @@ export class AgentController implements vscode.Disposable {
         subtasks: config.get<boolean>('autoApprove.subtasks', true),
         todo: config.get<boolean>('autoApprove.todo', true),
         retry: config.get<boolean>('autoApprove.retry', true),
+        mcp: config.get<boolean>('autoApprove.mcp', false),
+        web: config.get<boolean>('autoApprove.web', false),
       },
       allowedCommands: config.get<string[]>('allowedCommands', [
         'git status',
@@ -251,7 +428,28 @@ export class AgentController implements vscode.Disposable {
       baseModelId: this.selection.modelId,
       thinking: Boolean(this.selection.thinking && model?.supportsThinking),
       webSearch: this.selection.webSearch === null ? undefined : this.selection.webSearch,
+      computeMode: this.selection.computeMode && this.selection.computeMode !== 'search' ? this.selection.computeMode : undefined,
     };
+  }
+
+  getComputeMode(): ComputeMode {
+    return this.selection.computeMode || 'search';
+  }
+
+  /** "GPT-6 Astra · Computer high" style label for the status bar and request rows. */
+  getSelectionLabel(): string {
+    const selection = this.getSelection();
+    const base = getModelLabel(selection.baseModelId, selection.thinking);
+    return selection.computeMode ? `${base} · ${getComputeModeOption(selection.computeMode).label}` : base;
+  }
+
+  async setComputeMode(mode: string): Promise<void> {
+    if (!isValidComputeModeInput(mode)) {
+      return;
+    }
+    this.selection.computeMode = normalizeComputeMode(mode);
+    await this.saveSelection();
+    this.postState();
   }
 
   getModels(): ModelInfo[] {
@@ -354,7 +552,11 @@ export class AgentController implements vscode.Disposable {
       provider: this.transport,
       getSettings: () => this.getSettings(),
       getSelection: () => this.getSelection(),
-      getModelLabel: (modelId, thinking) => getModelLabel(modelId, thinking),
+      getModelLabel: (modelId, thinking) => {
+        const compute = this.getSelection().computeMode;
+        return compute ? `${getModelLabel(modelId, thinking)} · ${getComputeModeOption(compute).label}` : getModelLabel(modelId, thinking);
+      },
+      mcp: this.mcpFor(cwd),
       mode: agent ? agent.mode : options.mode,
       parentId: options.parentId,
       restore: options.restore,
@@ -716,6 +918,23 @@ export class AgentController implements vscode.Disposable {
         await this.saveSelection();
         this.postState();
         break;
+      case 'setComputeMode':
+        await this.setComputeMode(String(message.mode || 'search'));
+        break;
+      case 'mcpConnect':
+        await this.mcpConnect(typeof message.name === 'string' && message.name ? message.name : undefined);
+        break;
+      case 'mcpAdd':
+        await this.mcpAdd({ name: message.name, target: message.target, scope: message.scope, transport: message.transport, env: message.env, headers: message.headers });
+        break;
+      case 'mcpRemove':
+        await this.mcpRemove(String(message.name || ''), typeof message.scope === 'string' ? message.scope : undefined);
+        break;
+      case 'openMcpFile':
+        if (typeof message.file === 'string' && /(?:^|[\\/])(?:\.?mcp(?:\.local)?\.json|\.claude\.json|settings(?:\.local)?\.json)$/.test(message.file)) {
+          await vscode.window.showTextDocument(vscode.Uri.file(String(message.file)), { preview: false });
+        }
+        break;
       case 'openTask':
         await this.openTask(String(message.id));
         break;
@@ -956,6 +1175,36 @@ export class AgentController implements vscode.Disposable {
         webSearch: this.selection.webSearch,
         modelLabel: getModelLabel(this.selection.modelId, this.getSelection().thinking),
         modeWebSearchDefault: getModeBySlug(this.selection.mode).webSearchDefault,
+        computeMode: this.getComputeMode(),
+        computeRoute: (() => {
+          const route = resolveComputeRoute(this.selection.modelId, this.getSelection().thinking, this.getComputeMode());
+          return { modelId: route.modelId, requiredPlan: route.requiredPlan, quotaBucket: route.quotaBucket };
+        })(),
+      },
+      computeModes: COMPUTE_MODES.map((mode) => ({
+        id: mode.id,
+        label: mode.label,
+        shortLabel: mode.shortLabel,
+        description: mode.description,
+        requiredPlan: mode.requiredPlan,
+        quotaBucket: mode.quotaBucket,
+      })),
+      mcp: {
+        enabled: this.mcpEnabled(),
+        trusted: vscode.workspace.isTrusted,
+        servers: this.mcpStates().map((entry) => ({
+          name: entry.config.name,
+          type: entry.config.type,
+          scope: entry.config.scope,
+          sourceFile: entry.config.sourceFile,
+          target: entry.config.type === 'stdio' ? [entry.config.command, ...(entry.config.args || [])].filter(Boolean).join(' ') : entry.config.url || '',
+          status: entry.status,
+          error: entry.error,
+          serverInfo: entry.serverInfo,
+          tools: entry.tools.map((tool) => ({ name: tool.name, qualifiedName: tool.qualifiedName, description: tool.description || '' })),
+          resources: entry.resources.map((resource) => ({ uri: resource.uri, name: resource.name, description: resource.description || '' })),
+          prompts: entry.prompts.map((prompt) => ({ name: prompt.name, description: prompt.description || '' })),
+        })),
       },
       settings: this.getSettings(),
       general: {
@@ -977,6 +1226,7 @@ export class AgentController implements vscode.Disposable {
           pro: formatQuotaSummary(account.quotas?.modes?.pro_search),
           research: formatQuotaSummary(account.quotas?.modes?.research),
           labs: formatQuotaSummary(account.quotas?.modes?.labs),
+          computer: formatQuotaSummary(getQuotaItem(account, 'computer')),
           free: formatQuotaSummary(getQuotaItem(account, 'free_queries')),
         },
       })),
@@ -1230,6 +1480,47 @@ function runGit(cwd: string, args: string[]): Promise<string> {
       resolve(stdout);
     });
   });
+}
+
+/** Splits "npx -y @scope/server --flag 'a b'" into argv, honouring single/double quotes. */
+export function splitCommandLine(line: string): string[] {
+  const result: string[] = [];
+  let current = '';
+  let quote: string | undefined;
+  let hasToken = false;
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (quote) {
+      if (char === quote) {
+        quote = undefined;
+      } else if (char === '\\' && quote === '"' && i + 1 < line.length) {
+        current += line[++i];
+      } else {
+        current += char;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      hasToken = true;
+    } else if (/\s/.test(char)) {
+      if (hasToken) {
+        result.push(current);
+        current = '';
+        hasToken = false;
+      }
+    } else if (char === '\\' && i + 1 < line.length) {
+      current += line[++i];
+      hasToken = true;
+    } else {
+      current += char;
+      hasToken = true;
+    }
+  }
+  if (hasToken) {
+    result.push(current);
+  }
+  return result;
 }
 
 function truncate(text: string, max: number): string {

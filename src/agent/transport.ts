@@ -2,20 +2,24 @@ import { ChromeCookieReader } from '../api/cookieReader';
 import { CapabilityFetcher, markModelUnavailable } from '../api/capabilityFetcher';
 import {
   getBaseModelId,
+  getComputeModeOption,
   getModelById,
   getModelLabel,
-  getResolvedModelId,
   isThinkingModelId,
+  resolveComputeRoute,
 } from '../api/modelCatalog';
 import { PerplexityWebClient } from '../api/perplexityClient';
 import { RotationEngine } from '../api/rotationEngine';
 import {
   AccountSelectionRequirements,
   AccountSession,
+  ComputeMode,
   FollowUpThread,
   PerplexityRequestMode,
+  PerplexitySearchMode,
   QueryRequestOptions,
   QuerySource,
+  QuotaBucket,
   StreamCallbacks,
   StreamResponseMeta,
 } from '../api/types';
@@ -25,6 +29,7 @@ import { parseAssistantMessage } from './toolParser';
 export interface ThreadState extends FollowUpThread {
   accountId: string;
   modelId: string;
+  searchMode?: PerplexitySearchMode;
 }
 
 export interface CompletionRequest {
@@ -36,6 +41,7 @@ export interface CompletionRequest {
   baseModelId: string;
   thinking: boolean;
   webSearch: boolean;
+  computeMode?: ComputeMode;
   signal: AbortSignal;
   onText?: (fullText: string, delta: string) => void;
   onInfo?: (message: string) => void;
@@ -62,7 +68,10 @@ export type ClientFactory = (account: AccountSession) => StreamingClient;
 interface Attempt {
   account: AccountSession;
   modelId: string;
+  fallbackSearchModelId: string;
+  searchMode: PerplexitySearchMode;
   requestMode: PerplexityRequestMode;
+  quotaBucket: QuotaBucket;
   sources: QuerySource[];
   useFollowUp: boolean;
   retryCount?: number;
@@ -96,19 +105,47 @@ export class PerplexityTransport {
       throw new TransportError('No Perplexity account is connected. Add one in Settings → Accounts.', 'no_account');
     }
 
-    const resolvedModelId = getResolvedModelId(request.baseModelId, request.thinking);
-    const model = getModelById(resolvedModelId) || getModelById(request.baseModelId) || getModelById('turbo');
+    const route = resolveComputeRoute(request.baseModelId, request.thinking, request.computeMode);
+    const model = getModelById(route.modelId) || getModelById(request.baseModelId) || getModelById('turbo');
     if (!model) {
       throw new TransportError('The selected model is not available.', 'failed');
     }
 
-    const requirement = this._requirementFor(resolvedModelId);
+    const requirement: AccountSelectionRequirements = {
+      modelId: route.modelId,
+      featureMode: route.searchMode,
+      quotaBucket: route.quotaBucket,
+      requiredPlan: route.requiredPlan,
+    };
+
     let account = request.thread
       ? accounts.find((entry) => entry.id === request.thread?.accountId && entry.status !== 'disabled') || null
       : null;
     if (!account) {
       account = this.rotationEngine.selectAccount(accounts, requirement);
     }
+
+    // If a non-search compute mode (e.g. Computer/ASI on a Pro account) has no eligible account,
+    // fall back to standard Search with the fallback search model before falling all the way to Best.
+    if (!account && route.searchMode !== 'search') {
+      const searchReq = this._requirementFor(route.fallbackSearchModelId);
+      account = this.rotationEngine.selectAccount(accounts, searchReq);
+      if (account) {
+        const computeLabel = getComputeModeOption(request.computeMode).label;
+        request.onInfo?.(`${computeLabel} is not available on your current accounts. Using Search mode (${getModelLabel(route.fallbackSearchModelId)}) instead.`);
+        return this._run(request, {
+          account,
+          modelId: route.fallbackSearchModelId,
+          fallbackSearchModelId: route.fallbackSearchModelId,
+          searchMode: 'search',
+          requestMode: route.fallbackSearchModelId === 'turbo' ? 'CONCISE' : 'COPILOT',
+          quotaBucket: searchReq.quotaBucket,
+          sources: this._sources(request.webSearch),
+          useFollowUp: false,
+        }, new Set());
+      }
+    }
+
     if (!account) {
       account = this.rotationEngine.selectAccount(accounts, this._requirementFor('turbo'));
       if (account) {
@@ -116,7 +153,10 @@ export class PerplexityTransport {
         return this._run(request, {
           account,
           modelId: 'turbo',
+          fallbackSearchModelId: 'turbo',
+          searchMode: 'search',
           requestMode: 'CONCISE',
+          quotaBucket: 'free_queries',
           sources: this._sources(request.webSearch),
           useFollowUp: false,
         }, new Set());
@@ -131,13 +171,17 @@ export class PerplexityTransport {
       request.followUpPrompt
       && request.thread
       && request.thread.accountId === account.id
-      && request.thread.modelId === resolvedModelId
+      && request.thread.modelId === route.modelId
+      && (request.thread.searchMode || 'search') === route.searchMode
     );
 
     return this._run(request, {
       account,
-      modelId: resolvedModelId,
-      requestMode: model.requestMode,
+      modelId: route.modelId,
+      fallbackSearchModelId: route.fallbackSearchModelId,
+      searchMode: route.searchMode,
+      requestMode: route.requestMode,
+      quotaBucket: route.quotaBucket,
       sources: this._sources(request.webSearch),
       useFollowUp: canFollowUp,
     }, new Set());
@@ -150,18 +194,18 @@ export class PerplexityTransport {
     return [];
   }
 
-  private _requirementFor(modelId: string): AccountSelectionRequirements {
+  private _requirementFor(modelId: string, searchMode?: PerplexitySearchMode, quotaBucket?: QuotaBucket): AccountSelectionRequirements {
     const model = getModelById(modelId) || getModelById(getBaseModelId(modelId));
     return {
       modelId,
-      featureMode: model?.searchMode || 'search',
-      quotaBucket: model?.quotaBucket || (modelId === 'turbo' ? 'free_queries' : 'pro_search'),
+      featureMode: searchMode || model?.searchMode || 'search',
+      quotaBucket: quotaBucket || model?.quotaBucket || (modelId === 'turbo' ? 'free_queries' : 'pro_search'),
       requiredPlan: model?.requiredPlan || 'pro',
     };
   }
 
   private async _run(request: CompletionRequest, attempt: Attempt, tried: Set<string>): Promise<CompletionResult> {
-    const key = `${attempt.account.id}|${attempt.modelId}|${attempt.requestMode}|${attempt.sources.join(',')}|${attempt.useFollowUp}|${attempt.retryCount || 0}`;
+    const key = `${attempt.account.id}|${attempt.modelId}|${attempt.searchMode}|${attempt.requestMode}|${attempt.sources.join(',')}|${attempt.useFollowUp}|${attempt.retryCount || 0}`;
     if (tried.has(key)) {
       throw new TransportError('Perplexity rejected every fallback for this request.', 'failed');
     }
@@ -178,12 +222,13 @@ export class PerplexityTransport {
     try {
       const result = await this._stream(request, attempt, prompt);
       this.rotationEngine.markUsed(attempt.account);
-      this.capabilityFetcher.noteUsage(attempt.account, this._requirementFor(attempt.modelId).quotaBucket);
+      this.capabilityFetcher.noteUsage(attempt.account, attempt.quotaBucket);
       await this.accountManager.saveMetas();
       const thread: ThreadState | undefined = result.meta.backendUuid
         ? {
           accountId: attempt.account.id,
           modelId: attempt.modelId,
+          searchMode: attempt.searchMode,
           lastBackendUuid: result.meta.backendUuid,
           readWriteToken: result.meta.readWriteToken,
           contextUuid: result.meta.contextUuid,
@@ -222,7 +267,7 @@ export class PerplexityTransport {
       const citations = new Set<string>();
       const options: QueryRequestOptions = {
         sources: attempt.sources,
-        searchMode: 'search',
+        searchMode: attempt.searchMode,
         requestMode: attempt.requestMode,
         followUp: attempt.useFollowUp && request.thread ? request.thread : undefined,
       };
@@ -322,7 +367,7 @@ export class PerplexityTransport {
     } else if (isRateLimit) {
       this.rotationEngine.markFailed(attempt.account, true);
     } else if (isQuota) {
-      this.capabilityFetcher.noteQuotaFailure(attempt.account, this._requirementFor(attempt.modelId).quotaBucket);
+      this.capabilityFetcher.noteQuotaFailure(attempt.account, attempt.quotaBucket);
     } else if (isAccessDenied) {
       markModelUnavailable(attempt.account, attempt.modelId);
     } else if (!isEmpty) {
@@ -333,12 +378,38 @@ export class PerplexityTransport {
       const failover = this.rotationEngine.getFailoverAccount(
         this.accountManager.getAccounts(),
         attempt.account.id,
-        this._requirementFor(attempt.modelId)
+        this._requirementFor(attempt.modelId, attempt.searchMode, attempt.quotaBucket)
       );
       if (failover) {
         request.onInfo?.(`${attempt.account.alias} could not serve the request. Switching to ${failover.alias}.`);
         return { ...attempt, account: failover };
       }
+    }
+
+    // Compute mode fallback chain: asi -> browser_agent -> search
+    if ((isAccessDenied || isQuota) && attempt.searchMode === 'asi') {
+      request.onInfo?.('Computer (ASI) route was rejected. Trying alternate Computer route.');
+      return {
+        ...attempt,
+        modelId: 'comet_browser_agent',
+        searchMode: 'browser_agent',
+        requestMode: 'ASI',
+      };
+    }
+
+    if ((isAccessDenied || isQuota) && attempt.searchMode !== 'search') {
+      const fallbackModel = attempt.fallbackSearchModelId || 'turbo';
+      const fallbackReq = this._requirementFor(fallbackModel, 'search');
+      const fallbackAccount = this.rotationEngine.selectAccount(this.accountManager.getAccounts(), fallbackReq) || attempt.account;
+      request.onInfo?.(`${attempt.searchMode} mode is unavailable for this request. Falling back to Search (${getModelLabel(fallbackModel)}).`);
+      return {
+        ...attempt,
+        account: fallbackAccount,
+        modelId: fallbackModel,
+        searchMode: 'search',
+        requestMode: fallbackModel === 'turbo' ? 'CONCISE' : 'COPILOT',
+        quotaBucket: fallbackReq.quotaBucket,
+      };
     }
 
     if (isAccessDenied && isThinkingModelId(attempt.modelId)) {

@@ -24,7 +24,7 @@ import { PerplexityTransport, type CompletionRequest, type CompletionResult, typ
 import { CapabilityFetcher } from '../src/api/capabilityFetcher';
 import { RotationEngine } from '../src/api/rotationEngine';
 import { AgentSettings, UiMessage } from '../src/agent/types';
-import { getFallbackModelCatalog, getModelLabel, getResolvedModelId, setRuntimeModelCatalog } from '../src/api/modelCatalog';
+import { COMPUTE_MODES, getComputeModeOption, getFallbackModelCatalog, getModelLabel, getResolvedModelId, isValidComputeModeInput, normalizeComputeMode, resolveComputeRoute, setRuntimeModelCatalog } from '../src/api/modelCatalog';
 import { ModelFetcher } from '../src/api/modelFetcher';
 import { AccountSession } from '../src/api/types';
 
@@ -69,7 +69,7 @@ class NodeHost implements AgentHost {
 
 function settings(overrides: Partial<AgentSettings['autoApprove']> = {}): AgentSettings {
   return {
-    autoApprove: { enabled: true, read: true, readOutsideWorkspace: false, write: false, execute: false, modeSwitch: true, subtasks: true, todo: true, retry: true, ...overrides },
+    autoApprove: { enabled: true, read: true, readOutsideWorkspace: false, write: false, execute: false, modeSwitch: true, subtasks: true, todo: true, retry: true, mcp: false, web: false, ...overrides },
     allowedCommands: ['echo', 'ls'],
     deniedCommands: ['rm -rf'],
     maxRequests: 20,
@@ -742,6 +742,180 @@ test('transport: retries automatically on empty completion or cut-off XML tool c
   });
   assert.equal(calls.length, 3);
   assert.ok(result.text.includes('</write_to_file>'));
+});
+
+// -------------------------------------------------------------------------------------------
+// 3.3: compute modes (Search / Computer / Research / Labs) routing and transport fallback chain
+// -------------------------------------------------------------------------------------------
+
+test('compute modes: aliases normalise, invalid input is rejected, every mode has a label', () => {
+  assert.equal(normalizeComputeMode('Computer'), 'computer');
+  assert.equal(normalizeComputeMode('asi'), 'computer');
+  assert.equal(normalizeComputeMode('compute-high'), 'high');
+  assert.equal(normalizeComputeMode('MAX'), 'ultra');
+  assert.equal(normalizeComputeMode('deep research'), 'research');
+  assert.equal(normalizeComputeMode('agentic'), 'agentic_research');
+  assert.equal(normalizeComputeMode('studio'), 'labs');
+  assert.equal(normalizeComputeMode(undefined), 'search');
+  assert.equal(normalizeComputeMode('bogus'), 'search', 'unknown values degrade to search instead of throwing');
+  assert.equal(isValidComputeModeInput('bogus'), false);
+  assert.equal(isValidComputeModeInput(' Ultra '), true);
+  const ids = COMPUTE_MODES.map((mode) => mode.id);
+  assert.deepEqual([...new Set(ids)].length, ids.length, 'mode ids are unique');
+  for (const mode of COMPUTE_MODES) {
+    assert.ok(mode.label && mode.shortLabel && mode.description, `${mode.id} is fully described`);
+    assert.equal(getComputeModeOption(mode.id).id, mode.id);
+  }
+  assert.equal(getComputeModeOption('nope').id, 'search');
+});
+
+test('compute modes: resolveComputeRoute picks the Computer/Research/Labs model and remembers the Search fallback', () => {
+  setRuntimeModelCatalog(getFallbackModelCatalog());
+  const search = resolveComputeRoute('claude55sonnet', false, 'search');
+  assert.equal(search.computeMode, 'search');
+  assert.equal(search.modelId, 'claude55sonnet');
+  assert.equal(search.searchMode, 'search');
+  assert.equal(search.requestMode, 'COPILOT');
+
+  const best = resolveComputeRoute('turbo', false, undefined);
+  assert.equal(best.requestMode, 'CONCISE');
+  assert.equal(best.quotaBucket, 'free_queries');
+
+  const computer = resolveComputeRoute('claude55opus', false, 'computer');
+  assert.equal(computer.modelId, 'pplx_asi_opus');
+  assert.equal(computer.fallbackSearchModelId, 'claude55opus');
+  assert.equal(computer.searchMode, 'asi');
+  assert.equal(computer.requestMode, 'ASI');
+  assert.equal(computer.quotaBucket, 'computer');
+  assert.equal(computer.requiredPlan, 'max');
+
+  const thinkingComputer = resolveComputeRoute('claude55sonnet', true, 'asi');
+  assert.equal(thinkingComputer.modelId, 'pplx_asi_sonnet');
+  assert.equal(thinkingComputer.fallbackSearchModelId, getResolvedModelId('claude55sonnet', true), 'thinking is preserved on the fallback');
+
+  // Harness presets map to the bundled computer_harness orchestrator models.
+  assert.equal(resolveComputeRoute('turbo', false, 'light').modelId, 'pplx_asi_gpt_6_1_sol');
+  assert.equal(resolveComputeRoute('turbo', false, 'standard').modelId, 'pplx_asi_opus');
+  assert.equal(resolveComputeRoute('turbo', false, 'high').modelId, 'pplx_asi_astra');
+  assert.equal(resolveComputeRoute('turbo', false, 'ultra').modelId, 'pplx_asi_fable_5');
+  for (const preset of ['light', 'standard', 'high', 'ultra']) {
+    const route = resolveComputeRoute('claude55sonnet', false, preset);
+    assert.equal(route.searchMode, 'asi');
+    assert.equal(route.quotaBucket, 'computer');
+    assert.ok(route.fallbackSearchModelId, `${preset} has a search fallback`);
+  }
+
+  const research = resolveComputeRoute('turbo', false, 'research');
+  assert.equal(research.modelId, 'pplx_alpha');
+  assert.equal(research.searchMode, 'research');
+  assert.equal(research.fallbackSearchModelId, 'turbo');
+  assert.equal(research.requiredPlan, 'pro');
+  const researchOpus = resolveComputeRoute('claude55opus', false, 'research');
+  assert.equal(researchOpus.modelId, 'claude55opus');
+  assert.equal(researchOpus.requiredPlan, 'max');
+
+  const agentic = resolveComputeRoute('claude55sonnet', false, 'agentic_research');
+  assert.equal(agentic.modelId, 'pplx_agentic_research');
+  assert.equal(agentic.quotaBucket, 'agentic_research');
+
+  const labs = resolveComputeRoute('turbo', false, 'labs');
+  assert.equal(labs.modelId, 'pplx_beta');
+  assert.equal(labs.searchMode, 'studio');
+  assert.equal(labs.quotaBucket, 'labs');
+
+  // Picking a hidden ASI model directly behaves like Computer mode.
+  const direct = resolveComputeRoute('pplx_asi_astra', false, 'search');
+  assert.equal(direct.computeMode, 'computer');
+  assert.equal(direct.searchMode, 'asi');
+  assert.equal(direct.fallbackSearchModelId, 'gpt6_astra');
+});
+
+test('transport: Computer mode sends the ASI model with ASI request mode on a Max account', async () => {
+  setRuntimeModelCatalog(getFallbackModelCatalog());
+  const { transport, calls } = makeTransport([fakeAccount('m', 'max')], () => ({ text: 'computed' }));
+  const result = await transport.complete({ fullPrompt: 'FULL', baseModelId: 'claude55opus', thinking: false, webSearch: false, computeMode: 'computer', signal: new AbortController().signal });
+  assert.equal(result.text, 'computed');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].model, 'pplx_asi_opus');
+  assert.equal(calls[0].options.searchMode, 'asi');
+  assert.equal(calls[0].options.requestMode, 'ASI');
+  assert.equal(result.thread?.searchMode, 'asi', 'the thread remembers the compute route so follow-ups stay on it');
+});
+
+test('transport: Computer mode on a Pro-only pool falls back to Search with the same model', async () => {
+  setRuntimeModelCatalog(getFallbackModelCatalog());
+  const infos: string[] = [];
+  const { transport, calls } = makeTransport([fakeAccount('p', 'pro')], () => ({ text: 'searched' }));
+  const result = await transport.complete({ fullPrompt: 'FULL', baseModelId: 'claude55sonnet', thinking: false, webSearch: false, computeMode: 'computer', signal: new AbortController().signal, onInfo: (m) => infos.push(m) });
+  assert.equal(result.text, 'searched');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].model, 'claude55sonnet', 'the ASI model maps back to the chat model the user picked');
+  assert.equal(calls[0].options.searchMode, 'search');
+  assert.equal(calls[0].options.requestMode, 'COPILOT');
+  assert.ok(infos.some((m) => /not available on your current accounts\. Using Search mode/.test(m)), infos.join('|'));
+
+  // A harness preset whose chat twin is Max-only (High → GPT-6 Astra) degrades to Best on a Pro pool.
+  calls.length = 0;
+  infos.length = 0;
+  const high = await transport.complete({ fullPrompt: 'FULL', baseModelId: 'claude55sonnet', thinking: false, webSearch: false, computeMode: 'high', signal: new AbortController().signal, onInfo: (m) => infos.push(m) });
+  assert.equal(high.text, 'searched');
+  assert.equal(calls[0].model, 'turbo');
+  assert.equal(calls[0].options.searchMode, 'search');
+  assert.ok(infos.some((m) => m.includes('Best')), infos.join('|'));
+});
+
+test('transport: rejected ASI route tries the browser-agent route, then Search, without duplicating attempts', async () => {
+  setRuntimeModelCatalog(getFallbackModelCatalog());
+  const infos: string[] = [];
+  const { transport, calls } = makeTransport([fakeAccount('m', 'max')], (call) => {
+    if (call.options.searchMode === 'asi') {
+      return { error: new Error('Request rejected by Perplexity (400)') };
+    }
+    if (call.options.searchMode === 'browser_agent') {
+      return { error: new Error('Model not available for the current account') };
+    }
+    return { text: 'search ok' };
+  });
+  const result = await transport.complete({ fullPrompt: 'FULL', baseModelId: 'claude55sonnet', thinking: false, webSearch: true, computeMode: 'computer', signal: new AbortController().signal, onInfo: (m) => infos.push(m) });
+  assert.equal(result.text, 'search ok');
+  assert.deepEqual(calls.map((call) => call.model), ['pplx_asi_sonnet', 'comet_browser_agent', 'claude55sonnet']);
+  assert.deepEqual(calls.map((call) => call.options.searchMode), ['asi', 'browser_agent', 'search']);
+  assert.ok(infos.some((m) => m.includes('alternate Computer route')), infos.join('|'));
+  assert.ok(infos.some((m) => m.includes('Falling back to Search')), infos.join('|'));
+});
+
+test('transport: Research mode quota failure falls back to Search; Labs uses the studio route', async () => {
+  setRuntimeModelCatalog(getFallbackModelCatalog());
+  const infos: string[] = [];
+  const { transport, calls } = makeTransport([fakeAccount('m', 'max')], (call) => {
+    if (call.options.searchMode === 'research') {
+      const error = new Error('Research quota exceeded') as Error & { isQuota?: boolean };
+      error.isQuota = true;
+      return { error };
+    }
+    return { text: `ok:${call.options.searchMode}` };
+  });
+  const research = await transport.complete({ fullPrompt: 'FULL', baseModelId: 'turbo', thinking: false, webSearch: true, computeMode: 'research', signal: new AbortController().signal, onInfo: (m) => infos.push(m) });
+  assert.equal(research.text, 'ok:search');
+  assert.deepEqual(calls.map((call) => call.model), ['pplx_alpha', 'turbo']);
+  assert.ok(infos.some((m) => m.includes('research mode is unavailable')), infos.join('|'));
+
+  calls.length = 0;
+  const labs = await transport.complete({ fullPrompt: 'FULL', baseModelId: 'turbo', thinking: false, webSearch: true, computeMode: 'labs', signal: new AbortController().signal });
+  assert.equal(labs.text, 'ok:studio');
+  assert.equal(calls[0].model, 'pplx_beta');
+});
+
+test('transport: a follow-up thread is only reused when the compute route matches', async () => {
+  setRuntimeModelCatalog(getFallbackModelCatalog());
+  const { transport, calls } = makeTransport([fakeAccount('m', 'max')], () => ({ text: 'ok' }));
+  const thread = { accountId: 'm', modelId: 'claude55sonnet', searchMode: 'search' as const, lastBackendUuid: 'old' };
+  await transport.complete({ fullPrompt: 'FULL', followUpPrompt: 'SHORT', thread, baseModelId: 'claude55sonnet', thinking: false, webSearch: false, computeMode: 'computer', signal: new AbortController().signal });
+  assert.equal(calls[0].prompt, 'FULL', 'switching Search → Computer restarts the thread with the full context');
+  assert.equal(calls[0].options.followUp, undefined);
+  const asiThread = { accountId: 'm', modelId: 'pplx_asi_sonnet', searchMode: 'asi' as const, lastBackendUuid: 'old' };
+  await transport.complete({ fullPrompt: 'FULL', followUpPrompt: 'SHORT', thread: asiThread, baseModelId: 'claude55sonnet', thinking: false, webSearch: false, computeMode: 'computer', signal: new AbortController().signal });
+  assert.equal(calls[1].prompt, 'SHORT');
 });
 
 // -------------------------------------------------------------------------------------------

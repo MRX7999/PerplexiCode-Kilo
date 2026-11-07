@@ -6,10 +6,12 @@ import { spawnSync } from 'child_process';
 import { MODES } from '../agent/modes';
 import type { AgentTask, AskResponse, CompletionProvider } from '../agent/task';
 import type { AgentSettings, UiMessage } from '../agent/types';
-import { getModelById, getModelCatalog, getModelLabel } from '../api/modelCatalog';
+import { COMPUTE_MODES, getComputeModeOption, getModelById, getModelCatalog, getModelLabel, isValidComputeModeInput, normalizeComputeMode, resolveComputeRoute } from '../api/modelCatalog';
+import type { ComputeMode } from '../api/types';
 import { loadSkills, loadSubagents } from '../core/agents';
 import { applyPresetPrompt, installAgentPreset, installSkillPreset, librarySnapshot, loadTaskPresets } from '../core/library';
 import { listSessions, perplexicodeHome, sessionsDir } from '../core/journal';
+import { loadMcpServers, McpRegistry, McpServerState, McpTransportType, projectDefinesStdioMcpServers, removeMcpServerConfig, saveMcpServerConfig } from '../core/mcp';
 import { cliStores, parseCookieInput } from '../core/nodeStores';
 import { OpenAICompatibleProvider, openAIOptionsFromEnv } from '../core/openaiProvider';
 import { createPerplexityBackend } from '../core/perplexity';
@@ -24,7 +26,7 @@ const VERSION: string = (() => {
   try {
     return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version;
   } catch {
-    return '3.2.0';
+    return '3.3.0';
   }
 })();
 
@@ -60,9 +62,22 @@ export interface CliOptions {
   browser: boolean;
   help: boolean;
   version: boolean;
+  /** 3.3: Perplexity compute mode (search | light | standard | high | ultra | research | labs). */
+  computeMode?: ComputeMode;
+  /** 3.3: extra MCP config files or inline JSON (--mcp-config), Claude Code compatible. */
+  mcpConfigs: string[];
+  /** 3.3: ignore every MCP server configuration. */
+  noMcp: boolean;
+  /** 3.3: only use servers from --mcp-config (Claude Code --strict-mcp-config). */
+  strictMcpConfig: boolean;
+  /** `pcode mcp add` options. */
+  mcpTransport?: McpTransportType;
+  mcpEnv: string[];
+  mcpHeaders: string[];
+  mcpScope?: 'user' | 'project' | 'local';
 }
 
-const SUBCOMMANDS = new Set(['login', 'logout', 'accounts', 'sessions', 'models', 'agents', 'skills', 'presets', 'doctor', 'help', 'version']);
+const SUBCOMMANDS = new Set(['login', 'logout', 'accounts', 'sessions', 'models', 'agents', 'skills', 'presets', 'mcp', 'doctor', 'help', 'version']);
 
 function splitRules(value: string): string[] {
   // "Bash(npm test:*),Read Edit" → ["Bash(npm test:*)", "Read", "Edit"]; commas/spaces inside (...) are kept.
@@ -102,10 +117,20 @@ export function parseArgs(argv: string[]): CliOptions {
     browser: false,
     help: false,
     version: false,
+    mcpConfigs: [],
+    noMcp: false,
+    strictMcpConfig: false,
+    mcpEnv: [],
+    mcpHeaders: [],
   };
   const positional: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
+    if (arg === '--') {
+      // Everything after "--" is positional (pcode mcp add name -- npx -y server --flag).
+      positional.push(...argv.slice(i + 1));
+      break;
+    }
     const [flag, inline] = arg.startsWith('--') && arg.includes('=') ? [arg.slice(0, arg.indexOf('=')), arg.slice(arg.indexOf('=') + 1)] : [arg, undefined];
     const value = (): string => {
       if (inline !== undefined) return inline;
@@ -138,6 +163,29 @@ export function parseArgs(argv: string[]): CliOptions {
       }
       case '-m': case '--model': options.model = value(); break;
       case '--thinking': options.thinking = true; break;
+      case '--compute': case '--compute-mode': {
+        const v = value();
+        if (!isValidComputeModeInput(v)) throw new Error(`--compute must be one of ${COMPUTE_MODES.map((m) => m.id).join(', ')}`);
+        options.computeMode = normalizeComputeMode(v);
+        break;
+      }
+      case '--mcp-config': options.mcpConfigs.push(value()); break;
+      case '--no-mcp': options.noMcp = true; break;
+      case '--strict-mcp-config': options.strictMcpConfig = true; break;
+      case '-t': case '--transport': {
+        const v = value();
+        if (v !== 'stdio' && v !== 'http' && v !== 'sse') throw new Error('--transport must be stdio, http or sse');
+        options.mcpTransport = v;
+        break;
+      }
+      case '-e': case '--env': options.mcpEnv.push(value()); break;
+      case '-H': case '--header': options.mcpHeaders.push(value()); break;
+      case '-s': case '--scope': {
+        const v = value();
+        if (v !== 'user' && v !== 'project' && v !== 'local') throw new Error('--scope must be user, project or local');
+        options.mcpScope = v;
+        break;
+      }
       case '--mode': {
         const v = value();
         if (!MODES.some((m) => m.slug === v)) throw new Error(`--mode must be one of ${MODES.map((m) => m.slug).join(', ')}`);
@@ -206,13 +254,18 @@ Options:
   --disallowedTools <rules>   e.g. "Bash(git push:*)"
   --max-turns <n>             model requests before stopping; 0 = unlimited
   -m, --model <id>            model id (pcode models); --thinking for the thinking variant
+  --compute <mode>            Perplexity compute mode: search (default) | light | standard | high | ultra
+                              (Computer / ASI harness) | research | labs — falls back to Search when
+                              your plan does not include it
   --mode <slug>               code | architect | ask | debug | orchestrator | review
   --preset <id>               task preset (pcode presets): sets mode, subagent and prompt template
   --agent <name>              run the task as an installed subagent
   --provider <p>              perplexity (your Pro/Max session) | openai (OpenAI-compatible, e.g. Ollama)
   --web / --no-web            force web search on/off
   --cwd <dir>                 workspace folder (default: current)
-  --trust-project             run hooks from project settings in headless mode
+  --trust-project             run hooks and project MCP servers from project settings in headless mode
+  --mcp-config <file|json>    extra MCP servers (Claude Code format), repeatable; --strict-mcp-config uses only them
+  --no-mcp                    do not start MCP servers
   --no-journal                do not write ~/.perplexicode/sessions
   -v, --verbose               progress on stderr in headless mode
 
@@ -227,10 +280,17 @@ Commands:
   pcode agents add <id...> [-g]            install subagent presets (project; -g = ~/.perplexicode)
   pcode skills add <id...> [-g]            install skill presets
   pcode presets                            task presets (built-in, ~/.perplexicode/presets.json, project)
+  pcode mcp list                           MCP servers (Claude Code compatible: ~/.claude.json, .mcp.json, settings)
+  pcode mcp add <name> [-s scope] [-t stdio|http|sse] [-e K=V] [-H "Header: v"] -- <command|url> [args]
+  pcode mcp remove <name> [-s scope]       delete a server from the config files
+  pcode mcp get <name>                     show one server, connect and list its tools
+  pcode mcp test [name]                    connect to the servers and report tools/resources
   pcode doctor                             environment and configuration check
 
 Settings: ~/.claude/settings.json, ~/.perplexicode/settings.json, .claude/settings.json,
-.perplexicode/settings.json and *.local.json (permissions, hooks, verify, env).
+.perplexicode/settings.json and *.local.json (permissions, hooks, verify, env, computeMode, mcpServers).
+MCP: ~/.claude.json, ~/.claude/.mcp.json, ~/.perplexicode/mcp.json, <project>/.mcp.json, .mcp.local.json.
+Permission rules for MCP: mcp__<server>__<tool>, mcp__<server>, mcp; for web_fetch: WebFetch(domain:host).
 OpenAI-compatible provider: PCODE_OPENAI_BASE_URL, PCODE_OPENAI_API_KEY, PCODE_OPENAI_MODEL.
 `;
 
@@ -331,6 +391,8 @@ function agentSettings(options: CliOptions): AgentSettings {
       subtasks: true,
       todo: true,
       retry: true,
+      mcp: false,
+      web: false,
     },
     allowedCommands: [],
     deniedCommands: [],
@@ -391,21 +453,50 @@ interface SessionBundle {
   session: CoreSession;
   extraAllow: string[];
   modelLabel: (id: string, thinking: boolean) => string;
+  mcp?: McpRegistry;
+}
+
+/** "GPT-6 Astra · Computer high" style label used by the REPL header and environment details. */
+function withComputeLabel(label: (id: string, thinking: boolean) => string, computeMode: () => ComputeMode | undefined) {
+  return (id: string, thinking: boolean): string => {
+    const mode = computeMode();
+    if (!mode || mode === 'search') {
+      return label(id, thinking);
+    }
+    return `${label(id, thinking)} · ${getComputeModeOption(mode).label}`;
+  };
+}
+
+/** Builds the MCP registry for a run; undefined when MCP is disabled or nothing is configured. */
+function createMcpRegistry(options: CliOptions, trusted: boolean, log: (line: string) => void): McpRegistry | undefined {
+  if (options.noMcp) {
+    return undefined;
+  }
+  const registry = new McpRegistry({
+    cwd: options.cwd,
+    trustProject: trusted,
+    extraConfigs: options.mcpConfigs,
+    strict: options.strictMcpConfig,
+    log,
+  });
+  return registry.hasServers() ? registry : undefined;
 }
 
 async function buildSession(options: CliOptions, ui: SessionUi): Promise<SessionBundle> {
   const cwd = options.cwd;
   const hooksDefined = projectDefinesHooks(cwd);
+  const mcpDefined = !options.noMcp && !options.strictMcpConfig && projectDefinesStdioMcpServers(cwd);
   let trusted = options.trustProject || isTrusted(cwd);
-  if (hooksDefined && !trusted && !options.print && process.stdin.isTTY) {
-    out(yellow(`This project defines hooks in .claude/ or .perplexicode/settings*.json that run shell commands.`));
-    const answer = (await ui.question('Trust this folder and run its hooks? [y/N] ')).trim().toLowerCase();
+  if ((hooksDefined || mcpDefined) && !trusted && !options.print && process.stdin.isTTY) {
+    const what = [hooksDefined ? 'hooks' : '', mcpDefined ? 'MCP servers (stdio commands)' : ''].filter(Boolean).join(' and ');
+    out(yellow(`This project defines ${what} in .claude/, .perplexicode/ or .mcp.json that run shell commands.`));
+    const answer = (await ui.question(`Trust this folder and run its ${what}? [y/N] `)).trim().toLowerCase();
     if (answer === 'y' || answer === 'yes') {
       trust(cwd);
       trusted = true;
     }
-  } else if (hooksDefined && !trusted) {
-    out(yellow('Project hooks skipped (untrusted folder). Pass --trust-project to run them.'));
+  } else if ((hooksDefined || mcpDefined) && !trusted) {
+    out(yellow(`Project ${[hooksDefined ? 'hooks' : '', mcpDefined ? 'MCP stdio servers' : ''].filter(Boolean).join(' and ')} skipped (untrusted folder). Pass --trust-project to run them.`));
   }
   const settings = loadSettings(cwd, { trustProjectHooks: trusted });
   const backend = await createProvider(options, (line) => ui.log(line));
@@ -413,12 +504,23 @@ async function buildSession(options: CliOptions, ui: SessionUi): Promise<Session
   if (options.provider === 'perplexity' && !getModelById(modelId)) {
     throw new Error(`Unknown model '${modelId}'. Run \`pcode models\`.`);
   }
+  const settingsCompute = settings.computeMode || process.env.PCODE_COMPUTE;
+  if (!options.computeMode && settingsCompute) {
+    if (isValidComputeModeInput(settingsCompute)) {
+      options.computeMode = normalizeComputeMode(settingsCompute);
+    } else {
+      ui.log(`Ignoring unknown computeMode '${settingsCompute}' (settings / PCODE_COMPUTE).`);
+    }
+  }
+  const computeMode = options.provider === 'perplexity' ? options.computeMode : undefined;
   const extraAllow = [...options.allowedTools];
+  const mcp = createMcpRegistry(options, trusted, (line) => ui.log(line));
+  let sessionRef: CoreSession | undefined;
   const session = new CoreSession({
     cwd,
     provider: backend.provider,
     agentSettings: agentSettings(options),
-    selection: { baseModelId: modelId, thinking: options.thinking, webSearch: options.web },
+    selection: { baseModelId: modelId, thinking: options.thinking, webSearch: options.web, computeMode },
     mode: options.mode,
     agent: options.agent,
     permissionMode: options.permissionMode,
@@ -426,14 +528,16 @@ async function buildSession(options: CliOptions, ui: SessionUi): Promise<Session
     extraAllow,
     extraDeny: options.disallowedTools,
     journal: options.journal,
-    getModelLabel: backend.label,
+    getModelLabel: withComputeLabel(backend.label, () => sessionRef?.selection.computeMode),
     trustProjectHooks: trusted,
+    mcp,
     onAsk: (task, message) => ui.ask(task, message, extraAllow),
     onMessage: (task, message) => ui.message(task, message),
     onEvent: (task, event) => ui.event(task, event),
     log: (line) => ui.log(line),
   });
-  return { session, extraAllow, modelLabel: backend.label };
+  sessionRef = session;
+  return { session, extraAllow, modelLabel: withComputeLabel(backend.label, () => session.selection.computeMode), mcp };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -600,6 +704,18 @@ class InteractiveUi implements SessionUi {
       } else if (tool?.content && tool.isNewFile) {
         out(dim(tool.content.split('\n').slice(0, 30).join('\n')));
       }
+      if (tool?.name === 'use_mcp_tool' || tool?.name === 'access_mcp_resource' || tool?.name === 'list_mcp_resources') {
+        if (tool.content) out(dim(tool.content.split('\n').slice(0, 30).join('\n')));
+        const rule = tool.server ? `mcp__${tool.server.replace(/[^a-zA-Z0-9_-]+/g, '_')}` : 'mcp';
+        const answer = (await this.question(`  Allow? ${dim(`[y]es / [n]o / [a]lways this MCP server (${rule}) / or type feedback`)} `)).trim();
+        return this.decide(answer, () => extraAllow.push(rule));
+      }
+      if (tool?.name === 'web_fetch' && tool.url) {
+        let host = '';
+        try { host = new URL(tool.url).hostname; } catch { host = ''; }
+        const answer = (await this.question(`  Allow? ${dim(`[y]es / [n]o${host ? ` / [a]lways ${host}` : ''} / or type feedback`)} `)).trim();
+        return this.decide(answer, () => { if (host) extraAllow.push(`WebFetch(domain:${host})`); });
+      }
       const answer = (await this.question(`  Allow? ${dim('[y]es / [n]o / [a]lways edits this session / or type feedback')} `)).trim();
       return this.decide(answer, () => this.permissionModeRef.set?.('acceptEdits'));
     }
@@ -667,16 +783,21 @@ async function runHeadless(options: CliOptions): Promise<number> {
     return 64;
   }
   const ui = headlessUi(options);
-  const { session } = await buildSession(options, ui);
+  const { session, mcp } = await buildSession(options, ui);
   const started = Date.now();
   let aborted = false;
   process.on('SIGINT', () => {
     aborted = true;
     session.abort();
   });
-  const result = options.resume || options.continue
-    ? await session.resume(options.resume || 'latest', prompt)
-    : await session.run(prompt!);
+  let result: RunResult;
+  try {
+    result = options.resume || options.continue
+      ? await session.resume(options.resume || 'latest', prompt)
+      : await session.run(prompt!);
+  } finally {
+    await mcp?.closeAll().catch(() => undefined);
+  }
   const payload = {
     type: 'result',
     subtype: aborted ? 'aborted' : result.status === 'error' ? 'error' : result.result !== undefined ? 'success' : 'stopped',
@@ -702,6 +823,8 @@ const SLASH_HELP = `/help              this help
 /mode [slug]       show or switch agent mode (${MODES.map((m) => m.slug).join(', ')})
 /permissions [m]   show or switch permission mode (${PERMISSION_MODES.join(', ')})
 /model [id]        show or switch model
+/compute [mode]    show or switch Perplexity compute mode (${COMPUTE_MODES.map((m) => m.id).join(', ')})
+/mcp [reconnect [name]]  MCP servers, their tools and resources
 /compact [focus]   summarise the conversation to save context
 /clear             start a new session
 /agents  /skills   list subagents / skills
@@ -720,7 +843,8 @@ async function runInteractive(options: CliOptions): Promise<number> {
   const header = () => {
     const s = bundle.session;
     out(`${bold('PerplexiCode')} ${dim(VERSION)} · ${cyan(bundle.modelLabel(s.selection.baseModelId, s.selection.thinking))} · mode ${options.mode} · permissions ${s.permissionMode}`);
-    out(dim(`${options.cwd} · /help for commands`));
+    const mcpStates = bundle.mcp?.getStates() || [];
+    out(dim(`${options.cwd} · /help for commands${mcpStates.length > 0 ? ` · MCP servers: ${mcpStates.map((state) => state.config.name).join(', ')}` : ''}`));
   };
   header();
   let running: Promise<RunResult> | undefined;
@@ -765,8 +889,40 @@ async function runInteractive(options: CliOptions): Promise<number> {
       const arg = rest.join(' ').trim();
       const s = bundle.session;
       switch (cmd) {
-        case 'exit': case 'quit': ui.rl.close(); return 0;
+        case 'exit': case 'quit': ui.rl.close(); await bundle.mcp?.closeAll().catch(() => undefined); return 0;
         case 'help': out(SLASH_HELP); break;
+        case 'compute':
+          if (!arg) {
+            const current = getComputeModeOption(s.selection.computeMode);
+            out(`compute mode: ${current.id} — ${current.label}`);
+            for (const m of COMPUTE_MODES) out(dim(`  ${m.id.padEnd(17)} ${m.label.padEnd(26)} ${m.description}`));
+          } else if (options.provider !== 'perplexity') {
+            out(red('compute modes apply to the Perplexity provider only'));
+          } else if (!isValidComputeModeInput(arg)) {
+            out(red(`unknown compute mode ${arg} (${COMPUTE_MODES.map((m) => m.id).join(', ')})`));
+          } else {
+            const next = normalizeComputeMode(arg);
+            s.selection = { ...s.selection, computeMode: next };
+            const route = resolveComputeRoute(s.selection.baseModelId, s.selection.thinking, next);
+            out(dim(`compute → ${next} (${getComputeModeOption(next).label}; model ${route.modelId}, requires ${route.requiredPlan} plan)`));
+          }
+          break;
+        case 'mcp': {
+          if (!bundle.mcp) {
+            out(dim(options.noMcp ? 'MCP disabled (--no-mcp)' : 'no MCP servers configured (pcode mcp add <name> -- <command>)'));
+            break;
+          }
+          if (rest[0] === 'reconnect') {
+            const target = rest[1];
+            out(dim(target ? `reconnecting ${target}…` : 'reconnecting all MCP servers…'));
+            if (target) await bundle.mcp.connectServer(target).catch((error: Error) => out(red(error.message)));
+            else await bundle.mcp.connectAll();
+          } else {
+            await bundle.mcp.ensureConnected();
+          }
+          for (const line of formatMcpStates(bundle.mcp.getStates(), true)) out(line);
+          break;
+        }
         case 'mode':
           if (!arg) out(`mode: ${s.root?.mode || options.mode}`);
           else if (!MODES.some((m) => m.slug === arg)) out(red(`unknown mode ${arg}`));
@@ -798,6 +954,7 @@ async function runInteractive(options: CliOptions): Promise<number> {
           }
           break;
         case 'clear':
+          await bundle.mcp?.closeAll().catch(() => undefined);
           bundle = await buildSession(options, ui);
           out(dim('new session'));
           break;
@@ -814,7 +971,8 @@ async function runInteractive(options: CliOptions): Promise<number> {
         case 'status': {
           const v = s.verification();
           out(`session ${s.root?.id || '-'} · ${s.root?.status.state || 'new'} · ${s.root?.status.requestCount || 0} requests`);
-          out(`model ${s.selection.baseModelId} · mode ${s.root?.mode || options.mode} · permissions ${s.permissionMode}`);
+          out(`model ${s.selection.baseModelId} · compute ${s.selection.computeMode || 'search'} · mode ${s.root?.mode || options.mode} · permissions ${s.permissionMode}`);
+          if (bundle.mcp) out(`mcp: ${bundle.mcp.getStates().map((state) => `${state.config.name} (${state.status}${state.status === 'connected' ? `, ${state.tools.length} tools` : ''})`).join(', ')}`);
           out(`verification: ${VERIFICATION_LABELS[v.status]} — ${v.detail}`);
           if (s.root) out(dim(`journal: ${s.journalPath(s.root.id) || 'off'}`));
           break;
@@ -824,6 +982,7 @@ async function runInteractive(options: CliOptions): Promise<number> {
           if (!s.root?.todos.length) out(dim('no todos'));
           break;
         case 'resume':
+          await bundle.mcp?.closeAll().catch(() => undefined);
           bundle = await buildSession(options, ui);
           await exec(() => bundle.session.resume(arg || 'latest'));
           break;
@@ -834,7 +993,144 @@ async function runInteractive(options: CliOptions): Promise<number> {
     }
     await exec(() => bundle.session.run(line));
   }
+  await bundle.mcp?.closeAll().catch(() => undefined);
   return 0;
+}
+
+// ---------------------------------------------------------------------------------------------
+// pcode mcp
+// ---------------------------------------------------------------------------------------------
+
+function formatMcpStates(states: McpServerState[], verbose: boolean): string[] {
+  const lines: string[] = [];
+  if (states.length === 0) {
+    lines.push(dim('No MCP servers configured. Add one with `pcode mcp add <name> -- <command>` or a .mcp.json file.'));
+    return lines;
+  }
+  for (const state of states) {
+    const mark = state.status === 'connected' ? green('●') : state.status === 'error' ? red('●') : state.status === 'untrusted' ? yellow('○') : dim('○');
+    const target = state.config.type === 'stdio' ? `${state.config.command || ''} ${(state.config.args || []).join(' ')}`.trim() : state.config.url || '';
+    const summary = state.status === 'connected'
+      ? `${state.tools.length} tools, ${state.resources.length} resources${state.prompts.length ? `, ${state.prompts.length} prompts` : ''}${state.serverInfo?.name ? ` · ${state.serverInfo.name}${state.serverInfo.version ? ` ${state.serverInfo.version}` : ''}` : ''}`
+      : state.status === 'disconnected' ? 'not connected yet' : state.error || state.status;
+    lines.push(`${mark} ${bold(state.config.name)} ${dim(`[${state.config.type}, ${state.config.scope}]`)} ${dim(target)}`);
+    lines.push(`    ${summary}`);
+    if (verbose && state.status === 'connected') {
+      for (const tool of state.tools) {
+        lines.push(dim(`    - ${tool.qualifiedName}${tool.description ? `: ${tool.description.split('\n')[0].slice(0, 100)}` : ''}`));
+      }
+      for (const resource of state.resources.slice(0, 20)) {
+        lines.push(dim(`    · ${resource.uri} (${resource.name})`));
+      }
+    }
+  }
+  return lines;
+}
+
+function parseKeyValues(items: string[], separator: '=' | ':'): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const item of items) {
+    const index = item.indexOf(separator);
+    if (index <= 0) throw new Error(`Expected KEY${separator}VALUE, got '${item}'.`);
+    result[item.slice(0, index).trim()] = item.slice(index + 1).trim();
+  }
+  return result;
+}
+
+async function cmdMcp(options: CliOptions): Promise<number> {
+  const sub = options.args[0] || 'list';
+  const trusted = options.trustProject || isTrusted(options.cwd);
+  const makeRegistry = () => new McpRegistry({ cwd: options.cwd, trustProject: trusted, extraConfigs: options.mcpConfigs, strict: options.strictMcpConfig, log: (line) => { if (options.verbose) out(dim(line)); } });
+
+  switch (sub) {
+    case 'list':
+    case 'ls': {
+      const servers = loadMcpServers(options.cwd, { extraConfigs: options.mcpConfigs, strict: options.strictMcpConfig });
+      if (servers.length === 0) {
+        out(dim('No MCP servers configured. Add one with `pcode mcp add <name> -- <command>` or a .mcp.json file.'));
+        return 0;
+      }
+      for (const server of servers) {
+        const target = server.type === 'stdio' ? `${server.command || ''} ${(server.args || []).join(' ')}`.trim() : server.url || '';
+        process.stdout.write(`${server.name}\t${server.type}\t${server.scope}\t${server.disabled ? 'disabled' : (!trusted && server.type === 'stdio' && server.scope !== 'user' && server.scope !== 'cli') ? 'untrusted' : 'enabled'}\t${target}\t${server.sourceFile}\n`);
+      }
+      return 0;
+    }
+    case 'add': {
+      const name = options.args[1];
+      const rest = options.args.slice(2);
+      if (!name || rest.length === 0) {
+        out('usage: pcode mcp add <name> [-s user|project|local] [-t stdio|http|sse] [-e KEY=VALUE] [-H "Header: value"] -- <command|url> [args...]');
+        return 64;
+      }
+      const isUrl = /^https?:\/\//i.test(rest[0]);
+      const type: McpTransportType = options.mcpTransport || (isUrl ? 'http' : 'stdio');
+      if ((type === 'http' || type === 'sse') && !isUrl) {
+        out(red(`${type} transport needs an http(s) URL.`));
+        return 64;
+      }
+      if (type === 'stdio' && isUrl) {
+        out(red('stdio transport needs a command, not a URL (use -t http for remote servers).'));
+        return 64;
+      }
+      const scope = options.mcpScope || (options.global ? 'user' : 'project');
+      try {
+        const file = saveMcpServerConfig(options.cwd, name, {
+          type,
+          command: type === 'stdio' ? rest[0] : undefined,
+          args: type === 'stdio' ? rest.slice(1) : undefined,
+          env: options.mcpEnv.length > 0 ? parseKeyValues(options.mcpEnv, '=') : undefined,
+          url: type !== 'stdio' ? rest[0] : undefined,
+          headers: options.mcpHeaders.length > 0 ? parseKeyValues(options.mcpHeaders, ':') : undefined,
+        }, scope);
+        out(`${green('✔')} ${name} (${type}, ${scope}) → ${file}`);
+        if (scope !== 'user' && type === 'stdio' && !trusted) {
+          out(dim('Project stdio servers start only in trusted folders (answer the trust prompt or pass --trust-project).'));
+        }
+        return 0;
+      } catch (error) {
+        out(red((error as Error).message));
+        return 1;
+      }
+    }
+    case 'remove':
+    case 'rm': {
+      const name = options.args[1];
+      if (!name) {
+        out('usage: pcode mcp remove <name> [-s user|project|local]');
+        return 64;
+      }
+      const result = removeMcpServerConfig(options.cwd, name, options.mcpScope);
+      if (!result.removed) {
+        out(yellow(`No MCP server '${name}' found in the ${options.mcpScope || 'project, local or user'} configuration.`));
+        return 1;
+      }
+      for (const file of result.files) out(`${green('✔')} removed ${name} from ${file}`);
+      return 0;
+    }
+    case 'get':
+    case 'test': {
+      const name = options.args[1];
+      const registry = makeRegistry();
+      if (name && !registry.getStates().some((state) => state.config.name === name)) {
+        out(red(`Unknown MCP server '${name}'. Configured: ${registry.getStates().map((state) => state.config.name).join(', ') || 'none'}.`));
+        return 1;
+      }
+      try {
+        if (name) await registry.connectServer(name);
+        else await registry.connectAll();
+        const states = registry.getStates().filter((state) => !name || state.config.name === name);
+        for (const line of formatMcpStates(states, true)) out(line);
+        const failed = states.filter((state) => state.status === 'error').length;
+        return failed > 0 ? 1 : 0;
+      } finally {
+        await registry.closeAll().catch(() => undefined);
+      }
+    }
+    default:
+      out(red(`unknown mcp command '${sub}' (list, add, remove, get, test)`));
+      return 64;
+  }
 }
 
 async function cmdLogin(options: CliOptions): Promise<number> {
@@ -913,8 +1209,12 @@ function cmdSessions(options: CliOptions): number {
 
 function cmdModels(): number {
   const catalog = getModelCatalog();
-  for (const m of catalog.filter((x) => x.selectable !== false)) {
+  for (const m of catalog.filter((x) => x.selectable !== false && x.surfaced !== false)) {
     process.stdout.write(`${m.id.padEnd(26)} ${m.label.padEnd(30)} ${m.requiredPlan}${m.supportsThinking ? ' · --thinking' : ''}\n`);
+  }
+  process.stdout.write(`\nCompute modes (--compute <mode>):\n`);
+  for (const mode of COMPUTE_MODES) {
+    process.stdout.write(`${mode.id.padEnd(26)} ${mode.label.padEnd(30)} ${mode.requiredPlan}${mode.defaultModelId ? ` · ${mode.defaultModelId}` : ''}\n`);
   }
   return 0;
 }
@@ -1009,6 +1309,11 @@ async function cmdDoctor(options: CliOptions): Promise<number> {
   for (const source of settings.sources) out(dim(`    ${source.scope.padEnd(7)} ${source.file} (rules ${source.rules}, hooks ${source.hooks})`));
   ok(!projectDefinesHooks(options.cwd) || trusted, `project hooks: ${projectDefinesHooks(options.cwd) ? (trusted ? 'trusted' : 'defined but untrusted') : 'none'}`);
   ok(true, `verify command: ${settings.verify.command || 'none'}`);
+  ok(true, `compute mode: ${settings.computeMode || process.env.PCODE_COMPUTE || 'search'}`);
+  const mcpServers = loadMcpServers(options.cwd, { extraConfigs: options.mcpConfigs });
+  const untrustedMcp = mcpServers.filter((server) => !server.disabled && server.type === 'stdio' && (server.scope === 'project' || server.scope === 'local') && !trusted);
+  ok(untrustedMcp.length === 0, `MCP servers: ${mcpServers.length}${mcpServers.length ? ` (${mcpServers.map((server) => `${server.name}:${server.type}`).join(', ')})` : ''}${untrustedMcp.length ? ` · ${untrustedMcp.length} project stdio server(s) skipped until trusted` : ''}`);
+  for (const server of mcpServers) out(dim(`    ${server.scope.padEnd(7)} ${server.name} ← ${server.sourceFile}`));
   ok(true, `subagents: ${loadSubagents(options.cwd).length} · skills: ${loadSkills(options.cwd).length}`);
   ok(true, `sessions: ${sessionsDir()} (${listSessions({ workspace: options.cwd }).length} for this folder)`);
   ok(os.platform() !== 'win32' || has('sh'), `shell: ${process.platform === 'win32' ? 'cmd/PowerShell (hooks need sh)' : '/bin/sh'}`);
@@ -1045,6 +1350,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       case 'agents': return cmdAgents(options);
       case 'presets': return cmdPresets(options);
       case 'skills': return cmdSkills(options);
+      case 'mcp': return await cmdMcp(options);
       case 'doctor': return await cmdDoctor(options);
       default:
         applyPresetOption(options);

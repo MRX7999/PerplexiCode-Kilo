@@ -47,6 +47,8 @@ export interface CoreSettings {
   /** Command that must pass before attempt_completion is accepted (for example "npm test"). */
   verify: { command?: string; maxAttempts: number; timeoutSec: number };
   model?: string;
+  /** 3.3: default Perplexity compute mode (search, light, standard, high, ultra, research, labs). */
+  computeMode?: string;
   env: Record<string, string>;
   /** Execute up to N read-only tool calls from one model answer. 1 disables batching. */
   readBatchSize: number;
@@ -163,6 +165,9 @@ export function mergeLayer(target: CoreSettings, raw: Record<string, unknown>, a
   }
   if (typeof raw.model === 'string') {
     target.model = raw.model;
+  }
+  if (typeof raw.computeMode === 'string' && raw.computeMode.trim()) {
+    target.computeMode = raw.computeMode.trim();
   }
   if (typeof raw.readBatchSize === 'number') {
     target.readBatchSize = Math.max(1, Math.min(10, Math.floor(raw.readBatchSize)));

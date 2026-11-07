@@ -1,5 +1,5 @@
 import { MODES } from '../agent/modes';
-import { AgentTask, AskResponse, CompletionProvider } from '../agent/task';
+import { AgentTask, AskResponse, CompletionProvider, McpToolProvider } from '../agent/task';
 import type { TodoItem } from '../agent/toolParser';
 import type { AgentHost } from '../agent/tools';
 import type { AgentSettings, ModelSelection, PersistedTask, UiMessage } from '../agent/types';
@@ -42,6 +42,8 @@ export interface CoreSessionOptions {
   log?: (line: string) => void;
   home?: string;
   trustProjectHooks?: boolean;
+  /** 3.3: MCP servers (core/mcp.ts McpRegistry). Omit to run without MCP. */
+  mcp?: McpToolProvider;
 }
 
 export interface RunResult {
@@ -131,6 +133,7 @@ export class CoreSession {
       gate,
       isSubtaskTarget: (slug) => this.agents.some((entry) => entry.name === slug),
       readBatchSize: () => this.settings.readBatchSize,
+      mcp: this.options.mcp,
       callbacks: {
         onMessage: (owner, message) => {
           this.options.onMessage?.(owner, message);

@@ -6,7 +6,7 @@ import { getModeBySlug, MODES } from './agent/modes';
 import { TaskStore } from './agent/taskStore';
 import { PerplexityTransport } from './agent/transport';
 import { CapabilityFetcher } from './api/capabilityFetcher';
-import { getModelLabel, setRuntimeModelCatalog } from './api/modelCatalog';
+import { COMPUTE_MODES, getModelLabel, resolveComputeRoute, setRuntimeModelCatalog } from './api/modelCatalog';
 import { ModelFetcher } from './api/modelFetcher';
 import { RotationEngine } from './api/rotationEngine';
 import { RotationStrategy } from './api/types';
@@ -60,6 +60,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const selection = controller.getSelection();
     statusBar.update({
       modelLabel: getModelLabel(selection.baseModelId, selection.thinking),
+      computeLabel: controller.getComputeMode() === 'search' ? '' : COMPUTE_MODES.find((mode) => mode.id === controller.getComputeMode())?.shortLabel || controller.getComputeMode(),
       modeName: getModeBySlug(controller.getModeSlug()).name,
       accountCount: accountManager.getAccounts().length,
       activeAccountCount: accountManager.getActiveCount(),
@@ -357,6 +358,34 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
     await controller.setModel(picked.modelId, picked.thinking);
+  });
+
+  register('perplexicodeKilo.selectComputeMode', async () => {
+    const selection = controller.getSelection();
+    const current = controller.getComputeMode();
+    type Item = vscode.QuickPickItem & { mode: string };
+    const items: Item[] = COMPUTE_MODES.map((mode) => {
+      const route = resolveComputeRoute(selection.baseModelId, selection.thinking, mode.id);
+      return {
+        label: `${mode.id === current ? '$(check)' : '$(blank)'} ${mode.label}`,
+        description: [mode.requiredPlan !== 'free' ? `${mode.requiredPlan.toUpperCase()} plan` : '', route.modelId !== selection.baseModelId ? route.modelId : ''].filter(Boolean).join(' · '),
+        detail: mode.description,
+        mode: mode.id,
+      };
+    });
+    const picked = await vscode.window.showQuickPick(items, {
+      title: 'PerplexiCode: Compute Mode',
+      placeHolder: 'Search (standard), Computer light/standard/high/ultra (ASI harness), Research or Labs',
+      matchOnDescription: true,
+      matchOnDetail: true,
+    });
+    if (picked) {
+      await controller.setComputeMode(picked.mode);
+    }
+  });
+
+  register('perplexicodeKilo.mcp.reconnect', async () => {
+    await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'PerplexiCode: connecting MCP servers…' }, () => controller.mcpConnect());
   });
 
   register('perplexicodeKilo.cycleMode', async () => {

@@ -91,9 +91,13 @@ export type VerificationStatus = 'verified' | 'needs_review' | 'failed' | 'block
 export type TimedCoreEvent = CoreEvent & { ts: number; seq: number; taskId: string };
 
 /** Tool categories used by permissions and hooks. */
-export const READ_TOOLS = new Set(['read_file', 'list_files', 'search_files', 'list_code_definition_names']);
-export const EDIT_TOOLS = new Set(['write_to_file', 'apply_diff', 'insert_content']);
+export const READ_TOOLS = new Set(['read_file', 'list_files', 'search_files', 'list_code_definition_names', 'glob_files']);
+export const EDIT_TOOLS = new Set(['write_to_file', 'apply_diff', 'insert_content', 'search_and_replace']);
 export const META_TOOLS = new Set(['ask_followup_question', 'attempt_completion', 'update_todo_list', 'switch_mode']);
+/** Model Context Protocol tools (3.3). */
+export const MCP_TOOLS = new Set(['use_mcp_tool', 'access_mcp_resource', 'list_mcp_resources']);
+/** Tools that reach the network directly (3.3). */
+export const WEB_TOOLS = new Set(['web_fetch']);
 
 /** Claude Code tool names for our native tools (used by hook matchers and permission rules). */
 export const CLAUDE_TOOL_NAMES: Record<string, string> = {
@@ -101,13 +105,35 @@ export const CLAUDE_TOOL_NAMES: Record<string, string> = {
   list_files: 'LS',
   search_files: 'Grep',
   list_code_definition_names: 'Glob',
+  glob_files: 'Glob',
   write_to_file: 'Write',
   apply_diff: 'Edit',
   insert_content: 'Edit',
+  search_and_replace: 'MultiEdit',
   execute_command: 'Bash',
+  web_fetch: 'WebFetch',
   new_task: 'Task',
   update_todo_list: 'TodoWrite',
   ask_followup_question: 'AskUserQuestion',
   switch_mode: 'SwitchMode',
   attempt_completion: 'AttemptCompletion',
+  access_mcp_resource: 'ReadMcpResourceTool',
+  list_mcp_resources: 'ListMcpResourcesTool',
 };
+
+/**
+ * Claude Code tool name of a concrete call. MCP tool calls get their canonical dynamic name
+ * (`mcp__<server>__<tool>`), everything else uses CLAUDE_TOOL_NAMES or the native name.
+ */
+export function claudeToolName(tool: GateToolCall): string {
+  if (tool.name === 'use_mcp_tool') {
+    const server = sanitizeMcpName(tool.params.server_name || '');
+    const name = sanitizeMcpName(tool.params.tool_name || '');
+    return server && name ? `mcp__${server}__${name}` : 'mcp__unknown';
+  }
+  return CLAUDE_TOOL_NAMES[tool.name] || tool.name;
+}
+
+function sanitizeMcpName(value: string): string {
+  return value.trim().replace(/[^a-zA-Z0-9_-]+/g, '_');
+}

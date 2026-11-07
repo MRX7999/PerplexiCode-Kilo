@@ -6,7 +6,7 @@ import { HookEngine, HookInputBase, HookRunner, toClaudeToolInput } from './hook
 import { evaluatePermission, pathMatches } from './permissions';
 import { CoreSettings, HookEvent } from './settings';
 import {
-  CLAUDE_TOOL_NAMES,
+  claudeToolName,
   CoreEvent,
   GateContext,
   GateToolCall,
@@ -88,11 +88,11 @@ export class CoreGate implements ToolGate {
     }
     const result = await this.hooks.run('PreToolUse', {
       ...this.base(ctx, 'PreToolUse'),
-      tool_name: CLAUDE_TOOL_NAMES[tool.name] || tool.name,
+      tool_name: claudeToolName(tool),
       tool_input: toClaudeToolInput(tool, ctx.cwd),
       native_tool: tool.name,
       native_params: tool.params,
-    }, tool.name);
+    }, tool.name, tool);
     if (result.stopTask) {
       return { decision: 'deny', reason: result.stopReason, source: 'hook: continue=false', stopTask: true };
     }
@@ -108,11 +108,11 @@ export class CoreGate implements ToolGate {
     }
     const result = await this.hooks.run('PostToolUse', {
       ...this.base(ctx, 'PostToolUse'),
-      tool_name: CLAUDE_TOOL_NAMES[tool.name] || tool.name,
+      tool_name: claudeToolName(tool),
       tool_input: toClaudeToolInput(tool, ctx.cwd),
       tool_response: { output: outcome.output.slice(0, 20000), success: !outcome.isError },
       native_tool: tool.name,
-    }, tool.name);
+    }, tool.name, tool);
     return {
       additionalContext: result.additionalContext,
       blockReason: result.block ? result.reason || 'A PostToolUse hook reported a problem with this change.' : undefined,
