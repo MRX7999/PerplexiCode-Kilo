@@ -16,7 +16,9 @@ import {
 import { ModelFetcher } from '../api/modelFetcher';
 import { RotationEngine } from '../api/rotationEngine';
 import { AccountPlan, ComputeMode, RotationStrategy } from '../api/types';
-import { McpRegistry, McpServerState, removeMcpServerConfig, saveMcpServerConfig } from '../core/mcp';
+import { loadMcpServers, McpRegistry, McpServerState, removeMcpServerConfig, saveMcpServerConfig } from '../core/mcp';
+import { buildMcpCatalogConfig, findMcpCatalogEntry, installMcpCatalogEntry, MCP_CATALOG } from '../core/mcpCatalog';
+import { McpCredentialCache } from '../core/mcpCredentials';
 import { AccountManager } from '../storage/accountManager';
 import { DEFAULT_MODE_SLUG, getModeBySlug, MODES } from './modes';
 import { AgentTask, AskResponse } from './task';
@@ -85,6 +87,8 @@ export class AgentController implements vscode.Disposable {
   /** 3.3 MCP registries, one per workspace folder (servers from ~/.claude.json, .mcp.json, settings). */
   private readonly mcpRegistries = new Map<string, McpRegistry>();
   private mcpTimer?: NodeJS.Timeout;
+  private readonly mcpCredentials: McpCredentialCache;
+  private mcpCatalogInstalling = false;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -96,6 +100,7 @@ export class AgentController implements vscode.Disposable {
     output: vscode.OutputChannel
   ) {
     this.output = output;
+    this.mcpCredentials = new McpCredentialCache(context.secrets);
     this.core = new CoreBridge((line) => this.output.appendLine(line));
     const stored = context.globalState.get<StoredSelection>(SELECTION_KEY);
     const configuredDefault = readSetting<string>('perplexicodeKilo.defaultModel', 'turbo');
@@ -181,6 +186,7 @@ export class AgentController implements vscode.Disposable {
         cwd: key,
         trustProject: vscode.workspace.isTrusted,
         extraConfigs: readSetting<string[]>('perplexicodeKilo.mcp.extraConfigs', []),
+        serverEnv: (name, _scope, file, raw) => this.mcpCredentials.env(file, name, raw),
         log: (line) => this.output.appendLine(line),
       });
       this.mcpRegistries.set(key, registry);
@@ -221,12 +227,14 @@ export class AgentController implements vscode.Disposable {
   /** Connects every configured server (or one) and republishes the state. */
   async mcpConnect(name?: string): Promise<void> {
     const cwd = this.currentTask?.toJSON().workspace || this.workspaceRoot() || os.homedir();
+    await this.restoreMcpCredentials(cwd);
     const registry = this.mcpFor(cwd);
     if (!registry) {
       void vscode.window.showInformationMessage('PerplexiCode: MCP is disabled (perplexicodeKilo.mcp.enabled).');
       return;
     }
     try {
+      registry.reloadConfigs();
       if (name) {
         await registry.connectServer(name);
       } else {
@@ -235,6 +243,88 @@ export class AgentController implements vscode.Disposable {
     } catch (error) {
       this.output.appendLine(`[mcp] ${(error as Error).message}`);
     } finally {
+      this.postState();
+    }
+  }
+
+  private async restoreMcpCredentials(cwd: string): Promise<void> {
+    const files = [
+      path.join(os.homedir(), '.perplexicode', 'mcp.json'),
+      path.join(cwd, '.mcp.json'),
+      path.join(cwd, '.perplexicode', 'settings.local.json'),
+    ];
+    for (const entry of MCP_CATALOG) {
+      const variables = entry.inputs.filter((input) => input.secret).map((input) => input.key);
+      if (!variables.length) continue;
+      for (const file of files) await this.mcpCredentials.restore(file, entry.id, variables);
+    }
+    this.mcpRegistries.get(path.resolve(cwd))?.reloadConfigs();
+  }
+
+  /** Native prompts keep credentials out of webview messages, settings and the transcript. */
+  private async mcpCatalogInstall(id: string, requestedScope: string): Promise<void> {
+    if (this.mcpCatalogInstalling) return;
+    this.mcpCatalogInstalling = true;
+    try {
+      const entry = findMcpCatalogEntry(id);
+      if (!entry) throw new Error('Unknown MCP catalog entry.');
+      if (!entry.config) {
+        await vscode.env.openExternal(vscode.Uri.parse(entry.docsUrl));
+        return;
+      }
+      const cwd = this.workspaceRoot() || os.homedir();
+      const scope = requestedScope === 'user' ? 'user' : requestedScope === 'local' ? 'local' : 'project';
+      if (scope !== 'user' && !this.workspaceRoot()) throw new Error('Open a workspace or choose Global.');
+      if (loadMcpServers(cwd).some((server) => server.name === id)) {
+        throw new Error('This server is already configured. Remove it explicitly before installing a catalog replacement.');
+      }
+      const confirm = await vscode.window.showWarningMessage(
+        `Add ${entry.title} to ${scope === 'user' ? 'all projects' : 'this project'}? ${entry.requirements.join('; ')}. ${entry.notes} This saves an enabled configuration only. Your next task may connect this server and download/run the declared npm/uv package. Tool permissions are unchanged.`,
+        { modal: true }, 'Add configuration'
+      );
+      if (confirm !== 'Add configuration') return;
+      const values: Record<string, string> = {};
+      const secrets: Record<string, string> = {};
+      for (const input of entry.inputs) {
+        if (input.secret) {
+          const value = await vscode.window.showInputBox({
+            title: `${entry.title}: ${input.label}`,
+            prompt: `${input.key}: stored in VS Code SecretStorage, not in config. Leave empty to use your environment; CLI must supply its own environment.`,
+            password: true, ignoreFocusOut: true,
+          });
+          if (value === undefined) return;
+          if (value) secrets[input.key] = value;
+        } else {
+          const fallback = (input.default || '').replace(/\{cwd\}/g, () => cwd);
+          const value = await vscode.window.showInputBox({
+            title: `${entry.title}: ${input.label}`,
+            value: fallback, ignoreFocusOut: true,
+            validateInput: (value) => input.required && !value.trim() ? `${input.label} is required.` : undefined,
+          });
+          if (value === undefined) return;
+          if (value.trim()) values[input.key] = value.trim();
+        }
+      }
+      // Validate everything before modifying files or persisting secrets.
+      buildMcpCatalogConfig(id, values, cwd);
+      const file = installMcpCatalogEntry(id, scope, { cwd, values });
+      try {
+        await this.mcpCredentials.save(file, id, secrets);
+      } catch {
+        // Do not leave a newly enabled config after credential storage fails.
+        await this.mcpCredentials.remove(file, id, Object.keys(secrets)).catch(() => undefined);
+        const rollback = removeMcpServerConfig(cwd, id, scope);
+        throw new Error(rollback.removed
+          ? 'Credential storage failed; the new MCP configuration was removed. Retry or supply tokens through your environment.'
+          : 'Credential storage failed. Remove the new MCP configuration before retrying.');
+      }
+      this.scheduleMcpReload();
+      void vscode.window.showInformationMessage(`${entry.title}: configuration added. No server started and tool permissions are unchanged.`);
+    } catch (error) {
+      // Error text comes from validation / file writes, never includes entered secret values.
+      void vscode.window.showErrorMessage(`PerplexiCode MCP catalog: ${(error as Error).message}`);
+    } finally {
+      this.mcpCatalogInstalling = false;
       this.postState();
     }
   }
@@ -294,11 +384,24 @@ export class AgentController implements vscode.Disposable {
       return;
     }
     const cwd = this.workspaceRoot() || os.homedir();
-    const result = removeMcpServerConfig(cwd, name, scope === 'user' || scope === 'project' || scope === 'local' ? scope : undefined);
-    if (!result.removed) {
-      void vscode.window.showWarningMessage(`PerplexiCode: "${name}" was not found in a writable MCP config (it may come from ~/.claude.json).`);
+    const entry = findMcpCatalogEntry(name);
+    const variables = entry?.inputs.filter((input) => input.secret).map((input) => input.key) || [];
+    const files = [
+      ...(scope === 'user' || !scope ? [path.join(os.homedir(), '.perplexicode', 'mcp.json')] : []),
+      ...(scope === 'project' || !scope ? [path.join(cwd, '.mcp.json')] : []),
+      ...(scope === 'local' || !scope ? [path.join(cwd, '.perplexicode', 'settings.local.json')] : []),
+    ];
+    try {
+      const result = removeMcpServerConfig(cwd, name, scope === 'user' || scope === 'project' || scope === 'local' ? scope : undefined);
+      if (result.removed) {
+        for (const file of files) await this.mcpCredentials.remove(file, name, variables);
+      }
+      if (!result.removed) {
+        void vscode.window.showWarningMessage(`PerplexiCode: "${name}" was not found in a writable MCP config (it may come from ~/.claude.json).`);
+      }
+    } finally {
+      this.scheduleMcpReload();
     }
-    this.scheduleMcpReload();
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -635,6 +738,7 @@ export class AgentController implements vscode.Disposable {
       await this.saveSelection();
     }
     const cwd = this.workspaceRoot();
+    await this.restoreMcpCredentials(cwd || os.homedir());
     const resolvedAgent = agent ? this.core.findSubagent(cwd || os.homedir(), agent) : undefined;
     if (agent && !resolvedAgent) {
       this.output.appendLine(`[library] subagent "${agent}" is not installed; running in ${this.selection.mode} mode`);
@@ -667,6 +771,7 @@ export class AgentController implements vscode.Disposable {
       return;
     }
     await this.clearTask();
+    await this.restoreMcpCredentials(persisted.workspace || this.workspaceRoot() || os.homedir());
     const existing = this.tasks.get(id);
     const task = existing && !existing.isBusy ? existing : this.buildTask({ mode: persisted.mode, restore: persisted });
     this.selection.mode = task.mode;
@@ -927,6 +1032,12 @@ export class AgentController implements vscode.Disposable {
       case 'mcpAdd':
         await this.mcpAdd({ name: message.name, target: message.target, scope: message.scope, transport: message.transport, env: message.env, headers: message.headers });
         break;
+      case 'mcpCatalogInstall':
+        await this.mcpCatalogInstall(String(message.id || ''), String(message.scope || 'project'));
+        break;
+      case 'mcpParrotGuide':
+        await vscode.window.showTextDocument(vscode.Uri.joinPath(this.context.extensionUri, 'docs', 'MCP-SECURITY-PARROT.md'), { preview: false });
+        break;
       case 'mcpRemove':
         await this.mcpRemove(String(message.name || ''), typeof message.scope === 'string' ? message.scope : undefined);
         break;
@@ -1137,6 +1248,7 @@ export class AgentController implements vscode.Disposable {
   postState(includeMessages = false, target?: WebviewTarget): void {
     const task = this.currentTask;
     const accounts = this.accountManager.getAccounts();
+    const mcpServers = this.mcpStates();
     const planSetting = readSetting<string>('perplexicodeKilo.subscriptionPlan', 'auto');
     const state = {
       type: 'state',
@@ -1192,7 +1304,13 @@ export class AgentController implements vscode.Disposable {
       mcp: {
         enabled: this.mcpEnabled(),
         trusted: vscode.workspace.isTrusted,
-        servers: this.mcpStates().map((entry) => ({
+        catalog: MCP_CATALOG.map((entry) => ({
+          id: entry.id, title: entry.title, description: entry.description, category: entry.category,
+          docsUrl: entry.docsUrl, requirements: entry.requirements, notes: entry.notes, risk: entry.risk,
+          inputs: entry.inputs, checkedAt: entry.checkedAt, installable: Boolean(entry.config),
+          installed: mcpServers.some((server) => server.config.name === entry.id),
+        })),
+        servers: mcpServers.map((entry) => ({
           name: entry.config.name,
           type: entry.config.type,
           scope: entry.config.scope,

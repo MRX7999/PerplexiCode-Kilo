@@ -39,6 +39,17 @@ const suites = [
     outfile: 'mcp.test.cjs',
     options: { external: ['vscode', 'puppeteer-core', 'sql.js'] },
   },
+  {
+    entry: 'mcp-catalog.test.ts',
+    outfile: 'mcp-catalog.test.cjs',
+    prebuild: true,
+    options: { external: ['vscode', 'puppeteer-core', 'sql.js'] },
+  },
+  {
+    entry: 'mcp-credentials.test.ts',
+    outfile: 'mcp-credentials.test.cjs',
+    options: {},
+  },
 ];
 
 const only = process.argv[2];

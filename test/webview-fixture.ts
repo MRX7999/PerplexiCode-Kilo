@@ -10,6 +10,7 @@ import type { AgentSettings } from '../src/agent/types';
 import { getBundledSnapshotDate, getFallbackModelCatalog, getModelLabel, setRuntimeModelCatalog } from '../src/api/modelCatalog';
 import { ModelFetcher } from '../src/api/modelFetcher';
 import { createCustomAgent, installAgentPreset, installSkillPreset, librarySnapshot } from '../src/core/library';
+import { MCP_CATALOG } from '../src/core/mcpCatalog';
 
 const settings: AgentSettings = {
   autoApprove: { enabled: true, read: true, readOutsideWorkspace: false, write: false, execute: true, modeSwitch: true, subtasks: true, todo: true, retry: true, mcp: false, web: false },
@@ -92,6 +93,21 @@ async function main() {
     accounts: [{ id: 'a', alias: 'Personal', status: 'active', plan: 'max', email: 'user@example.com', queriesToday: 3, queriesTotal: 120, lastUsedAt: Date.now(), quotas: { pro: 'unlimited', research: '200 left', labs: '50 left', free: '' } }],
     history: [{ id: 'h1', ts: Date.now() - 3600_000, title: 'Refactor the auth middleware to use async/await', workspace: dir, mode: 'code', status: 'completed', requestCount: 7 }],
     workspace: dir,
+    mcp: {
+      enabled: true, trusted: true,
+      servers: [{
+        name: 'filesystem', type: 'stdio', scope: 'project', sourceFile: path.join(dir, '.mcp.json'),
+        target: 'npx -y @modelcontextprotocol/server-filesystem ' + dir, status: 'disconnected',
+        tools: [{ name: 'read_file', qualifiedName: 'mcp__filesystem__read_file', description: 'Read an allowed file.' }],
+        resources: [{ uri: 'file://' + path.join(dir, 'math.ts'), name: 'math.ts', description: 'Fixture source file.' }],
+        prompts: [],
+      }],
+      catalog: MCP_CATALOG.map((entry) => ({
+        id: entry.id, title: entry.title, description: entry.description, category: entry.category,
+        docsUrl: entry.docsUrl, requirements: entry.requirements, notes: entry.notes, risk: entry.risk,
+        inputs: entry.inputs, checkedAt: entry.checkedAt, installable: Boolean(entry.config), installed: entry.id === 'filesystem',
+      })),
+    },
   };
   const withTask = { ...base, task: { id: task.id, title: task.title, mode: task.mode, status: task.status, todos: task.todos, busy: task.isBusy, messages: task.uiMessages, depth: 0 } };
   const empty = { ...base, task: null };

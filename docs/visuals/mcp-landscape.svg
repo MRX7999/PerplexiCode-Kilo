@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="700" viewBox="0 0 1600 700" fill="none" role="img" aria-labelledby="mcp-title mcp-desc">
+  <title id="mcp-title">MCP catalog composition and installation behavior</title>
+  <desc id="mcp-desc">The current catalog has 21 entries in five categories. Thirteen configuration templates comprise five development entries, three web entries, and five productivity entries. Eight manual setup guides comprise five security entries, Semgrep, Snyk, Ghidra, Shodan, and VirusTotal, and three pentest entries, Burp, ZAP, and Nmap. The proportional bar shows catalog counts, not usage. Installing a template saves configuration only; enabled configurations remain subject to trust, credentials, and tool permissions. A subsequent task may connect to a server and download packages or run local processes. Manual guides never auto-install. Security integrations and the Parrot VM were not runtime-tested. The catalog is not an audited package allowlist.</desc>
+  <defs>
+    <pattern id="mcp-grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" stroke="#26344d" stroke-opacity=".24"/>
+    </pattern>
+    <marker id="mcp-arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="m1 1 5 3-5 3" stroke="#5de2e7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; }
+      .overline { font-size:24px; font-weight:600; letter-spacing:3px; fill:#9baac0; }
+      .title { font-size:44px; font-weight:650; letter-spacing:-1px; fill:#f3f7fc; }
+      .heading { font-size:28px; font-weight:600; fill:#f3f7fc; }
+      .body { font-size:24px; fill:#9baac0; }
+      .label { font-size:24px; font-weight:550; fill:#f3f7fc; }
+    </style>
+  </defs>
+  <rect width="1600" height="700" rx="24" fill="#0b1020"/>
+  <rect x="1" y="1" width="1598" height="698" rx="23" stroke="#27344a"/>
+  <rect x="1" y="1" width="1598" height="698" rx="23" fill="url(#mcp-grid)"/>
+  <text x="56" y="60" class="overline">MCP / CATALOG COMPOSITION</text>
+  <text x="56" y="116" class="title">One catalog. Two setup paths.</text>
+  <text x="1364" y="100" font-size="64" font-weight="650" letter-spacing="-2" fill="#f3f7fc">21</text>
+  <text x="1445" y="96" class="body">entries</text>
+  <text x="1364" y="130" class="body">5 categories</text>
+
+  <path d="M56 151h1488" stroke="#27344a"/>
+  <text x="56" y="191" font-size="24" font-weight="600" fill="#5de2e7">13 configuration templates</text>
+  <text x="989" y="191" font-size="24" font-weight="600" fill="#eecb86">8 manual setup guides</text>
+  <text x="597" y="191" class="body">Catalog counts, not usage</text>
+
+  <!-- Each category occupies its exact share of 21 entries. -->
+  <rect x="56" y="214" width="354.286" height="28" fill="#5de2e7"/>
+  <rect x="410.286" y="214" width="212.571" height="28" fill="#7bc7ed"/>
+  <rect x="622.857" y="214" width="354.286" height="28" fill="#a4a6ff"/>
+  <rect x="977.143" y="214" width="354.286" height="28" fill="#eecb86"/>
+  <rect x="1331.429" y="214" width="212.571" height="28" fill="#bda67e"/>
+  <path d="M410.286 214v28m212.571-28v28m354.286-28v28m354.286-28v28" stroke="#0b1020" stroke-width="3"/>
+  <text x="56" y="282" class="label">Development</text>
+  <text x="385" y="282" text-anchor="end" class="heading">5</text>
+  <text x="434" y="282" class="label">Web</text>
+  <text x="598" y="282" text-anchor="end" class="heading">3</text>
+  <text x="647" y="282" class="label">Productivity</text>
+  <text x="953" y="282" text-anchor="end" class="heading">5</text>
+  <text x="1001" y="282" class="label">Security</text>
+  <text x="1307" y="282" text-anchor="end" class="heading">5</text>
+  <text x="1355" y="282" class="label">Pentest</text>
+  <text x="1544" y="282" text-anchor="end" class="heading">3</text>
+
+  <rect x="56" y="309" width="897" height="184" rx="12" fill="#0e172b" stroke="#34465d"/>
+  <path d="M409 333v136m213-136v136" stroke="#2c3b53"/>
+  <text x="80" y="352" class="body">Filesystem · Git</text>
+  <text x="80" y="388" class="body">Context7 · GitHub</text>
+  <text x="80" y="424" class="body">Sentry</text>
+  <text x="433" y="352" class="body">Fetch</text>
+  <text x="433" y="388" class="body">Playwright</text>
+  <text x="433" y="424" class="body">Chrome</text>
+  <text x="433" y="458" class="body">DevTools</text>
+  <text x="646" y="352" class="body">Memory · Time</text>
+  <text x="646" y="388" class="body">Sequential Thinking</text>
+  <text x="646" y="424" class="body">Notion · Linear</text>
+
+  <rect x="977" y="309" width="567" height="184" rx="12" fill="#201e2c" stroke="#73674e"/>
+  <path d="M1319 333v95" stroke="#50483b"/>
+  <text x="1001" y="352" font-size="24" fill="#eecb86">Semgrep · Snyk</text>
+  <text x="1001" y="388" font-size="24" fill="#eecb86">Ghidra · Shodan</text>
+  <text x="1001" y="424" font-size="24" fill="#eecb86">VirusTotal</text>
+  <text x="1343" y="352" font-size="24" fill="#eecb86">Burp</text>
+  <text x="1343" y="388" font-size="24" fill="#eecb86">ZAP</text>
+  <text x="1343" y="424" font-size="24" fill="#eecb86">Nmap</text>
+  <text x="1001" y="464" font-size="24" fill="#eecb86">Manual review and setup required</text>
+
+  <rect x="56" y="533" width="326" height="94" rx="12" fill="#0e172b" stroke="#35566b"/>
+  <text x="80" y="569" class="heading">Install template</text>
+  <text x="80" y="604" class="body">Save configuration only</text>
+  <path d="M382 580h42" stroke="#5de2e7" stroke-width="2" marker-end="url(#mcp-arrow)"/>
+  <rect x="430" y="533" width="418" height="94" rx="12" fill="#0e172b" stroke="#35566b"/>
+  <text x="454" y="569" class="heading">Enabled config</text>
+  <text x="454" y="604" class="body">Trust + credentials + permissions</text>
+  <path d="M848 580h40" stroke="#5de2e7" stroke-width="2" marker-end="url(#mcp-arrow)"/>
+  <rect x="894" y="533" width="650" height="94" rx="12" fill="#132638" stroke="#5de2e7" stroke-opacity=".65"/>
+  <text x="918" y="569" class="heading">Next task may connect</text>
+  <text x="918" y="604" class="body">May download packages and run local processes.</text>
+  <text x="56" y="672" class="body">Manual guides never auto-install. Security integrations and Parrot VM were not runtime-tested.</text>
+</svg>

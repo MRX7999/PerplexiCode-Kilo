@@ -1,4 +1,6 @@
 .vscode/**
+**/.env
+**/.env.*
 .vscode-test/**
 src/**
 node_modules/.package-lock.json
@@ -20,6 +22,10 @@ node_modules/marked/**
 node_modules/@types/**
 *.vsix
 docs/**
+!docs/CORE-3.0.md
+!docs/MCP-SECURITY-PARROT.md
+!docs/visuals/workflow.png
+!docs/visuals/mcp-landscape.png
 scripts/**
 .github/**
 SHA256SUMS.txt

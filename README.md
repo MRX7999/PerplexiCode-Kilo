@@ -1,15 +1,11 @@
 <div align="center">
 
-<img src="docs/images/logo.png" width="120" alt="PerplexiCode Kilo logo" />
-
 # PerplexiCode Kilo
 
-**A Kilo Code-style autonomous coding agent for Antigravity IDE and VS Code, powered by your Perplexity Pro / Max subscription.**
-
-Plan, write, run and debug code with GPT-6.1 Sol, Claude Opus 5.5, Gemini 4 Argon, Grok 4.7 and 85 more Perplexity models. No API keys.
+<img src="docs/visuals/hero.png" alt="PerplexiCode Kilo: one agent core for the IDE and pcode CLI, with MCP integrations and configurable approvals" width="100%" />
 
 [![Release](https://img.shields.io/github/v/release/MRX7999/PerplexiCode-Kilo?label=release&color=20b8cd)](https://github.com/MRX7999/PerplexiCode-Kilo/releases/latest)
-[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-3.3.0-007acc)](https://marketplace.visualstudio.com/items?itemName=MRX7999.perplexicode-kilo)
+[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-3.4.0-007acc)](https://marketplace.visualstudio.com/items?itemName=MRX7999.perplexicode-kilo)
 [![Open VSX](https://img.shields.io/open-vsx/v/MRX7999/perplexicode-kilo?label=Open%20VSX&color=a60ee5)](https://open-vsx.org/extension/MRX7999/perplexicode-kilo)
 [![Open VSX downloads](https://img.shields.io/open-vsx/dt/MRX7999/perplexicode-kilo?label=installs&color=5eead4)](https://open-vsx.org/extension/MRX7999/perplexicode-kilo)
 [![CI](https://img.shields.io/github/actions/workflow/status/MRX7999/PerplexiCode-Kilo/ci.yml?branch=master&label=CI)](https://github.com/MRX7999/PerplexiCode-Kilo/actions/workflows/ci.yml)
@@ -18,15 +14,80 @@ Plan, write, run and debug code with GPT-6.1 Sol, Claude Opus 5.5, Gemini 4 Argo
 [![Antigravity IDE](https://img.shields.io/badge/Antigravity%20IDE-supported-4285f4)](https://antigravity.google/download)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-[Install](#install) · [Features](#features) · [MCP & Compute modes](#33-mcp-servers-and-compute-modes) · [Agents, Skills & Presets](#31-agents-skills--presets) · [Models](#models) · [Modes](#modes) · [Commands](#commands-and-shortcuts) · [Settings](#settings) · [Build](#build-from-source) · [FAQ](#troubleshooting)
+[Overview](#features) · [Install](#install) · [Interface & agents](#31-agents-skills--presets) · [MCP catalog](#34-mcp-catalog-security-and-parrot-os) · [MCP & compute](#33-mcp-servers-and-compute-modes) · [CLI](#30-headless-core--pcode-cli) · [Models](#models) · [Commands](#commands-and-shortcuts) · [Settings](#settings) · [Build](#build-from-source) · [Help](#troubleshooting)
 
-<img src="docs/images/hero.png" alt="PerplexiCode welcome screen with task presets, preset library, subagents and a task run by a subagent" width="100%" />
+[Core reference](docs/CORE-3.0.md) · [Security & Parrot OS guide](docs/MCP-SECURITY-PARROT.md)
 
 </div>
 
----
+<img src="docs/visuals/platform-map.png" alt="Platform map: the IDE and pcode CLI share an agent core that connects Perplexity sessions or OpenAI-compatible endpoints, workspace tools, MCP servers and session journals" width="100%" />
 
-## Install
+<a id="features"></a>
+<a id="modes"></a>
+<a id="how-it-works"></a>
+<details>
+<summary><strong>Overview</strong> · Capabilities, modes and the shared agent loop</summary>
+
+### Features
+
+**A Kilo Code-style autonomous coding agent for Antigravity IDE and VS Code, powered by your Perplexity Pro / Max subscription.**
+
+Plan, write, run and debug code with GPT-6.1 Sol, Claude Opus 5.5, Gemini 4 Argon, Grok 4.7 and 85 more Perplexity models. No API keys.
+
+| | |
+| --- | --- |
+| **Agent loop** | The model works step by step with tools, sees each result and continues until the task is done — the way [Kilo Code](https://github.com/Kilo-Org/kilocode) works. |
+| **Six modes** | Code, Architect, Ask, Debug, Orchestrator and Review, each with its own prompt and tool permissions. |
+| **Diff approvals** | Every edit is shown as an inline diff with **Save** / **Reject**; commands get **Run** / **Reject**. |
+| **Auto-approve** | Separate toggles for reads, writes, commands (allow and deny prefixes), mode switches, subtasks, todo updates and retries, plus a request limit. |
+| **Checkpoints** | A checkpoint after every edit with one-click **Restore**. |
+| **Context mentions** | `@/path/to/file`, `@/folder/`, `@problems`, `@git-changes`, `@selection`. |
+| **Editor actions** | Explain / Fix / Improve / Add to Context from the context menu and lightbulb quick fixes; terminal selection to context. |
+| **Workspace rules** | Loads `AGENTS.md`, `.kilocode/rules`, `.roo/rules`, `.clinerules` and `~/.kilocode/rules`. |
+| **Task UI** | Todo list with progress, streaming Markdown, reasoning blocks, tool cards, terminal output, follow-up suggestions, prompt enhancer. |
+| **History** | Searchable task history; reopen, delete or export past tasks. |
+| **Commit messages** | Generates a commit message from staged changes in the Source Control view. |
+| **Multi-account** | Several Perplexity accounts with quota display and automatic failover. |
+| **MCP servers** (3.3) | Connect Claude Code style MCP servers (stdio, HTTP, SSE) from `.mcp.json`, `~/.claude.json` and settings. Their tools, resources and prompts are available to the agent with `mcp__server__tool` permission rules. See [3.3](#33-mcp-servers-and-compute-modes). |
+| **Compute modes** (3.3) | Pick how Perplexity runs the request: Search, Computer harness (Light / Standard / High / Ultra), Deep Research or Labs, with automatic fallback when your plan does not include a mode. |
+| **Agents, Skills & Presets** (3.1) | One-click subagents and skills from a built-in catalog, and task presets that set the mode, subagent and prompt for common jobs. See [below](#31-agents-skills--presets). |
+| **`pcode` CLI** (3.0) | The same agent core in the terminal, Claude Code style. See [3.0](#30-headless-core--pcode-cli). |
+
+### Modes
+
+| Mode | Purpose | Tools |
+| --- | --- | --- |
+| **Code** | Write, modify and refactor code | read, edit, command, modes |
+| **Architect** | Plan and design before implementation | read, edit Markdown only, modes |
+| **Ask** | Answers and explanations | read |
+| **Debug** | Systematic diagnosis and fixes | read, edit, command, modes |
+| **Orchestrator** | Split work into subtasks across modes | modes, subtasks |
+| **Review** | Review local changes before you commit | read, command, modes |
+
+Agent tools: `read_file`, `list_files`, `search_files`, `glob_files`, `list_code_definition_names`, `apply_diff`, `write_to_file`, `insert_content`, `search_and_replace`, `execute_command`, `web_fetch`, `use_mcp_tool`, `access_mcp_resource`, `list_mcp_resources`, `ask_followup_question`, `attempt_completion`, `switch_mode`, `new_task`, `update_todo_list`.
+
+### How it works
+
+1. You describe a task; PerplexiCode builds a system prompt for the active mode with tool descriptions, workspace rules, the file list and your `@` mentions.
+2. The prompt goes to Perplexity through your web session, using the selected model (and Thinking variant, if enabled).
+3. The reply is parsed for one XML tool call. Reads run immediately if auto-approved; edits and commands wait for **Save** / **Run** unless auto-approved.
+4. The tool result is sent back as the next message, and the loop continues until `attempt_completion`.
+5. Perplexity thread follow-ups are used when possible. If a follow-up fails, the full conversation is resent as one prompt, and accounts fail over on quota or auth errors.
+
+</details>
+
+<img src="docs/visuals/interface-tour.png" alt="Cropped Chromium component-harness views with sample data: review a code diff, choose a specialist subagent, and read MCP setup requirements. Not a live IDE." width="100%" />
+
+<a id="install"></a>
+<a id="from-the-extensions-view"></a>
+<a id="one-line-install-from-github-releases"></a>
+<a id="manual-install-with-the-antigravity-cli"></a>
+<a id="install-from-the-editor-ui"></a>
+<a id="after-installing"></a>
+<a id="moving-from-perplexicode-1x--20"></a>
+<a id="sign-in"></a>
+<details>
+<summary><strong>Install & sign in</strong> · Editor setup, migration and account storage</summary>
 
 Extension ID: **`MRX7999.perplexicode-kilo`**
 
@@ -114,30 +175,43 @@ Run **PerplexiCode: Add Perplexity Account** and pick one method:
 
 Sessions are kept in the editor's [SecretStorage](https://code.visualstudio.com/api/references/vscode-api#SecretStorage). You can add several accounts; requests are spread across them with **round-robin**, **least-used** or **failover-only** rotation.
 
----
+</details>
 
-## Features
+<a id="31-agents-skills--presets"></a>
+<a id="screenshots"></a>
+<details>
+<summary><strong>Interface, agents & skills</strong> · Presets, reusable workflows and screenshot gallery</summary>
 
-| | |
+### Agents, Skills & Presets
+
+Set up subagents and skills from the UI and start common jobs in one click.
+
+| Where | What you get |
 | --- | --- |
-| **Agent loop** | The model works step by step with tools, sees each result and continues until the task is done — the way [Kilo Code](https://github.com/Kilo-Org/kilocode) works. |
-| **Six modes** | Code, Architect, Ask, Debug, Orchestrator and Review, each with its own prompt and tool permissions. |
-| **Diff approvals** | Every edit is shown as an inline diff with **Save** / **Reject**; commands get **Run** / **Reject**. |
-| **Auto-approve** | Separate toggles for reads, writes, commands (allow and deny prefixes), mode switches, subtasks, todo updates and retries, plus a request limit. |
-| **Checkpoints** | A checkpoint after every edit with one-click **Restore**. |
-| **Context mentions** | `@/path/to/file`, `@/folder/`, `@problems`, `@git-changes`, `@selection`. |
-| **Editor actions** | Explain / Fix / Improve / Add to Context from the context menu and lightbulb quick fixes; terminal selection to context. |
-| **Workspace rules** | Loads `AGENTS.md`, `.kilocode/rules`, `.roo/rules`, `.clinerules` and `~/.kilocode/rules`. |
-| **Task UI** | Todo list with progress, streaming Markdown, reasoning blocks, tool cards, terminal output, follow-up suggestions, prompt enhancer. |
-| **History** | Searchable task history; reopen, delete or export past tasks. |
-| **Commit messages** | Generates a commit message from staged changes in the Source Control view. |
-| **Multi-account** | Several Perplexity accounts with quota display and automatic failover. |
-| **MCP servers** (3.3) | Connect Claude Code style MCP servers (stdio, HTTP, SSE) from `.mcp.json`, `~/.claude.json` and settings. Their tools, resources and prompts are available to the agent with `mcp__server__tool` permission rules. See [3.3](#33-mcp-servers-and-compute-modes). |
-| **Compute modes** (3.3) | Pick how Perplexity runs the request: Search, Computer harness (Light / Standard / High / Ultra), Deep Research or Labs, with automatic fallback when your plan does not include a mode. |
-| **Agents, Skills & Presets** (3.1) | One-click subagents and skills from a built-in catalog, and task presets that set the mode, subagent and prompt for common jobs. See [below](#31-agents-skills--presets). |
-| **`pcode` CLI** (3.0) | The same agent core in the terminal, Claude Code style. See [3.0](#30-headless-core--pcode-cli). |
+| **Welcome screen** | A **Quick start** grid with presets (Review my changes, Fix a bug, Write tests, Build a feature, Explain this project, Security audit). The strip below it shows how many subagents and skills are installed and has **Install starter pack**. |
+| **Library button** in the view title (or **PerplexiCode: Agents, Skills & Presets**) | Three tabs. **Task presets**: built-in and your own. **Subagents**: installed ones (open, delete, Start task) and a catalog of 8 (`code-reviewer`, `test-writer`, `debugger`, `security-auditor`, `docs-writer`, `refactorer`, `explorer`, `planner`) that you install into the project or globally. **Skills**: 8 catalog skills (`commit-message`, `code-review-checklist`, `write-tests`, `security-audit`, `debug-playbook`, `api-design`, `release-checklist`, `readme-writer`). Each tab has a form for creating your own items. |
+| **Mode menu** | A **Subagents** section: pick `@debugger` and the whole task runs as that subagent, with its prompt and tool list. |
+| **Composer** | `/presets`, `/agents`, `/skills` and `/<preset-id>` in the slash menu. The selected preset or agent appears as a chip. |
+| **Command palette** | **PerplexiCode: Run Task Preset…**. |
+
+A preset sets the mode, subagent and prompt template (`{{input}}` is replaced with what you type). If the preset needs a subagent or skill that isn't installed, PerplexiCode offers to install it into the project or globally, or to run without it.
+
+Files are standard: subagents go to `.perplexicode/agents/<name>.md` (`~/.perplexicode/agents` for global), skills go to `.perplexicode/skills/<name>/SKILL.md`. Your own presets are stored in `.perplexicode/presets.json`, `~/.perplexicode/presets.json` or the `perplexicodeKilo.taskPresets` setting. Later sources override earlier ones in this order: built-in → global file → setting → project file.
+
+The same actions in the terminal:
+
+```bash
+pcode agents catalog                 # list catalog subagents
+pcode agents add code-reviewer debugger    # into .perplexicode/agents (-g for global)
+pcode skills add commit-message -g
+pcode presets                        # list task presets
+pcode --preset fix-bug -p "login returns 500"
+pcode --agent security-auditor -p "audit src/auth"
+```
 
 ### Screenshots
+
+<img src="docs/images/hero.png" alt="PerplexiCode welcome screen with task presets, preset library, subagents and a task run by a subagent" width="100%" />
 
 <table>
   <tr>
@@ -169,9 +243,43 @@ Sessions are kept in the editor's [SecretStorage](https://code.visualstudio.com/
 
 <sub>Screenshots are rendered from the test fixture (`npm run test:webview`) with sample data.</sub>
 
----
+</details>
 
-## 3.3: MCP servers and compute modes
+<img src="docs/visuals/mcp-landscape.png" alt="MCP catalog landscape: 21 entries grouped into Development, Web, Productivity, Security and Pentest, distinguishing configuration templates from setup guides" width="100%" />
+
+<a id="34-mcp-catalog-security-and-parrot-os"></a>
+<details>
+<summary><strong>MCP catalog · 3.4</strong> · Enabled servers may run on the next task; Parrot OS is not runtime-tested</summary>
+
+### MCP catalog, security and Parrot OS
+
+The MCP tab now includes a curated catalog with searchable Development, Web, Productivity, Security and Pentest categories. Each entry links to upstream documentation and explains its runtime requirements, use case, setup caveats and source-check date. This is a selection of useful integrations, not a measured popularity ranking or a security audit.
+
+- **Configuration templates:** Project / Global buttons collect parameters in native IDE prompts. Tokens are entered in password inputs and stored in VS Code SecretStorage; JSON files contain only `${ENV_VAR}` references. The binding includes the exact config and file, so another server or an edited command/URL cannot silently reuse the saved token. CLI runs supply their own environment variables, not IDE credentials.
+- **Setup guides:** Native tools, plugins and integrations requiring additional setup are explicitly labelled Setup guide. They are not presented as one-click installations.
+- **Security / Pentest:** Dedicated entries describe code and dependency checks, threat intelligence, web testing, network inventory and reverse engineering. Read the [Security MCP and Parrot OS guide](docs/MCP-SECURITY-PARROT.md) for prerequisites, exact upstream examples and where each tool is useful.
+- **No execution during installation:** Installing a catalog template saves an enabled config only. It does not download software, start a process, scan a target or add permission rules. Your next task can connect enabled servers and download/run the declared npm/uv package, subject to the existing workspace trust guard for project stdio servers. Existing server names are not overwritten.
+
+```bash
+pcode mcp catalog                   # all entries, requirements and documentation
+pcode mcp catalog security
+pcode mcp catalog pentest
+pcode mcp install context7 -s user  # adds configuration only
+pcode mcp install filesystem --set DIRECTORY=/absolute/path/to/allowed/files
+```
+
+Catalog tokens must come from the environment, never `--set`, `--env` or `--header` on `mcp install`. Use the manual `pcode mcp add` command after completing a native tool's setup guide. Security tools should run as an ordinary user in a lab or on explicitly authorised targets; Parrot OS compatibility is documented as prerequisites and upstream Linux support, not a claim of VM testing.
+
+[`.env.example`](.env.example) lists the supported token variable names. PerplexiCode does not automatically load dotenv files: export the needed variables in your CLI environment, or use the IDE's native password prompts. Populated `.env` files are excluded from Git and VSIX packaging.
+
+</details>
+
+<a id="33-mcp-servers-and-compute-modes"></a>
+<a id="mcp-servers"></a>
+<a id="compute-modes"></a>
+<a id="new-tools-in-33"></a>
+<details>
+<summary><strong>MCP & compute · 3.3</strong> · Configuration, trust, permissions and execution modes</summary>
 
 ### MCP servers
 
@@ -188,8 +296,9 @@ PerplexiCode speaks the [Model Context Protocol](https://modelcontextprotocol.io
 | **CLI** | `pcode mcp list \| add \| remove \| get \| test`, `--mcp-config <file\|json>` (repeatable), `--strict-mcp-config`, `--no-mcp`, REPL `/mcp [reconnect [name]]`. `pcode doctor` shows the servers. |
 
 ```bash
-pcode mcp add github -s user -e GITHUB_TOKEN='${GITHUB_TOKEN}' -- npx -y @modelcontextprotocol/server-github
-pcode mcp add docs -t http -H "Authorization: Bearer ${DOCS_TOKEN}" -- https://mcp.example.com/mcp
+# Supply GITHUB_PERSONAL_ACCESS_TOKEN through your environment before connecting.
+pcode mcp install github -s user    # official remote service; saves enabled config only
+pcode mcp add docs -t http -H 'Authorization: Bearer ${DOCS_TOKEN}' -- https://mcp.example.com/mcp
 pcode mcp list                       # name, type, scope, enabled/untrusted, target, config file
 pcode mcp get github                 # connects and lists tools and resources
 pcode -p "list open issues labelled bug" --allowedTools "mcp__github__list_issues"
@@ -224,42 +333,17 @@ If a mode is not available for your accounts or its quota is exhausted, the requ
 - **VS Code**: the compute pill next to the model picker, **PerplexiCode: Select Compute Mode**, setting `perplexicodeKilo.computeMode` (default `search`); the status bar shows the active mode.
 - **CLI**: `pcode --compute ultra -p "…"`, REPL `/compute [mode]`, `pcode models` lists the modes, and `computeMode` in `.perplexicode/settings.json` sets a per-project default.
 
-### New tools in 3.3
+### Additional tools
 
 `glob_files` (gitignore-style patterns inside the workspace), `search_and_replace` (literal or regex, optional line range) and `web_fetch` (HTTP(S) GET with redirects, size limit and HTML → text; rules `WebFetch(domain:docs.example.com)` and the **Web** auto-approve toggle).
 
----
+</details>
 
-## 3.1: Agents, Skills & Presets
+<img src="docs/visuals/workflow.png" alt="Controlled agent workflow: task and context enter the shared core, permission checks govern tools and edits, tool results continue the loop, and configured verification gates completion" width="100%" />
 
-Set up subagents and skills from the UI and start common jobs in one click.
-
-| Where | What you get |
-| --- | --- |
-| **Welcome screen** | A **Quick start** grid with presets (Review my changes, Fix a bug, Write tests, Build a feature, Explain this project, Security audit). The strip below it shows how many subagents and skills are installed and has **Install starter pack**. |
-| **Library button** in the view title (or **PerplexiCode: Agents, Skills & Presets**) | Three tabs. **Task presets**: built-in and your own. **Subagents**: installed ones (open, delete, Start task) and a catalog of 8 (`code-reviewer`, `test-writer`, `debugger`, `security-auditor`, `docs-writer`, `refactorer`, `explorer`, `planner`) that you install into the project or globally. **Skills**: 8 catalog skills (`commit-message`, `code-review-checklist`, `write-tests`, `security-audit`, `debug-playbook`, `api-design`, `release-checklist`, `readme-writer`). Each tab has a form for creating your own items. |
-| **Mode menu** | A **Subagents** section: pick `@debugger` and the whole task runs as that subagent, with its prompt and tool list. |
-| **Composer** | `/presets`, `/agents`, `/skills` and `/<preset-id>` in the slash menu. The selected preset or agent appears as a chip. |
-| **Command palette** | **PerplexiCode: Run Task Preset…**. |
-
-A preset sets the mode, subagent and prompt template (`{{input}}` is replaced with what you type). If the preset needs a subagent or skill that isn't installed, PerplexiCode offers to install it into the project or globally, or to run without it.
-
-Files are standard: subagents go to `.perplexicode/agents/<name>.md` (`~/.perplexicode/agents` for global), skills go to `.perplexicode/skills/<name>/SKILL.md`. Your own presets are stored in `.perplexicode/presets.json`, `~/.perplexicode/presets.json` or the `perplexicodeKilo.taskPresets` setting. Later sources override earlier ones in this order: built-in → global file → setting → project file.
-
-The same actions in the terminal:
-
-```bash
-pcode agents catalog                 # list catalog subagents
-pcode agents add code-reviewer debugger    # into .perplexicode/agents (-g for global)
-pcode skills add commit-message -g
-pcode presets                        # list task presets
-pcode --preset fix-bug -p "login returns 500"
-pcode --agent security-auditor -p "audit src/auth"
-```
-
----
-
-## 3.0: headless core + `pcode` CLI
+<a id="30-headless-core--pcode-cli"></a>
+<details>
+<summary><strong>Headless core & pcode CLI</strong> · Permissions, hooks, verification and resumable sessions</summary>
 
 The extension and a terminal CLI share one agent core, so you get Kilo Code in the editor and Claude Code in the terminal from one install.
 
@@ -285,9 +369,11 @@ pcode -p "fix the failing test" --permission-mode acceptEdits --allowedTools "Ba
 
 See [docs/CORE-3.0.md](docs/CORE-3.0.md) for the full reference and [examples/claude-code-compat](examples/claude-code-compat) for a working configuration.
 
----
+</details>
 
-## Models
+<a id="models"></a>
+<details>
+<summary><strong>Models</strong> · Account discovery, fallback catalog and subscription handling</summary>
 
 The model list matches the current Perplexity picker. It is loaded live from your account's model config, with a bundled snapshot (2026-10-28, 89 models) as a fallback.
 
@@ -309,24 +395,11 @@ The model list matches the current Perplexity picker. It is loaded live from you
 
 Max models unlock automatically for Max accounts. If a Max model is picked on a Pro-only account pool, the request falls back to **Best**. Override plan detection with `perplexicodeKilo.subscriptionPlan` if needed, and use **PerplexiCode: Refresh Models and Quotas** after Perplexity adds new models.
 
----
+</details>
 
-## Modes
-
-| Mode | Purpose | Tools |
-| --- | --- | --- |
-| **Code** | Write, modify and refactor code | read, edit, command, modes |
-| **Architect** | Plan and design before implementation | read, edit Markdown only, modes |
-| **Ask** | Answers and explanations | read |
-| **Debug** | Systematic diagnosis and fixes | read, edit, command, modes |
-| **Orchestrator** | Split work into subtasks across modes | modes, subtasks |
-| **Review** | Review local changes before you commit | read, command, modes |
-
-Agent tools: `read_file`, `list_files`, `search_files`, `glob_files`, `list_code_definition_names`, `apply_diff`, `write_to_file`, `insert_content`, `search_and_replace`, `execute_command`, `web_fetch`, `use_mcp_tool`, `access_mcp_resource`, `list_mcp_resources`, `ask_followup_question`, `attempt_completion`, `switch_mode`, `new_task`, `update_todo_list`.
-
----
-
-## Commands and shortcuts
+<a id="commands-and-shortcuts"></a>
+<details>
+<summary><strong>Commands & shortcuts</strong> · Editor actions and keyboard reference</summary>
 
 | Command | macOS | Windows / Linux |
 | --- | --- | --- |
@@ -344,12 +417,11 @@ Agent tools: `read_file`, `list_files`, `search_files`, `glob_files`, `list_code
 | PerplexiCode: Task History · Settings · Open in Editor Tab | view title bar | view title bar |
 | PerplexiCode: Add / Manage Accounts · Set Account Rotation Strategy · Refresh Models and Quotas | Command Palette | Command Palette |
 
----
+</details>
 
-## Settings
-
+<a id="settings"></a>
 <details>
-<summary><b>All settings</b> (click to expand)</summary>
+<summary><strong>Settings</strong> · All defaults, approval controls and context limits</summary>
 
 | Setting | Default | Description |
 | --- | --- | --- |
@@ -388,17 +460,10 @@ Agent tools: `read_file`, `list_files`, `search_files`, `glob_files`, `list_code
 
 </details>
 
----
-
-## How it works
-
-1. You describe a task; PerplexiCode builds a system prompt for the active mode with tool descriptions, workspace rules, the file list and your `@` mentions.
-2. The prompt goes to Perplexity through your web session, using the selected model (and Thinking variant, if enabled).
-3. The reply is parsed for one XML tool call. Reads run immediately if auto-approved; edits and commands wait for **Save** / **Run** unless auto-approved.
-4. The tool result is sent back as the next message, and the loop continues until `attempt_completion`.
-5. Perplexity thread follow-ups are used when possible. If a follow-up fails, the full conversation is resent as one prompt, and accounts fail over on quota or auth errors.
-
-## Build from source
+<a id="build-from-source"></a>
+<a id="project-layout"></a>
+<details>
+<summary><strong>Build & project layout</strong> · Local checks, packaging and release workflow</summary>
 
 Requirements: [Node.js](https://nodejs.org/) 20+ and npm.
 
@@ -415,8 +480,7 @@ npx vsce package --out perplexicode-kilo.vsix  # build the VSIX
 
 Releases are built by [GitHub Actions](.github/workflows/release.yml): pushing a `vX.Y.Z` tag runs the tests, packages the VSIX and attaches it to a GitHub release.
 
-<details>
-<summary><b>Project layout</b></summary>
+### Project layout
 
 ```text
 src/
@@ -433,7 +497,9 @@ scripts/                install.sh, install.ps1
 
 </details>
 
-## Troubleshooting
+<a id="troubleshooting"></a>
+<details>
+<summary><strong>Troubleshooting</strong> · Authentication, installation and task recovery</summary>
 
 | Problem | Fix |
 | --- | --- |
@@ -445,15 +511,25 @@ scripts/                install.sh, install.ps1
 | `Unable to write to User Settings … is not a registered configuration` | The extension was updated while the window stayed open. Run **Developer: Reload Window**. Since 2.1.0 the change is saved anyway and moved into settings after the reload. |
 | Anything else | Open **Output → PerplexiCode** and attach the log to an [issue](https://github.com/MRX7999/PerplexiCode-Kilo/issues). |
 
-## Credits
+</details>
+
+<a id="credits"></a>
+<a id="disclaimer"></a>
+<a id="license"></a>
+<details>
+<summary><strong>Credits, disclaimer & license</strong> · Unofficial community project, subscription limits and MIT terms</summary>
+
+### Credits
 
 - Original extension: [yuki-20/PerplexiCode](https://github.com/yuki-20/PerplexiCode) (MIT).
 - Agent design, modes and tool protocol follow [Kilo Code](https://github.com/Kilo-Org/kilocode), itself based on [Roo Code](https://github.com/RooCodeInc/Roo-Code) and [Cline](https://github.com/cline/cline).
 
-## Disclaimer
+### Disclaimer
 
 PerplexiCode is an unofficial community project and is not affiliated with or endorsed by Perplexity AI, Kilo Code or Google. It uses your own Perplexity web session; usage counts against your subscription limits and is subject to the [Perplexity Terms of Service](https://www.perplexity.ai/hub/legal/terms-of-service).
 
-## License
+### License
 
 [MIT](LICENSE). Original work © yuki-20; PerplexiCode Kilo changes © MRX7999.
+
+</details>

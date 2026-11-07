@@ -340,7 +340,7 @@ a:hover { text-decoration: underline; }
 .preset-chip { color: var(--fg); }
 .menu-section { padding: 6px 10px 2px; font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); border-top: 1px solid var(--border); margin-top: 4px; }
 .menu-empty { padding: 4px 10px; font-size: 0.9em; }
-.lib-tabs { display: flex; gap: 2px; padding: 6px 10px 0; border-bottom: 1px solid var(--border); flex: none; }
+.lib-tabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 6px 10px 0; border-bottom: 1px solid var(--border); flex: none; }
 .lib-tab { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 2px solid transparent; color: var(--muted); }
 .lib-tab.active { color: var(--fg); border-bottom-color: var(--vscode-focusBorder); }
 .lib-tab .count { font-size: 0.82em; padding: 0 5px; border-radius: 8px; background: var(--secondary); }
@@ -381,3 +381,26 @@ a:hover { text-decoration: underline; }
 .badge.state.mcp-error { color: var(--error); }
 .badge.state.mcp-untrusted, .badge.state.mcp-disabled { color: var(--vscode-editorWarning-foreground, #d29922); }
 .error-text.small { display: block; white-space: pre-wrap; word-break: break-word; }
+
+/* MCP catalog extends the existing library cards and VS Code theme tokens. */
+.mcp-saved-heading, .mcp-catalog-heading { flex-wrap: wrap; gap: 6px; }
+.mcp-catalog { min-width: 0; }
+.mcp-catalog-notice { font-size: 12px; line-height: 1.45; }
+.mcp-catalog-connection-note { font-size: 12px; line-height: 1.4; }
+.mcp-category-filters { display: flex; flex-wrap: wrap; gap: 4px; margin: 10px 0; }
+.mcp-category-filters .btn { font-size: 12px; min-height: 28px; }
+.mcp-category-filters .active { border-color: var(--vscode-focusBorder); background: var(--secondary); color: var(--fg); }
+.mcp-category-filters .btn:focus-visible, .mcp-catalog-actions .btn:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+.mcp-catalog-card { gap: 6px; min-width: 0; overflow-wrap: anywhere; }
+.mcp-catalog-card .lib-card-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.mcp-catalog-card .lib-card-head b { min-width: 0; }
+.mcp-catalog-card .badge { font-size: 12px; text-transform: none; letter-spacing: 0; }
+.mcp-catalog-description, .mcp-catalog-detail { line-height: 1.4; }
+.mcp-catalog-detail, .mcp-catalog-meta, .mcp-catalog-actions .btn { font-size: 12px; }
+.mcp-catalog-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; }
+.mcp-risk { display: inline-flex; align-items: center; gap: 4px; }
+.mcp-risk-warning { color: var(--warn); }
+.mcp-catalog-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding-top: 2px; }
+.mcp-catalog-actions .btn { min-height: 28px; }
+.mcp-card { overflow-wrap: anywhere; min-width: 0; }
+.mcp-tools .chip { max-width: 100%; }

@@ -1,5 +1,15 @@
 # PerplexiCode 3.0 — headless core and `pcode` CLI
 
+[README](../README.md) · [Install](../README.md#install) · [MCP catalog](../README.md#34-mcp-catalog-security-and-parrot-os) · [CLI reference](#cli-reference) · [MCP servers](#mcp-servers-33) · [Security and Parrot OS](MCP-SECURITY-PARROT.md)
+
+![PerplexiCode workflow from a task through shared CLI and IDE execution, verification and continuation](visuals/workflow.png)
+
+<a id="reference-scope"></a>
+<details>
+<summary>Reference scope and compatibility</summary>
+
+The 3.0 filename identifies the shared-core reference; this document covers the current CLI and MCP implementation, including the versioned additions below.
+
 3.0 puts the agent into a core with no `vscode` imports (`src/core/`). Both the VS Code extension and
 the `pcode` terminal CLI run on it. They use the same agent loop (`src/agent/task.ts`), the same tools,
 the same Perplexity transport with account rotation, and the same session journal. A task started in
@@ -8,7 +18,11 @@ the IDE can be continued in a terminal with `pcode --continue`.
 The config files follow the Claude Code formats: `settings.json` permissions and hooks,
 `.claude/agents/*.md`, skills and `CLAUDE.md`. An existing `.claude/` folder works without changes.
 
-## Layout
+</details>
+
+<a id="layout"></a>
+<details>
+<summary>Layout</summary>
 
 | File | Purpose |
 | --- | --- |
@@ -28,7 +42,11 @@ The config files follow the Claude Code formats: `settings.json` permissions and
 | `src/cli/` | `pcode` (REPL + headless) |
 | `src/agent/coreBridge.ts` | Connects the VS Code controller to the core |
 
-## Settings layers
+</details>
+
+<a id="settings-layers"></a>
+<details>
+<summary>Settings layers</summary>
 
 Files are read in this order. Lists such as `allow`, `ask`, `deny` and hooks are concatenated.
 Scalar values are overridden by later files.
@@ -66,7 +84,11 @@ User-level hooks always load.
 
 A complete example is in [`examples/claude-code-compat`](../examples/claude-code-compat).
 
-## Permissions
+</details>
+
+<a id="permissions"></a>
+<details>
+<summary>Permissions</summary>
 
 Rules use the form `Tool` or `Tool(specifier)`. Tool names can be Claude names (`Read`, `Grep`, `Glob`,
 `LS`, `Edit`, `Write`, `Bash`, `Task`, `WebFetch`) or native tool names (`read_file`, `apply_diff`, …).
@@ -113,7 +135,11 @@ Permission modes:
 | `plan` | Read-only. The agent investigates and presents a plan |
 | `bypassPermissions` | Everything except `deny` rules, secrets and the subagent tool list |
 
-## Hooks
+</details>
+
+<a id="hooks"></a>
+<details>
+<summary>Hooks</summary>
 
 Supported events: `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `Stop`, `SubagentStop`, `SessionStart`
 and `SessionEnd`.
@@ -133,7 +159,11 @@ and `SessionEnd`.
 - Plain stdout from `UserPromptSubmit` and `SessionStart` is added to the context.
 - A `Stop` hook that blocks makes the agent continue instead of finishing (at most 5 times).
 
-## Verify before done
+</details>
+
+<a id="verify-before-done"></a>
+<details>
+<summary>Verify before done</summary>
 
 When `verify.command` is set and the task changed files, `attempt_completion` runs the command
 first. If it fails, the completion is rejected (`[NOT ACCEPTED]`), the output tail goes back to the
@@ -149,7 +179,11 @@ Separately, every task gets a verification status:
 
 The CLI prints this status and returns it in `--output-format json`. Exit code 2 means `failed`.
 
-## Subagents and skills
+</details>
+
+<a id="subagents-and-skills"></a>
+<details>
+<summary>Subagents and skills</summary>
 
 Subagents are Markdown files with frontmatter in `.perplexicode/agents/`, `.claude/agents/` or the
 same folders under `~`:
@@ -173,7 +207,11 @@ Built-in mode names (`code`, `ask`, …) cannot be redefined.
 Skills live at `<dir>/<name>/SKILL.md` under `.perplexicode/skills`, `.claude/skills` and `~/...`. The agent sees
 the list and reads a skill file when the task matches. Reading these files is always allowed.
 
-### Catalog and task presets (3.1)
+</details>
+
+<a id="catalog-and-task-presets-31"></a>
+<details>
+<summary>Catalog and task presets (3.1)</summary>
 
 `src/core/library.ts` holds the built-in catalog: 8 subagents, 8 skills and 10 task presets. `pcode agents add <id...> [-g]` and
 `pcode skills add <id...> [-g]` write the catalog files. Existing files are never overwritten, and names are checked so nothing is
@@ -194,7 +232,11 @@ Sources are merged by `id`. Later sources override earlier ones in this order: b
 Memory files are `CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md`, `PERPLEXICODE.md`,
 `~/.claude/CLAUDE.md` and `~/.perplexicode/PERPLEXICODE.md`. `@path` imports are followed up to 4 levels deep.
 
-## Session journal and resume
+</details>
+
+<a id="session-journal-and-resume"></a>
+<details>
+<summary>Session journal and resume</summary>
 
 Each task writes to `~/.perplexicode/sessions/` (override with `PERPLEXICODE_HOME`):
 
@@ -206,14 +248,22 @@ Each task writes to `~/.perplexicode/sessions/` (override with `PERPLEXICODE_HOM
 from either the IDE or the CLI. If the previous run was interrupted, the agent is told which commands
 have an unknown outcome and that it must check the real state before re-running them.
 
-## Read batching
+</details>
+
+<a id="read-batching"></a>
+<details>
+<summary>Read batching</summary>
 
 Up to `readBatchSize` (default 5, max 9) consecutive read-only calls (`read_file`, `list_files`,
 `search_files`, `list_code_definition_names`) in one model answer run together. Their results go back
 in a single message, which saves model round-trips during exploration. Edits and commands still run
 one at a time.
 
-## MCP servers (3.3)
+</details>
+
+<a id="mcp-servers-33"></a>
+<details>
+<summary>MCP servers (3.3)</summary>
 
 `src/core/mcp.ts` implements the client side of the Model Context Protocol without `vscode` imports;
 the extension and the CLI share it through `McpRegistry`.
@@ -264,7 +314,11 @@ CLI: `pcode mcp list` (tab-separated `name type scope status target file` on std
 Saving writes `project` servers to `<cwd>/.mcp.json`, `user` servers to `~/.perplexicode/mcp.json` and
 `local` servers to `.perplexicode/settings.local.json`.
 
-## Compute modes (3.3)
+</details>
+
+<a id="compute-modes-33"></a>
+<details>
+<summary>Compute modes (3.3)</summary>
 
 `COMPUTE_MODES` in `src/api/modelCatalog.ts` describes how a request is routed on Perplexity:
 `search` (default), the Computer harness presets `light` / `standard` / `high` / `ultra`, `computer`
@@ -276,7 +330,38 @@ one (ASI → Comet browser agent → Search) and reports the mode that was actua
 reused for follow-ups only while the route is unchanged. Settings: `computeMode` in the settings layers,
 `perplexicodeKilo.computeMode`, `--compute <mode>`, REPL `/compute [mode]`.
 
-## CLI reference
+</details>
+
+<a id="curated-mcp-catalog-34"></a>
+<details>
+<summary>Curated MCP catalog (3.4)</summary>
+
+`src/core/mcpCatalog.ts` provides shared templates and setup guides to the CLI and IDE.
+`pcode mcp catalog [category|query]` lists requirements, notes and upstream documentation.
+`pcode mcp install <id> [-s user|project|local] [--set KEY=value]` writes a configuration without
+connecting, downloading software or changing permissions. `--set` accepts non-secret template
+parameters only; token values must be supplied through the process environment. Existing server
+names are rejected rather than overwritten. Setup-only entries direct users to native app/plugin
+instructions and do not generate a fabricated executable config.
+Templates are enabled by default: the next task can connect them and download/run declared
+npm/uv packages. The native confirmation discloses this, and existing project stdio trust checks
+remain in force. Configuration-only describes installation, not a promise never to execute later.
+
+The IDE uses native prompts for parameters and SecretStorage for credentials; the webview receives
+only catalog metadata and sends an entry ID plus scope, not secret values. Stored credentials are
+bound to the exact source file, server name and config through `src/core/mcpCredentials.ts`.
+`loadMcpServers` / `McpRegistry` accept a `serverEnv` callback so one server's stored credentials
+cannot expand placeholders in another server's config. Editing a config invalidates that binding.
+IDE secrets are not exported to CLI sessions or written to `.mcp.json`.
+
+See the [Security MCP and Parrot OS guide](MCP-SECURITY-PARROT.md) for security integrations,
+prerequisites, native setup examples and the limits of the compatibility checks.
+
+</details>
+
+<a id="cli-reference"></a>
+<details>
+<summary>CLI reference</summary>
 
 ```bash
 pcode                                   # REPL
@@ -325,13 +410,17 @@ Other commands: `pcode accounts`, `logout`, `sessions`, `models`, `agents`, `ski
 OpenAI-compatible provider settings: `PCODE_OPENAI_BASE_URL` (default `http://127.0.0.1:11434/v1`),
 `PCODE_OPENAI_API_KEY`, `PCODE_OPENAI_MODEL`, `PCODE_OPENAI_TEMPERATURE`.
 
-## Tests
+</details>
 
-`npm test` runs four suites (96 tests):
+<a id="tests"></a>
+<details>
+<summary>Tests</summary>
+
+`npm test` runs six suites:
 
 - `agent`: the 2.x agent loop.
 - `settingsStore`.
-- `core`: 27 cases covering permissions, real `sh` hooks, settings layering, subagents, skills,
+- `core`: 34 cases covering permissions, real `sh` hooks, settings layering, subagents, skills,
   memory, the journal, verification, read batching, CLI argument parsing, gated agent sessions
   (deny, plan, acceptEdits, verify loop, Stop and UserPromptSubmit hooks, subagent tool list, resume,
   compaction), the OpenAI SSE and JSON transport against a local mock server, and end-to-end runs of
@@ -342,3 +431,13 @@ OpenAI-compatible provider settings: `PCODE_OPENAI_BASE_URL` (default `http://12
   cover the transports; the rest covers config layering and saving, trust, permission rules, the tool
   parser, `glob_files` / `search_and_replace` / `web_fetch`, gated agent sessions that call MCP tools,
   CLI argument parsing and `pcode mcp add|list|get|remove` end to end.
+- `mcp-catalog`: catalog metadata, config building, credential placeholder validation, safe
+  installation, existing-file preservation and CLI catalog/install end-to-end checks.
+- `mcp-credentials`: SecretStorage round trips, file and server isolation, edit invalidation,
+  removal and malformed-file handling. These tests use an in-memory SecretStorage adapter.
+
+`node test/webview-render.mjs` separately exercises the real webview bundle in headless Chromium,
+including catalog search, category filters and bridge messages. It does not replace testing in a
+live editor or a Parrot OS VM, and no external security scans are part of these test suites.
+
+</details>

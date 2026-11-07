@@ -12,6 +12,7 @@ import { loadSkills, loadSubagents } from '../core/agents';
 import { applyPresetPrompt, installAgentPreset, installSkillPreset, librarySnapshot, loadTaskPresets } from '../core/library';
 import { listSessions, perplexicodeHome, sessionsDir } from '../core/journal';
 import { loadMcpServers, McpRegistry, McpServerState, McpTransportType, projectDefinesStdioMcpServers, removeMcpServerConfig, saveMcpServerConfig } from '../core/mcp';
+import { findMcpCatalogEntry, installMcpCatalogEntry, MCP_CATALOG } from '../core/mcpCatalog';
 import { cliStores, parseCookieInput } from '../core/nodeStores';
 import { OpenAICompatibleProvider, openAIOptionsFromEnv } from '../core/openaiProvider';
 import { createPerplexityBackend } from '../core/perplexity';
@@ -26,7 +27,7 @@ const VERSION: string = (() => {
   try {
     return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version;
   } catch {
-    return '3.3.0';
+    return '3.4.0';
   }
 })();
 
@@ -75,6 +76,8 @@ export interface CliOptions {
   mcpEnv: string[];
   mcpHeaders: string[];
   mcpScope?: 'user' | 'project' | 'local';
+  /** Non-secret catalog parameters. Tokens must come from the environment, never argv. */
+  mcpSet: string[];
 }
 
 const SUBCOMMANDS = new Set(['login', 'logout', 'accounts', 'sessions', 'models', 'agents', 'skills', 'presets', 'mcp', 'doctor', 'help', 'version']);
@@ -101,6 +104,7 @@ function splitRules(value: string): string[] {
 export function parseArgs(argv: string[]): CliOptions {
   const options: CliOptions = {
     args: [],
+    mcpSet: [],
     print: false,
     outputFormat: 'text',
     allowedTools: [],
@@ -179,6 +183,7 @@ export function parseArgs(argv: string[]): CliOptions {
         break;
       }
       case '-e': case '--env': options.mcpEnv.push(value()); break;
+      case '--set': options.mcpSet.push(value()); break;
       case '-H': case '--header': options.mcpHeaders.push(value()); break;
       case '-s': case '--scope': {
         const v = value();
@@ -281,6 +286,8 @@ Commands:
   pcode skills add <id...> [-g]            install skill presets
   pcode presets                            task presets (built-in, ~/.perplexicode/presets.json, project)
   pcode mcp list                           MCP servers (Claude Code compatible: ~/.claude.json, .mcp.json, settings)
+  pcode mcp catalog [category|query]         curated examples, requirements and setup guides (including Security / Pentest)
+  pcode mcp install <id> [-s scope] [--set KEY=value]  add catalog config only; secret tokens come from environment
   pcode mcp add <name> [-s scope] [-t stdio|http|sse] [-e K=V] [-H "Header: v"] -- <command|url> [args]
   pcode mcp remove <name> [-s scope]       delete a server from the config files
   pcode mcp get <name>                     show one server, connect and list its tools
@@ -1037,12 +1044,68 @@ function parseKeyValues(items: string[], separator: '=' | ':'): Record<string, s
   return result;
 }
 
+function parseCatalogValues(items: string[]): Record<string, string> {
+  const values: Record<string, string> = Object.create(null);
+  for (const item of items) {
+    const index = item.indexOf('=');
+    const key = item.slice(0, index).trim();
+    if (index <= 0 || !/^[A-Z][A-Z0-9_]*$/.test(key)) {
+      throw new Error('--set requires an uppercase KEY=value catalog parameter. Tokens belong in the environment.');
+    }
+    values[key] = item.slice(index + 1);
+  }
+  return values;
+}
+
 async function cmdMcp(options: CliOptions): Promise<number> {
   const sub = options.args[0] || 'list';
   const trusted = options.trustProject || isTrusted(options.cwd);
   const makeRegistry = () => new McpRegistry({ cwd: options.cwd, trustProject: trusted, extraConfigs: options.mcpConfigs, strict: options.strictMcpConfig, log: (line) => { if (options.verbose) out(dim(line)); } });
 
   switch (sub) {
+    case 'catalog': {
+      const query = options.args.slice(1).join(' ').trim().toLowerCase();
+      const category = ['development', 'web', 'productivity', 'security', 'pentest'].includes(query);
+      const entries = MCP_CATALOG.filter((entry) => !query || (category ? entry.category === query : [
+        entry.id, entry.title, entry.category, entry.description, entry.notes, ...entry.requirements,
+      ].join(' ').toLowerCase().includes(query)));
+      for (const entry of entries) {
+        process.stdout.write(`${entry.id}\t${entry.category}\t${entry.config ? 'config' : 'setup-guide'}\t${entry.title}\n`);
+        process.stdout.write(`  ${entry.description}\n  Requires: ${entry.requirements.join('; ')}\n  ${entry.notes}\n  Docs: ${entry.docsUrl}\n`);
+        if (entry.inputs.length) {
+          process.stdout.write(`  Inputs: ${entry.inputs.map((input) => `${input.key}${input.secret ? ' (secret: environment only)' : input.required ? ' (required)' : ' (optional)'}`).join(', ')}\n`);
+        }
+      }
+      if (!entries.length) out(`No catalog entries match '${query}'. Try pcode mcp catalog security or pentest.`);
+      out(dim('Curated examples, not a usage ranking or security audit. Install adds configuration only; it does not download packages, start servers, scan targets or grant tool permissions.'));
+      return 0;
+    }
+    case 'install': {
+      const id = options.args[1];
+      if (!id || options.args.length !== 2) {
+        out('usage: pcode mcp install <id> [-s user|project|local] [--set KEY=value] (tokens: environment only)');
+        return 64;
+      }
+      if (options.mcpEnv.length || options.mcpHeaders.length || options.mcpTransport) {
+        out('Catalog installs do not accept --env, --header or --transport. Use environment variables for tokens and --set for non-secret parameters.');
+        return 64;
+      }
+      try {
+        const entry = findMcpCatalogEntry(id);
+        if (!entry) throw new Error(`Unknown MCP catalog entry '${id}'. See pcode mcp catalog.`);
+        const scope = options.mcpScope || (options.global ? 'user' : 'project');
+        const file = installMcpCatalogEntry(id, scope, { cwd: options.cwd, values: parseCatalogValues(options.mcpSet) });
+        out(`${green('✔')} ${entry.title}: configuration saved to ${file}. No server started and permissions unchanged.`);
+        for (const input of entry.inputs.filter((item) => item.secret && item.required)) {
+          if (!process.env[input.key]) out(yellow(`Set ${input.key} in the environment before connecting. No token was written to the config.`));
+        }
+        out(dim(entry.notes));
+        return 0;
+      } catch (error) {
+        out(red((error as Error).message));
+        return 1;
+      }
+    }
     case 'list':
     case 'ls': {
       const servers = loadMcpServers(options.cwd, { extraConfigs: options.mcpConfigs, strict: options.strictMcpConfig });
@@ -1128,7 +1191,7 @@ async function cmdMcp(options: CliOptions): Promise<number> {
       }
     }
     default:
-      out(red(`unknown mcp command '${sub}' (list, add, remove, get, test)`));
+      out(red(`unknown mcp command '${sub}' (catalog, install, list, add, remove, get, test)`));
       return 64;
   }
 }
