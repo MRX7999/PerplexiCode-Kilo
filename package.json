@@ -2,7 +2,7 @@
   "name": "perplexicode-kilo",
   "displayName": "PerplexiCode Kilo",
   "description": "Kilo Code-style autonomous coding agent (Code / Architect / Ask / Debug / Orchestrator / Review modes, tools, diffs, checkpoints, auto-approve) powered by your Perplexity Pro/Max subscription and its latest models.",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "publisher": "MRX7999",
   "engines": {
     "vscode": "^1.85.0"
@@ -123,6 +123,18 @@
         "title": "Select Model / Mode",
         "category": "PerplexiCode",
         "icon": "$(sparkle)"
+      },
+      {
+        "command": "perplexicodeKilo.selectComputeMode",
+        "title": "Select Compute Mode (Search / Computer / Research / Labs)",
+        "category": "PerplexiCode",
+        "icon": "$(server-process)"
+      },
+      {
+        "command": "perplexicodeKilo.mcp.reconnect",
+        "title": "MCP: Reconnect Servers",
+        "category": "PerplexiCode",
+        "icon": "$(plug)"
       },
       {
         "command": "perplexicodeKilo.cycleMode",
@@ -348,6 +360,31 @@
           ],
           "markdownDescription": "Model used for new sessions. Any model from the in-chat picker (including the 77 under **More models**) can be chosen there."
         },
+        "perplexicodeKilo.computeMode": {
+          "type": "string",
+          "enum": [
+            "search",
+            "light",
+            "standard",
+            "high",
+            "ultra",
+            "research",
+            "agentic_research",
+            "labs"
+          ],
+          "enumDescriptions": [
+            "Standard Perplexity model query (Pro search) with optional Thinking and web search.",
+            "Computer (ASI harness), light effort — fastest and cheapest Computer route.",
+            "Computer (ASI harness), standard effort.",
+            "Computer (ASI harness), high effort — more reasoning per step.",
+            "Computer (ASI harness), ultra effort — maximum reasoning (Max plan).",
+            "Deep Research: multi-step research mode.",
+            "Agentic Research: autonomous multi-source research.",
+            "Labs: project/asset generation mode."
+          ],
+          "default": "search",
+          "description": "Default Perplexity compute mode for new windows. The composer and `pcode --compute` can override it per session; unavailable modes fall back to Search."
+        },
         "perplexicodeKilo.subscriptionPlan": {
           "type": "string",
           "default": "auto",
@@ -407,6 +444,16 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically retry failed Perplexity requests."
+        },
+        "perplexicodeKilo.agent.autoApprove.mcp": {
+          "type": "boolean",
+          "default": false,
+          "description": "Auto-approve MCP tool calls and resource reads (use_mcp_tool, access_mcp_resource). Permission rules such as mcp__server__tool in settings.json still apply."
+        },
+        "perplexicodeKilo.agent.autoApprove.web": {
+          "type": "boolean",
+          "default": false,
+          "description": "Auto-approve web_fetch (fetching URLs). Rules like WebFetch(domain:docs.example.com) in settings.json still apply."
         },
         "perplexicodeKilo.agent.allowedCommands": {
           "type": "array",
@@ -612,6 +659,19 @@
             }
           },
           "markdownDescription": "Custom task presets shown on the welcome screen and in **Agents, Skills & Presets**. Project presets can also live in `.perplexicode/presets.json`."
+        },
+        "perplexicodeKilo.mcp.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Connect to MCP servers (Claude Code compatible: ~/.claude.json, ~/.claude/.mcp.json, ~/.perplexicode/mcp.json, <workspace>/.mcp.json, .mcp.local.json and the mcpServers block of settings files). Project stdio servers start only in trusted workspaces."
+        },
+        "perplexicodeKilo.mcp.extraConfigs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra MCP config files (paths relative to the workspace or absolute) or inline JSON strings, like `pcode --mcp-config`."
         }
       }
     },

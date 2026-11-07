@@ -9,7 +9,7 @@
 Plan, write, run and debug code with GPT-6.1 Sol, Claude Opus 5.5, Gemini 4 Argon, Grok 4.7 and 85 more Perplexity models. No API keys.
 
 [![Release](https://img.shields.io/github/v/release/MRX7999/PerplexiCode-Kilo?label=release&color=20b8cd)](https://github.com/MRX7999/PerplexiCode-Kilo/releases/latest)
-[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-3.2.0-007acc)](https://marketplace.visualstudio.com/items?itemName=MRX7999.perplexicode-kilo)
+[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-3.3.0-007acc)](https://marketplace.visualstudio.com/items?itemName=MRX7999.perplexicode-kilo)
 [![Open VSX](https://img.shields.io/open-vsx/v/MRX7999/perplexicode-kilo?label=Open%20VSX&color=a60ee5)](https://open-vsx.org/extension/MRX7999/perplexicode-kilo)
 [![Open VSX downloads](https://img.shields.io/open-vsx/dt/MRX7999/perplexicode-kilo?label=installs&color=5eead4)](https://open-vsx.org/extension/MRX7999/perplexicode-kilo)
 [![CI](https://img.shields.io/github/actions/workflow/status/MRX7999/PerplexiCode-Kilo/ci.yml?branch=master&label=CI)](https://github.com/MRX7999/PerplexiCode-Kilo/actions/workflows/ci.yml)
@@ -18,7 +18,7 @@ Plan, write, run and debug code with GPT-6.1 Sol, Claude Opus 5.5, Gemini 4 Argo
 [![Antigravity IDE](https://img.shields.io/badge/Antigravity%20IDE-supported-4285f4)](https://antigravity.google/download)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-[Install](#install) · [Features](#features) · [Agents, Skills & Presets](#31-agents-skills--presets) · [Models](#models) · [Modes](#modes) · [Commands](#commands-and-shortcuts) · [Settings](#settings) · [Build](#build-from-source) · [FAQ](#troubleshooting)
+[Install](#install) · [Features](#features) · [MCP & Compute modes](#33-mcp-servers-and-compute-modes) · [Agents, Skills & Presets](#31-agents-skills--presets) · [Models](#models) · [Modes](#modes) · [Commands](#commands-and-shortcuts) · [Settings](#settings) · [Build](#build-from-source) · [FAQ](#troubleshooting)
 
 <img src="docs/images/hero.png" alt="PerplexiCode welcome screen with task presets, preset library, subagents and a task run by a subagent" width="100%" />
 
@@ -132,6 +132,8 @@ Sessions are kept in the editor's [SecretStorage](https://code.visualstudio.com/
 | **History** | Searchable task history; reopen, delete or export past tasks. |
 | **Commit messages** | Generates a commit message from staged changes in the Source Control view. |
 | **Multi-account** | Several Perplexity accounts with quota display and automatic failover. |
+| **MCP servers** (3.3) | Connect Claude Code style MCP servers (stdio, HTTP, SSE) from `.mcp.json`, `~/.claude.json` and settings. Their tools, resources and prompts are available to the agent with `mcp__server__tool` permission rules. See [3.3](#33-mcp-servers-and-compute-modes). |
+| **Compute modes** (3.3) | Pick how Perplexity runs the request: Search, Computer harness (Light / Standard / High / Ultra), Deep Research or Labs, with automatic fallback when your plan does not include a mode. |
 | **Agents, Skills & Presets** (3.1) | One-click subagents and skills from a built-in catalog, and task presets that set the mode, subagent and prompt for common jobs. See [below](#31-agents-skills--presets). |
 | **`pcode` CLI** (3.0) | The same agent core in the terminal, Claude Code style. See [3.0](#30-headless-core--pcode-cli). |
 
@@ -166,6 +168,65 @@ Sessions are kept in the editor's [SecretStorage](https://code.visualstudio.com/
 </table>
 
 <sub>Screenshots are rendered from the test fixture (`npm run test:webview`) with sample data.</sub>
+
+---
+
+## 3.3: MCP servers and compute modes
+
+### MCP servers
+
+PerplexiCode speaks the [Model Context Protocol](https://modelcontextprotocol.io) the way Claude Code does, so an existing `.mcp.json` or `~/.claude.json` works without changes.
+
+| | |
+| --- | --- |
+| **Config files** | `~/.claude.json` (root and `projects[<folder>]`), `~/.claude/.mcp.json`, `~/.perplexicode/mcp.json`, the `mcpServers` block of any settings file, `<project>/.mcp.json`, `.claude/.mcp.json`, `.perplexicode/mcp.json`, `.mcp.local.json` and `*.local.json`. Later files override earlier ones by server name. `${VAR}` and `${VAR:-default}` are expanded in `command`, `args`, `env`, `url` and `headers`. |
+| **Transports** | `stdio` (`command` + `args`), `http` (Streamable HTTP) and `sse`, with custom `headers`. Server-initiated `ping` and `roots/list` are answered and `tools/list_changed` refreshes the tool list. |
+| **Trust** | stdio servers from the project or `.local.json` start only in a trusted workspace (Workspace Trust in VS Code, `--trust-project` in the CLI). User-level and HTTP servers always start. Untrusted servers are listed with the reason. |
+| **Agent tools** | `use_mcp_tool`, `access_mcp_resource`, `list_mcp_resources`, or a direct `<mcp__server__tool>{"arg": 1}</mcp__server__tool>` call. The system prompt lists tools, resources and prompts only while a server is connected. |
+| **Permissions** | Rules `mcp__server__tool`, `mcp__server__*`, `mcp__server`, `mcp` and `mcp(server)` in `allow` / `ask` / `deny`. The Auto-approve popover has an **MCP** toggle (`autoApprove.mcp`). Plan mode blocks MCP tool calls unless a rule allows them. Hooks see the tool as `mcp__server__tool`, like in Claude Code. |
+| **VS Code** | **Library → MCP** tab (status, tools, resources, add / remove / reconnect, open the config file), `/mcp` in the composer, **PerplexiCode: MCP: Reconnect Servers**, settings `perplexicodeKilo.mcp.enabled` and `perplexicodeKilo.mcp.extraConfigs`. |
+| **CLI** | `pcode mcp list \| add \| remove \| get \| test`, `--mcp-config <file\|json>` (repeatable), `--strict-mcp-config`, `--no-mcp`, REPL `/mcp [reconnect [name]]`. `pcode doctor` shows the servers. |
+
+```bash
+pcode mcp add github -s user -e GITHUB_TOKEN='${GITHUB_TOKEN}' -- npx -y @modelcontextprotocol/server-github
+pcode mcp add docs -t http -H "Authorization: Bearer ${DOCS_TOKEN}" -- https://mcp.example.com/mcp
+pcode mcp list                       # name, type, scope, enabled/untrusted, target, config file
+pcode mcp get github                 # connects and lists tools and resources
+pcode -p "list open issues labelled bug" --allowedTools "mcp__github__list_issues"
+pcode -p "summarise README" --mcp-config ./ci-mcp.json --strict-mcp-config
+```
+
+```jsonc
+// .mcp.json (project) — the Claude Code format
+{
+  "mcpServers": {
+    "filesystem": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."] },
+    "docs": { "type": "http", "url": "https://mcp.example.com/mcp", "headers": { "Authorization": "Bearer ${DOCS_TOKEN}" } }
+  }
+}
+```
+
+### Compute modes
+
+A compute mode decides how Perplexity runs the request; the model picker still decides which model answers in Search mode.
+
+| Mode | What runs | Plan |
+| --- | --- | :---: |
+| `search` (default) | Standard query with the selected model, optional Thinking and web search | Free |
+| `light` · `standard` · `high` · `ultra` | Perplexity Computer harness with GPT-6.1 Sol · Claude Opus 5.5 · GPT-6 Astra · Claude Fable 5.1 (Ultra uses high effort) | **Max** |
+| `computer` | Computer (ASI) with the ASI variant of the selected model | **Max** |
+| `research` | Deep Research | Pro |
+| `agentic_research` | Agentic research synthesis | **Max** |
+| `labs` | Labs / Studio for files, apps and structured artifacts | Pro |
+
+If a mode is not available for your accounts or its quota is exhausted, the request falls back along a chain (Computer harness → Comet browser agent → Search with the closest chat model; Deep Research → Best) and the task log says which mode was actually used.
+
+- **VS Code**: the compute pill next to the model picker, **PerplexiCode: Select Compute Mode**, setting `perplexicodeKilo.computeMode` (default `search`); the status bar shows the active mode.
+- **CLI**: `pcode --compute ultra -p "…"`, REPL `/compute [mode]`, `pcode models` lists the modes, and `computeMode` in `.perplexicode/settings.json` sets a per-project default.
+
+### New tools in 3.3
+
+`glob_files` (gitignore-style patterns inside the workspace), `search_and_replace` (literal or regex, optional line range) and `web_fetch` (HTTP(S) GET with redirects, size limit and HTML → text; rules `WebFetch(domain:docs.example.com)` and the **Web** auto-approve toggle).
 
 ---
 
@@ -261,7 +322,7 @@ Max models unlock automatically for Max accounts. If a Max model is picked on a 
 | **Orchestrator** | Split work into subtasks across modes | modes, subtasks |
 | **Review** | Review local changes before you commit | read, command, modes |
 
-Agent tools: `read_file`, `list_files`, `search_files`, `list_code_definition_names`, `apply_diff`, `write_to_file`, `insert_content`, `execute_command`, `ask_followup_question`, `attempt_completion`, `switch_mode`, `new_task`, `update_todo_list`.
+Agent tools: `read_file`, `list_files`, `search_files`, `glob_files`, `list_code_definition_names`, `apply_diff`, `write_to_file`, `insert_content`, `search_and_replace`, `execute_command`, `web_fetch`, `use_mcp_tool`, `access_mcp_resource`, `list_mcp_resources`, `ask_followup_question`, `attempt_completion`, `switch_mode`, `new_task`, `update_todo_list`.
 
 ---
 
@@ -278,7 +339,8 @@ Agent tools: `read_file`, `list_files`, `search_files`, `list_code_definition_na
 | PerplexiCode: Explain Current File | Command Palette | Command Palette |
 | PerplexiCode: Add Terminal Selection to Context | terminal context menu | terminal context menu |
 | PerplexiCode: Generate Commit Message | Source Control title bar | Source Control title bar |
-| PerplexiCode: Select Model / Mode | status bar | status bar |
+| PerplexiCode: Select Model / Mode / Compute Mode | status bar | status bar |
+| PerplexiCode: MCP: Reconnect Servers | Command Palette | Command Palette |
 | PerplexiCode: Task History · Settings · Open in Editor Tab | view title bar | view title bar |
 | PerplexiCode: Add / Manage Accounts · Set Account Rotation Strategy · Refresh Models and Quotas | Command Palette | Command Palette |
 
@@ -293,6 +355,9 @@ Agent tools: `read_file`, `list_files`, `search_files`, `list_code_definition_na
 | --- | --- | --- |
 | `perplexicodeKilo.defaultModel` | `turbo` (Best) | Model for new tasks. |
 | `perplexicodeKilo.subscriptionPlan` | `auto` | Force `pro` or `max` when detection is wrong. |
+| `perplexicodeKilo.computeMode` | `search` | Default compute mode: `search`, `light`, `standard`, `high`, `ultra`, `research`, `agentic_research`, `labs`. |
+| `perplexicodeKilo.mcp.enabled` | `true` | Connect to configured MCP servers. |
+| `perplexicodeKilo.mcp.extraConfigs` | `[]` | Extra MCP config files or inline JSON, like `pcode --mcp-config`. |
 | `perplexicodeKilo.agent.autoApprove.enabled` | `true` | Master switch for auto-approval. |
 | `perplexicodeKilo.agent.autoApprove.read` | `true` | Reading, listing and searching inside the workspace. |
 | `perplexicodeKilo.agent.autoApprove.readOutsideWorkspace` | `false` | Reads outside the workspace. |
@@ -302,6 +367,8 @@ Agent tools: `read_file`, `list_files`, `search_files`, `list_code_definition_na
 | `perplexicodeKilo.agent.autoApprove.subtasks` | `true` | Orchestrator subtasks. |
 | `perplexicodeKilo.agent.autoApprove.todo` | `true` | Todo list updates. |
 | `perplexicodeKilo.agent.autoApprove.retry` | `true` | Retry failed Perplexity requests. |
+| `perplexicodeKilo.agent.autoApprove.mcp` | `false` | MCP tool calls and resource reads (permission rules still apply). |
+| `perplexicodeKilo.agent.autoApprove.web` | `false` | `web_fetch` requests (`WebFetch(domain:…)` rules still apply). |
 | `perplexicodeKilo.agent.allowedCommands` | `npm test`, `npm run`, `git status`, `git diff`, `git log`, `ls`, `cat`, `pwd` | Command prefixes that may run without approval (`*` = all). |
 | `perplexicodeKilo.agent.deniedCommands` | `rm -rf`, `sudo`, `git push --force` | Prefixes that always need approval. |
 | `perplexicodeKilo.agent.maxRequestsPerTask` | `40` | Ask before continuing after this many requests. |

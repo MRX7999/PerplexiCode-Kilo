@@ -24,6 +24,7 @@ import {
 } from './toolParser';
 import {
   AgentHost,
+  globFilesTool,
   insertContent,
   isCommandAutoApproved,
   isInsideWorkspace,
@@ -31,9 +32,12 @@ import {
   listFilesTool,
   readFileTool,
   resolveWorkspacePath,
+  searchAndReplaceContent,
   searchFilesTool,
+  SearchReplaceOperation,
   toPosixRelative,
   truncateOutput,
+  webFetchTool,
 } from './tools';
 import type { CompletionRequest, CompletionResult, ThreadState } from './transport';
 import type { CoreEvent, GateContext, GateVerdict, ToolGate } from '../core/types';
@@ -51,6 +55,31 @@ import {
 
 export interface CompletionProvider {
   complete(request: CompletionRequest): Promise<CompletionResult>;
+}
+
+/** MCP resource entry as shown to the model. */
+export interface McpResourceSummary {
+  server: string;
+  uri: string;
+  name: string;
+  description?: string;
+  mimeType?: string;
+}
+
+/**
+ * What the agent loop needs from MCP (implemented by core/mcp.ts McpRegistry). Kept as a narrow
+ * interface so tests can stub it and the agent does not depend on transport details.
+ */
+export interface McpToolProvider {
+  /** Any server configured (connected or not). When false the MCP tools are hidden from the model. */
+  hasServers(): boolean;
+  /** Connects servers that were not tried yet. Errors are recorded per server, never thrown. */
+  ensureConnected(): Promise<void>;
+  /** System prompt section listing connected servers, tools and resources ("" when none). */
+  formatSystemPromptSection(): string;
+  callTool(server: string, tool: string, args: Record<string, unknown>): Promise<{ content: string; isError: boolean }>;
+  readResource(server: string, uri: string): Promise<string>;
+  listResources(server?: string): Promise<McpResourceSummary[]>;
 }
 
 export interface AskResponse {
@@ -91,6 +120,8 @@ export interface TaskOptions {
   isSubtaskTarget?: (slug: string) => boolean;
   /** Maximum read-only tool calls executed from one answer (default 1 = 2.x behaviour). */
   readBatchSize?: () => number;
+  /** 3.3: Model Context Protocol servers available to this task. */
+  mcp?: McpToolProvider;
 }
 
 let idCounter = 0;
@@ -441,6 +472,7 @@ export class AgentTask {
         ? selection.webSearch
         : settings.webSearch === 'always' ? true : settings.webSearch === 'never' ? false : mode.webSearchDefault;
       const rules = await this.getRules();
+      const mcpSection = await this.mcpSection();
       const systemPrompt = buildSystemPrompt({
         mode,
         cwd: this.options.host.cwd,
@@ -453,6 +485,7 @@ export class AgentTask {
         },
         rules,
         webSearch,
+        mcpSection,
       });
       const full = buildFullPrompt(systemPrompt, this.apiMessages, settings.maxPromptChars);
       const latest = this.apiMessages[this.apiMessages.length - 1];
@@ -508,6 +541,7 @@ export class AgentTask {
           thread: this.thread,
           baseModelId: selection.baseModelId,
           thinking: selection.thinking,
+          computeMode: selection.computeMode,
           webSearch,
           signal: this.abortController.signal,
           onText,
@@ -631,7 +665,7 @@ export class AgentTask {
     }
     const ignored = parsed.ignoredToolCount - batch.length;
     if (ignored > 0) {
-      this.appendToLastUser(`\n\n[Note: only ${batch.length > 0 ? `the first ${batch.length + 1} read-only tool calls` : 'the first tool call'} of your message ${batch.length > 0 ? 'were' : 'was'} executed. ${ignored} additional tool call(s) were ignored. Batch only read-only tools (read_file, list_files, search_files, list_code_definition_names); use one tool per message otherwise.]`);
+      this.appendToLastUser(`\n\n[Note: only ${batch.length > 0 ? `the first ${batch.length + 1} read-only tool calls` : 'the first tool call'} of your message ${batch.length > 0 ? 'were' : 'was'} executed. ${ignored} additional tool call(s) were ignored. Batch only read-only tools (read_file, list_files, search_files, list_code_definition_names, glob_files); use one tool per message otherwise.]`);
     }
     if (this.consecutiveMistakes >= MAX_CONSECUTIVE_MISTAKES) {
       if (settings.autoApprove.enabled && settings.autoApprove.retry && !this.didAutoMistakeRecovery) {
@@ -665,7 +699,7 @@ export class AgentTask {
       /(?:^|[^\p{L}\p{N}_])(let me|i will|i'll|i am going to|i'm going to|next,? i|now i|сейчас|теперь|далее|давайте|приступим|перейдем|перейдём|проверю|проверим|исправлю|исправим|обновлю|обновим|создам|создадим|запущу|запустим|добавлю|добавим|выполню|выполним|прочитаю|прочитаем|посмотрю|посмотрим)(?=$|[^\p{L}\p{N}_])/iu.test(tail)
       || /[:…]\s*$/.test(tail.trim())
       || /\.\.\.\s*$/.test(tail.trim())
-      || /<(read_file|write_to_file|apply_diff|insert_content|search_and_replace|execute_command|list_files|search_files|list_code_definition_names|update_todo_list|switch_mode|new_task|attempt_completion)\b/i.test(text);
+      || /<(read_file|write_to_file|apply_diff|insert_content|search_and_replace|execute_command|list_files|search_files|list_code_definition_names|glob_files|web_fetch|use_mcp_tool|access_mcp_resource|list_mcp_resources|mcp__[a-z0-9_-]+|update_todo_list|switch_mode|new_task|attempt_completion)\b/i.test(text);
     const hasIncompleteTodos = this.todos.some((todo) => todo.status !== 'completed');
     if (midTask && (looksUnfinished || hasIncompleteTodos) && this.consecutiveNoTool < 2) {
       this.consecutiveNoTool += 1;
@@ -764,13 +798,21 @@ export class AgentTask {
       case 'list_files':
       case 'search_files':
       case 'list_code_definition_names':
+      case 'glob_files':
         return this.runReadTool(tool, settings, missing);
       case 'write_to_file':
       case 'apply_diff':
       case 'insert_content':
+      case 'search_and_replace':
         return this.runEditTool(tool, settings, missing);
       case 'execute_command':
         return this.runCommandTool(tool, settings, missing);
+      case 'web_fetch':
+        return this.runWebFetchTool(tool, settings, missing);
+      case 'use_mcp_tool':
+      case 'access_mcp_resource':
+      case 'list_mcp_resources':
+        return this.runMcpTool(tool, settings, missing);
       case 'ask_followup_question': {
         const question = params.question?.trim();
         if (!question) {
@@ -929,6 +971,9 @@ export class AgentTask {
     if (tool.name === 'search_files' && !params.regex) {
       return missing('regex');
     }
+    if (tool.name === 'glob_files' && !(params.pattern || '').trim()) {
+      return missing('pattern');
+    }
     const absPath = resolveWorkspacePath(host.cwd, relPath);
     const outside = !isInsideWorkspace(host.cwd, absPath);
     const displayPath = outside ? absPath : toPosixRelative(host.cwd, absPath);
@@ -945,7 +990,9 @@ export class AgentTask {
           ? `List files in ${displayPath}${params.recursive === 'true' ? ' (recursive)' : ''}`
           : tool.name === 'search_files'
             ? `Search ${displayPath} for /${params.regex}/${params.file_pattern ? ` in ${params.file_pattern}` : ''}`
-            : `List definitions in ${displayPath}`,
+            : tool.name === 'glob_files'
+              ? `Glob ${params.pattern} in ${displayPath}`
+              : `List definitions in ${displayPath}`,
     };
     const autoApproved = settings.autoApprove.read && (!outside || settings.autoApprove.readOutsideWorkspace);
     const approved = await this.approve('tool', autoApproved, info);
@@ -961,6 +1008,8 @@ export class AgentTask {
         output = await listFilesTool(host, absPath, params.recursive === 'true');
       } else if (tool.name === 'search_files') {
         output = await searchFilesTool(host, absPath, params.regex!, params.file_pattern, this.abortController.signal);
+      } else if (tool.name === 'glob_files') {
+        output = await globFilesTool(host, relPath, params.pattern!.trim());
       } else {
         output = await listCodeDefinitionsTool(host, absPath);
       }
@@ -1047,6 +1096,37 @@ export class AgentTask {
         this.say({ type: 'info', text: `${applied.applied} block(s) applied, ${applied.failures.length} failed.` });
       }
       (tool as ParsedToolUse & { partialFailures?: string[] }).partialFailures = applied.failures;
+    } else if (tool.name === 'search_and_replace') {
+      if (original === null) {
+        this.consecutiveMistakes += 1;
+        return this.pushToolError(tool.name, `File '${displayPath}' does not exist. Use write_to_file to create it.`, settings);
+      }
+      const operations = parseSearchReplaceOperationsParam(params.operations);
+      if (operations === null) {
+        this.consecutiveMistakes += 1;
+        return this.pushToolError(tool.name, 'The <operations> parameter must be a JSON array of {"search", "replace"} objects.', settings);
+      }
+      if (operations.length === 0 && !params.search) {
+        return missing('search');
+      }
+      try {
+        const replaced = searchAndReplaceContent(original, {
+          search: params.search,
+          replace: params.replace,
+          useRegex: params.use_regex === 'true',
+          ignoreCase: params.ignore_case === 'true',
+          startLine: params.start_line ? Number(params.start_line) : undefined,
+          endLine: params.end_line ? Number(params.end_line) : undefined,
+          operations,
+        });
+        next = replaced.content;
+        (tool as ParsedToolUse & { replacements?: number }).replacements = replaced.replacements;
+      } catch (error) {
+        this.consecutiveMistakes += 1;
+        this.say({ type: 'tool', tool: { name: tool.name, path: displayPath, title: `Replace failed: ${displayPath}`, content: (error as Error).message }, status: 'error' });
+        this.pushToolResult(tool.name, displayPath, `[ERROR] ${(error as Error).message}\nUse read_file to check the current content, then retry with a search string that matches exactly (or use apply_diff).`);
+        return 'continue';
+      }
     } else {
       if (params.content === undefined) {
         return missing('content');
@@ -1093,8 +1173,9 @@ export class AgentTask {
       this.consecutiveMistakes = 0;
       const problems = host.getDiagnostics ? await host.getDiagnostics(absPath) : '';
       const partialFailures = (tool as ParsedToolUse & { partialFailures?: string[] }).partialFailures || [];
+      const replacements = (tool as ParsedToolUse & { replacements?: number }).replacements;
       const lines = [
-        `The ${original === null ? 'new file was created' : 'changes were applied'} successfully: ${displayPath} (+${stats.added} -${stats.removed}).`,
+        `The ${original === null ? 'new file was created' : 'changes were applied'} successfully: ${displayPath} (+${stats.added} -${stats.removed})${replacements ? `, ${replacements} replacement(s)` : ''}.`,
         partialFailures.length > 0 ? `However, some SEARCH blocks failed and were NOT applied:\n${partialFailures.join('\n')}` : '',
         problems ? `New problems detected after saving the file:\n${problems}` : '',
         approved.text ? `<feedback>\n${approved.text}\n</feedback>` : '',
@@ -1174,6 +1255,189 @@ export class AgentTask {
     this.consecutiveMistakes = 0;
     this.pushToolResult(tool.name, command, `Command executed in ${toPosixRelative(host.cwd, cwd)}.\n${status}\nOutput:\n${output}${feedback ? `\n\n<feedback>\n${feedback}\n</feedback>` : ''}`);
     return 'continue';
+  }
+
+  private async runWebFetchTool(tool: ParsedToolUse, settings: AgentSettings, missing: (name: string) => 'continue'): Promise<'continue' | 'stop'> {
+    const url = (tool.params.url || '').trim();
+    if (!url) {
+      return missing('url');
+    }
+    if (!/^https?:\/\//i.test(url)) {
+      this.consecutiveMistakes += 1;
+      return this.pushToolError(tool.name, `web_fetch needs a full http:// or https:// URL (got '${url}').`, settings);
+    }
+    const info: ToolInfo = { name: tool.name, url, title: `Fetch ${url}` };
+    const approved = await this.approve('tool', settings.autoApprove.web, info);
+    if (approved.response === 'no' || this.abortController.signal.aborted) {
+      return this.denied(tool.name, url, approved.text);
+    }
+    const message = approved.message;
+    message.status = 'running';
+    this.emit(message);
+    try {
+      const text = await webFetchTool(url, { signal: this.abortController.signal, maxChars: Math.max(10_000, Math.floor(settings.maxPromptChars * 0.3)) });
+      if (this.abortController.signal.aborted) {
+        return 'stop';
+      }
+      this.consecutiveMistakes = 0;
+      message.status = 'done';
+      message.tool = { ...message.tool!, content: truncateMiddle(text, 3000) };
+      this.emit(message);
+      const prompt = (tool.params.prompt || '').trim();
+      this.pushToolResult(tool.name, url, `${prompt ? `<prompt>${prompt}</prompt>\n` : ''}<content url="${url}">\n${text}\n</content>${approved.text ? `\n\n<feedback>\n${approved.text}\n</feedback>` : ''}`);
+    } catch (error) {
+      if (this.abortController.signal.aborted) {
+        return 'stop';
+      }
+      this.consecutiveMistakes += 1;
+      message.status = 'error';
+      message.tool = { ...message.tool!, content: (error as Error).message };
+      this.emit(message);
+      this.pushToolResult(tool.name, url, `[ERROR] ${(error as Error).message}`);
+    }
+    return 'continue';
+  }
+
+  private async runMcpTool(tool: ParsedToolUse, settings: AgentSettings, missing: (name: string) => 'continue'): Promise<'continue' | 'stop'> {
+    const mcp = this.options.mcp;
+    const params = tool.params;
+    if (!mcp || !mcp.hasServers()) {
+      this.consecutiveMistakes += 1;
+      return this.pushToolError(tool.name, 'No MCP servers are configured. Add one with `pcode mcp add <name> -- <command>` (or .mcp.json / ~/.claude.json) and start a new task.', settings);
+    }
+    const server = (params.server_name || '').trim();
+    if (tool.name !== 'list_mcp_resources' && !server) {
+      return missing('server_name');
+    }
+
+    if (tool.name === 'list_mcp_resources') {
+      const info: ToolInfo = { name: tool.name, server: server || undefined, title: server ? `List MCP resources of ${server}` : 'List MCP resources' };
+      const approved = await this.approve('tool', settings.autoApprove.mcp || settings.autoApprove.read, info);
+      if (approved.response === 'no' || this.abortController.signal.aborted) {
+        return this.denied(tool.name, server || undefined, approved.text);
+      }
+      const message = approved.message;
+      try {
+        const resources = await mcp.listResources(server || undefined);
+        const text = resources.length === 0
+          ? 'No resources are exposed by the connected MCP servers.'
+          : resources.map((entry) => `- ${entry.uri} [${entry.server}] ${entry.name}${entry.mimeType ? ` (${entry.mimeType})` : ''}${entry.description ? `: ${entry.description}` : ''}`).join('\n');
+        this.consecutiveMistakes = 0;
+        message.status = 'done';
+        message.tool = { ...message.tool!, content: truncateMiddle(text, 3000) };
+        this.emit(message);
+        this.pushToolResult(tool.name, server || undefined, truncateMiddle(text, 20_000));
+      } catch (error) {
+        this.consecutiveMistakes += 1;
+        message.status = 'error';
+        message.tool = { ...message.tool!, content: (error as Error).message };
+        this.emit(message);
+        this.pushToolResult(tool.name, server || undefined, `[ERROR] ${(error as Error).message}`);
+      }
+      return 'continue';
+    }
+
+    if (tool.name === 'access_mcp_resource') {
+      const uri = (params.uri || '').trim();
+      if (!uri) {
+        return missing('uri');
+      }
+      const info: ToolInfo = { name: tool.name, server, url: uri, title: `Read MCP resource ${uri} from ${server}` };
+      const approved = await this.approve('tool', settings.autoApprove.mcp, info);
+      if (approved.response === 'no' || this.abortController.signal.aborted) {
+        return this.denied(tool.name, `${server}:${uri}`, approved.text);
+      }
+      const message = approved.message;
+      message.status = 'running';
+      this.emit(message);
+      try {
+        const text = await mcp.readResource(server, uri);
+        if (this.abortController.signal.aborted) {
+          return 'stop';
+        }
+        this.consecutiveMistakes = 0;
+        message.status = 'done';
+        message.tool = { ...message.tool!, content: truncateMiddle(text, 3000) };
+        this.emit(message);
+        this.pushToolResult(tool.name, `${server}:${uri}`, `${truncateMiddle(text, Math.max(20_000, Math.floor(settings.maxPromptChars * 0.4)))}${approved.text ? `\n\n<feedback>\n${approved.text}\n</feedback>` : ''}`);
+      } catch (error) {
+        if (this.abortController.signal.aborted) {
+          return 'stop';
+        }
+        this.consecutiveMistakes += 1;
+        message.status = 'error';
+        message.tool = { ...message.tool!, content: (error as Error).message };
+        this.emit(message);
+        this.pushToolResult(tool.name, `${server}:${uri}`, `[ERROR] ${(error as Error).message}`);
+      }
+      return 'continue';
+    }
+
+    // use_mcp_tool
+    const toolName = (params.tool_name || '').trim();
+    if (!toolName) {
+      return missing('tool_name');
+    }
+    const parsedArgs = parseMcpArgumentsParam(params.arguments);
+    if (parsedArgs === null) {
+      this.consecutiveMistakes += 1;
+      return this.pushToolError(tool.name, 'The <arguments> parameter must be a JSON object, for example {"query": "hello"}. Use {} when the tool takes no parameters.', settings);
+    }
+    const argsPreview = JSON.stringify(parsedArgs, null, 2);
+    const info: ToolInfo = {
+      name: tool.name,
+      server,
+      title: `MCP ${server} / ${toolName}`,
+      content: argsPreview === '{}' ? undefined : argsPreview,
+    };
+    const approved = await this.approve('tool', settings.autoApprove.mcp, info);
+    if (approved.response === 'no' || this.abortController.signal.aborted) {
+      return this.denied(tool.name, `${server}/${toolName}`, approved.text);
+    }
+    const message = approved.message;
+    message.status = 'running';
+    this.emit(message);
+    try {
+      const result = await mcp.callTool(server, toolName, parsedArgs);
+      if (this.abortController.signal.aborted) {
+        return 'stop';
+      }
+      const body = result.content.trim() || '(the tool returned no content)';
+      message.status = result.isError ? 'error' : 'done';
+      message.tool = { ...message.tool!, content: truncateMiddle(`${argsPreview === '{}' ? '' : `${argsPreview}\n\n`}${body}`, 4000) };
+      this.emit(message);
+      if (result.isError) {
+        this.consecutiveMistakes += 1;
+        this.pushToolResult(tool.name, `${server}/${toolName}`, `[ERROR] The MCP tool reported an error:\n${truncateMiddle(body, 8000)}`);
+      } else {
+        this.consecutiveMistakes = 0;
+        this.pushToolResult(tool.name, `${server}/${toolName}`, `${truncateMiddle(body, Math.max(20_000, Math.floor(settings.maxPromptChars * 0.4)))}${approved.text ? `\n\n<feedback>\n${approved.text}\n</feedback>` : ''}`);
+      }
+    } catch (error) {
+      if (this.abortController.signal.aborted) {
+        return 'stop';
+      }
+      this.consecutiveMistakes += 1;
+      message.status = 'error';
+      message.tool = { ...message.tool!, content: (error as Error).message };
+      this.emit(message);
+      this.pushToolResult(tool.name, `${server}/${toolName}`, `[ERROR] ${(error as Error).message}`);
+    }
+    return 'continue';
+  }
+
+  /** MCP section of the system prompt; connects configured servers on first use. */
+  private async mcpSection(): Promise<string> {
+    const mcp = this.options.mcp;
+    if (!mcp || !mcp.hasServers()) {
+      return '';
+    }
+    try {
+      await mcp.ensureConnected();
+    } catch {
+      // Connection problems are reported per server inside the section / tool results.
+    }
+    return mcp.formatSystemPromptSection();
   }
 
   private denied(toolName: string, detail: string | undefined, feedback?: string): 'continue' | 'stop' {
@@ -1404,8 +1668,78 @@ export function toolActivityLabel(name: string): string {
     case 'switch_mode': return 'Switching mode';
     case 'new_task': return 'Creating subtask';
     case 'update_todo_list': return 'Updating todo list';
+    case 'glob_files': return 'Finding files';
+    case 'search_and_replace': return 'Preparing replacement';
+    case 'web_fetch': return 'Fetching URL';
+    case 'use_mcp_tool': return 'Calling MCP tool';
+    case 'access_mcp_resource': return 'Reading MCP resource';
+    case 'list_mcp_resources': return 'Listing MCP resources';
     default: return 'Working';
   }
+}
+
+/** JSON array of search/replace operations; [] when absent, null when malformed. */
+function parseSearchReplaceOperationsParam(raw: string | undefined): SearchReplaceOperation[] | null {
+  if (!raw || !raw.trim()) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return null;
+    }
+    const ops: SearchReplaceOperation[] = [];
+    for (const entry of parsed) {
+      if (!entry || typeof entry !== 'object') {
+        return null;
+      }
+      const record = entry as Record<string, unknown>;
+      const search = record.search ?? record.old_string ?? record.find;
+      if (typeof search !== 'string') {
+        return null;
+      }
+      const replace = record.replace ?? record.new_string ?? record.replacement ?? '';
+      ops.push({
+        search,
+        replace: typeof replace === 'string' ? replace : String(replace),
+        useRegex: record.use_regex === true || record.useRegex === true || record.regex === true,
+        ignoreCase: record.ignore_case === true || record.ignoreCase === true,
+      });
+    }
+    return ops;
+  } catch {
+    return null;
+  }
+}
+
+/** MCP tool arguments: JSON object, {} for empty, null when malformed. Loose JSON (single quotes, trailing commas) is repaired. */
+export function parseMcpArgumentsParam(raw: string | undefined): Record<string, unknown> | null {
+  const text = (raw || '').trim();
+  if (!text) {
+    return {};
+  }
+  const attempt = (candidate: string): Record<string, unknown> | null | undefined => {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+      return null;
+    } catch {
+      return undefined;
+    }
+  };
+  const direct = attempt(text);
+  if (direct !== undefined) {
+    return direct;
+  }
+  // Common model slips: trailing commas, single-quoted strings, unquoted keys.
+  const repaired = text
+    .replace(/,\s*([}\]])/g, '$1')
+    .replace(/'([^'\\]*(?:\\.[^'\\]*)*)'/g, (_all, inner: string) => JSON.stringify(inner.replace(/\\'/g, "'")))
+    .replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:/g, '$1"$2":');
+  const second = attempt(repaired);
+  return second === undefined ? null : second;
 }
 
 function delay(ms: number, signal: AbortSignal): Promise<void> {

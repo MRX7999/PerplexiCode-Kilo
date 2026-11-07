@@ -1,5 +1,6 @@
 import {
   AccountPlan,
+  ComputeMode,
   PerplexityModelsConfigSnapshot,
   PerplexityRequestMode,
   PerplexitySearchMode,
@@ -7,6 +8,403 @@ import {
 } from './types';
 import { normalizeModelsConfigPayload } from './modelsConfigFetcher';
 import bundledModelsConfig from './bundledModelsConfig.json';
+
+export interface ComputeRouteCandidate {
+  searchMode: PerplexitySearchMode;
+  requestMode: PerplexityRequestMode;
+  modelId?: string;
+}
+
+export interface ComputeModeOption {
+  id: ComputeMode;
+  label: string;
+  shortLabel: string;
+  description: string;
+  searchMode: PerplexitySearchMode;
+  requestMode: PerplexityRequestMode;
+  quotaBucket: QuotaBucket;
+  requiredPlan: AccountPlan;
+  defaultModelId?: string;
+  harnessEffort?: string;
+  fallbackRoutes: ComputeRouteCandidate[];
+}
+
+export const COMPUTE_MODES: ComputeModeOption[] = [
+  {
+    id: 'search',
+    label: 'Search (Standard)',
+    shortLabel: 'Search',
+    description: 'Standard Perplexity model query with optional Thinking and web search.',
+    searchMode: 'search',
+    requestMode: 'COPILOT',
+    quotaBucket: 'pro_search',
+    requiredPlan: 'free',
+    fallbackRoutes: [{ searchMode: 'search', requestMode: 'COPILOT' }],
+  },
+  {
+    id: 'computer',
+    label: 'Computer (Auto)',
+    shortLabel: 'Computer',
+    description: 'Perplexity Computer (ASI) compute mode using the ASI variant of your selected model.',
+    searchMode: 'asi',
+    requestMode: 'ASI',
+    quotaBucket: 'computer',
+    requiredPlan: 'max',
+    defaultModelId: 'pplx_asi',
+    fallbackRoutes: [
+      { searchMode: 'asi', requestMode: 'ASI' },
+      { searchMode: 'browser_agent', requestMode: 'ASI', modelId: 'comet_browser_agent' },
+      { searchMode: 'search', requestMode: 'COPILOT' },
+    ],
+  },
+  {
+    id: 'light',
+    label: 'Compute · Light',
+    shortLabel: 'Light',
+    description: 'Perplexity Computer harness preset (GPT-6.1 Sol · medium effort).',
+    searchMode: 'asi',
+    requestMode: 'ASI',
+    quotaBucket: 'computer',
+    requiredPlan: 'max',
+    defaultModelId: 'pplx_asi_gpt_6_1_sol',
+    harnessEffort: 'medium',
+    fallbackRoutes: [
+      { searchMode: 'asi', requestMode: 'ASI', modelId: 'pplx_asi_gpt_6_1_sol' },
+      { searchMode: 'browser_agent', requestMode: 'ASI', modelId: 'comet_browser_agent' },
+      { searchMode: 'search', requestMode: 'COPILOT', modelId: 'gpt6_1_sol' },
+    ],
+  },
+  {
+    id: 'standard',
+    label: 'Compute · Standard',
+    shortLabel: 'Standard',
+    description: 'Perplexity Computer harness preset (Claude Opus 5.5 · medium effort).',
+    searchMode: 'asi',
+    requestMode: 'ASI',
+    quotaBucket: 'computer',
+    requiredPlan: 'max',
+    defaultModelId: 'pplx_asi_opus',
+    harnessEffort: 'medium',
+    fallbackRoutes: [
+      { searchMode: 'asi', requestMode: 'ASI', modelId: 'pplx_asi_opus' },
+      { searchMode: 'browser_agent', requestMode: 'ASI', modelId: 'comet_browser_agent_opus' },
+      { searchMode: 'search', requestMode: 'COPILOT', modelId: 'claude55opus' },
+    ],
+  },
+  {
+    id: 'high',
+    label: 'Compute · High',
+    shortLabel: 'High',
+    description: 'Perplexity Computer harness preset (GPT-6 Astra · medium effort).',
+    searchMode: 'asi',
+    requestMode: 'ASI',
+    quotaBucket: 'computer',
+    requiredPlan: 'max',
+    defaultModelId: 'pplx_asi_astra',
+    harnessEffort: 'medium',
+    fallbackRoutes: [
+      { searchMode: 'asi', requestMode: 'ASI', modelId: 'pplx_asi_astra' },
+      { searchMode: 'browser_agent', requestMode: 'ASI', modelId: 'comet_browser_agent' },
+      { searchMode: 'search', requestMode: 'COPILOT', modelId: 'gpt6_astra' },
+    ],
+  },
+  {
+    id: 'ultra',
+    label: 'Compute · Ultra',
+    shortLabel: 'Ultra',
+    description: 'Perplexity Computer harness preset (Claude Fable 5.1 · high effort).',
+    searchMode: 'asi',
+    requestMode: 'ASI',
+    quotaBucket: 'computer',
+    requiredPlan: 'max',
+    defaultModelId: 'pplx_asi_fable_5',
+    harnessEffort: 'high',
+    fallbackRoutes: [
+      { searchMode: 'asi', requestMode: 'ASI', modelId: 'pplx_asi_fable_5' },
+      { searchMode: 'browser_agent', requestMode: 'ASI', modelId: 'comet_browser_agent_opus' },
+      { searchMode: 'search', requestMode: 'COPILOT', modelId: 'claudefable51' },
+    ],
+  },
+  {
+    id: 'research',
+    label: 'Deep Research',
+    shortLabel: 'Research',
+    description: 'Perplexity Deep Research mode for multi-step investigation and synthesis.',
+    searchMode: 'research',
+    requestMode: 'COPILOT',
+    quotaBucket: 'research',
+    requiredPlan: 'pro',
+    defaultModelId: 'pplx_alpha',
+    fallbackRoutes: [
+      { searchMode: 'research', requestMode: 'COPILOT' },
+      { searchMode: 'search', requestMode: 'COPILOT' },
+    ],
+  },
+  {
+    id: 'agentic_research',
+    label: 'Agentic Research',
+    shortLabel: 'Agentic Research',
+    description: 'Multi-model agentic research synthesis on Perplexity Max.',
+    searchMode: 'agentic_research',
+    requestMode: 'COPILOT',
+    quotaBucket: 'agentic_research',
+    requiredPlan: 'max',
+    defaultModelId: 'pplx_agentic_research',
+    fallbackRoutes: [
+      { searchMode: 'agentic_research', requestMode: 'COPILOT', modelId: 'pplx_agentic_research' },
+      { searchMode: 'research', requestMode: 'COPILOT', modelId: 'pplx_alpha' },
+      { searchMode: 'search', requestMode: 'COPILOT' },
+    ],
+  },
+  {
+    id: 'labs',
+    label: 'Labs (Studio)',
+    shortLabel: 'Labs',
+    description: 'Perplexity Labs / Studio mode for creating files, apps, and structured artifacts.',
+    searchMode: 'studio',
+    requestMode: 'COPILOT',
+    quotaBucket: 'labs',
+    requiredPlan: 'pro',
+    defaultModelId: 'pplx_beta',
+    fallbackRoutes: [
+      { searchMode: 'studio', requestMode: 'COPILOT' },
+      { searchMode: 'search', requestMode: 'COPILOT' },
+    ],
+  },
+];
+
+export function normalizeComputeMode(value?: string | null): ComputeMode {
+  const token = (value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  switch (token) {
+    case 'computer':
+    case 'compute':
+    case 'asi':
+    case 'pplx_asi':
+      return 'computer';
+    case 'light':
+    case 'compute_light':
+    case 'computer_light':
+      return 'light';
+    case 'standard':
+    case 'compute_standard':
+    case 'computer_standard':
+      return 'standard';
+    case 'high':
+    case 'compute_high':
+    case 'computer_high':
+      return 'high';
+    case 'ultra':
+    case 'compute_ultra':
+    case 'computer_ultra':
+    case 'max':
+      return 'ultra';
+    case 'research':
+    case 'deep_research':
+      return 'research';
+    case 'agentic_research':
+    case 'agentic':
+      return 'agentic_research';
+    case 'labs':
+    case 'studio':
+      return 'labs';
+    case 'search':
+    case 'default':
+    case 'auto':
+    default:
+      return 'search';
+  }
+}
+
+export function isValidComputeModeInput(value: string): boolean {
+  const token = value.trim().toLowerCase().replace(/[\s-]+/g, '_');
+  return [
+    'search', 'default', 'auto',
+    'computer', 'compute', 'asi', 'pplx_asi',
+    'light', 'compute_light', 'computer_light',
+    'standard', 'compute_standard', 'computer_standard',
+    'high', 'compute_high', 'computer_high',
+    'ultra', 'compute_ultra', 'computer_ultra', 'max',
+    'research', 'deep_research',
+    'agentic_research', 'agentic',
+    'labs', 'studio',
+  ].includes(token);
+}
+
+export function getComputeModeOption(mode?: string | null): ComputeModeOption {
+  const normalized = normalizeComputeMode(mode);
+  return COMPUTE_MODES.find((entry) => entry.id === normalized) || COMPUTE_MODES[0];
+}
+
+const CHAT_TO_ASI_MODEL_MAP: Record<string, string> = {
+  turbo: 'pplx_asi',
+  gpt6_1_sol: 'pplx_asi_gpt_6_1_sol',
+  gpt6_1_sol_thinking: 'pplx_asi_gpt_6_1_sol',
+  gpt6_astra: 'pplx_asi_astra',
+  gpt6_astra_thinking: 'pplx_asi_astra',
+  gemini4argon: 'pplx_asi_gemini_4_argon',
+  gemini4argonthinking: 'pplx_asi_gemini_4_argon',
+  gemini38flash: 'pplx_asi_gemini_4_argon',
+  gemini38flashthinking: 'pplx_asi_gemini_4_argon',
+  claude55sonnet: 'pplx_asi_sonnet',
+  claude55sonnetthinking: 'pplx_asi_sonnet',
+  claude55opus: 'pplx_asi_opus',
+  claude55opusthinking: 'pplx_asi_opus',
+  claudefable51: 'pplx_asi_fable_5',
+  claudefable51thinking: 'pplx_asi_fable_5',
+  kimik3thinking: 'pplx_asi_kimi_k3',
+  glm_5_3_thinking: 'pplx_asi_glm',
+  grok47: 'pplx_asi_grok',
+  grok47thinking: 'pplx_asi_grok',
+};
+
+const ASI_TO_CHAT_MODEL_MAP: Record<string, string> = {
+  pplx_asi: 'turbo',
+  pplx_asi_gpt_6_1_sol: 'gpt6_1_sol',
+  pplx_asi_gpt_6_1_sol_fast: 'gpt6_1_sol',
+  pplx_asi_gpt_6_1_sol_ultrafast: 'gpt6_1_sol',
+  pplx_asi_astra: 'gpt6_astra',
+  pplx_asi_astra_fast: 'gpt6_astra',
+  pplx_asi_astra_ultrafast: 'gpt6_astra',
+  pplx_asi_gemini_4_argon: 'gemini4argon',
+  pplx_asi_sonnet: 'claude55sonnet',
+  pplx_asi_opus: 'claude55opus',
+  pplx_asi_opus_fast: 'claude55opus',
+  pplx_asi_fable_5: 'claudefable51',
+  pplx_asi_kimi_k3: 'kimik3thinking',
+  pplx_asi_glm: 'glm_5_3_thinking',
+  pplx_asi_glm_5_3: 'glm_5_3_thinking',
+  pplx_asi_grok: 'grok47',
+  pplx_asi_deepseek_v4_pro: 'turbo',
+};
+
+export function mapModelToComputerModel(modelId: string): string {
+  const trimmed = modelId.trim();
+  if (trimmed.startsWith('pplx_asi')) {
+    return trimmed;
+  }
+  const base = getBaseModelId(trimmed);
+  return CHAT_TO_ASI_MODEL_MAP[trimmed] || CHAT_TO_ASI_MODEL_MAP[base] || 'pplx_asi';
+}
+
+export function mapComputerModelToSearchModel(modelId: string, thinking = false): string {
+  const trimmed = modelId.trim();
+  const mapped = ASI_TO_CHAT_MODEL_MAP[trimmed];
+  if (mapped) {
+    return getResolvedModelId(mapped, thinking);
+  }
+  if (trimmed === 'pplx_alpha' || trimmed === 'pplx_agentic_research' || trimmed === 'pplx_beta' || trimmed.startsWith('comet_browser_agent')) {
+    return 'turbo';
+  }
+  return getResolvedModelId(trimmed, thinking);
+}
+
+export function resolveComputeRoute(
+  baseModelId: string,
+  thinking: boolean,
+  computeMode?: string | null
+): {
+  computeMode: ComputeMode;
+  modelId: string;
+  fallbackSearchModelId: string;
+  searchMode: PerplexitySearchMode;
+  requestMode: PerplexityRequestMode;
+  quotaBucket: QuotaBucket;
+  requiredPlan: AccountPlan;
+} {
+  const modeOption = getComputeModeOption(computeMode);
+  const catalogModel = getModelById(baseModelId);
+
+  // If computeMode is 'search' (default), check if the user explicitly picked a non-search model (e.g. pplx_asi_*, pplx_alpha, pplx_beta)
+  if (modeOption.id === 'search') {
+    if (catalogModel && catalogModel.searchMode !== 'search') {
+      return {
+        computeMode: catalogModel.searchMode === 'asi' ? 'computer' : catalogModel.searchMode === 'studio' ? 'labs' : 'research',
+        modelId: catalogModel.id,
+        fallbackSearchModelId: mapComputerModelToSearchModel(catalogModel.id, thinking),
+        searchMode: catalogModel.searchMode,
+        requestMode: catalogModel.requestMode,
+        quotaBucket: catalogModel.quotaBucket,
+        requiredPlan: catalogModel.requiredPlan,
+      };
+    }
+    const resolvedId = getResolvedModelId(baseModelId, thinking);
+    const requestMode: PerplexityRequestMode = resolvedId === 'turbo' ? 'CONCISE' : (catalogModel?.requestMode || 'COPILOT');
+    return {
+      computeMode: 'search',
+      modelId: resolvedId,
+      fallbackSearchModelId: resolvedId,
+      searchMode: 'search',
+      requestMode,
+      quotaBucket: resolvedId === 'turbo' ? 'free_queries' : (catalogModel?.quotaBucket || 'pro_search'),
+      requiredPlan: catalogModel?.requiredPlan || 'free',
+    };
+  }
+
+  // Harness preset modes (light, standard, high, ultra)
+  if (modeOption.id === 'light' || modeOption.id === 'standard' || modeOption.id === 'high' || modeOption.id === 'ultra') {
+    const bundledHarness = getBundledModelsConfig()?.computer_harness?.modes?.[modeOption.id];
+    const modelId = bundledHarness?.orchestrator_model || modeOption.defaultModelId || 'pplx_asi';
+    return {
+      computeMode: modeOption.id,
+      modelId,
+      fallbackSearchModelId: mapComputerModelToSearchModel(modelId, thinking),
+      searchMode: 'asi',
+      requestMode: 'ASI',
+      quotaBucket: 'computer',
+      requiredPlan: 'max',
+    };
+  }
+
+  if (modeOption.id === 'computer') {
+    const modelId = mapModelToComputerModel(baseModelId);
+    return {
+      computeMode: 'computer',
+      modelId,
+      fallbackSearchModelId: mapComputerModelToSearchModel(modelId, thinking),
+      searchMode: 'asi',
+      requestMode: 'ASI',
+      quotaBucket: 'computer',
+      requiredPlan: 'max',
+    };
+  }
+
+  if (modeOption.id === 'agentic_research') {
+    return {
+      computeMode: 'agentic_research',
+      modelId: 'pplx_agentic_research',
+      fallbackSearchModelId: getResolvedModelId(baseModelId, thinking),
+      searchMode: 'agentic_research',
+      requestMode: 'COPILOT',
+      quotaBucket: 'agentic_research',
+      requiredPlan: 'max',
+    };
+  }
+
+  if (modeOption.id === 'research') {
+    const modelId = baseModelId === 'turbo' || !baseModelId ? 'pplx_alpha' : getResolvedModelId(baseModelId, thinking);
+    return {
+      computeMode: 'research',
+      modelId,
+      fallbackSearchModelId: getResolvedModelId(baseModelId === 'pplx_alpha' ? 'turbo' : baseModelId, thinking),
+      searchMode: 'research',
+      requestMode: 'COPILOT',
+      quotaBucket: 'research',
+      requiredPlan: catalogModel?.requiredPlan === 'max' ? 'max' : 'pro',
+    };
+  }
+
+  // labs / studio
+  const modelId = baseModelId === 'turbo' || !baseModelId ? 'pplx_beta' : getResolvedModelId(baseModelId, thinking);
+  return {
+    computeMode: 'labs',
+    modelId,
+    fallbackSearchModelId: getResolvedModelId(baseModelId === 'pplx_beta' ? 'turbo' : baseModelId, thinking),
+    searchMode: 'studio',
+    requestMode: 'COPILOT',
+    quotaBucket: 'labs',
+    requiredPlan: catalogModel?.requiredPlan === 'max' ? 'max' : 'pro',
+  };
+}
 
 export interface ModelInfo {
   id: string;
@@ -205,6 +603,146 @@ const MODEL_TEMPLATES: ModelTemplate[] = [
     supportsThinking: false,
     aliases: ['experimental', 'sonar', 'sonar2'],
     fallbackVisible: false,
+  },
+  {
+    id: 'pplx_asi',
+    label: 'Computer (Auto)',
+    category: 'Computer Models',
+    description: 'Perplexity Computer (ASI) orchestrator model.',
+    searchMode: 'asi',
+    requestMode: 'ASI',
+    quotaBucket: 'computer',
+    requiredPlan: 'max',
+    supportsThinking: false,
+    aliases: ['computer', 'asi', 'pplx-asi'],
+    fallbackVisible: true,
+    surfaced: false,
+  },
+  {
+    id: 'pplx_asi_opus',
+    label: 'Claude Opus 5.5 (Computer)',
+    category: 'Computer Models',
+    description: 'Claude Opus 5.5 in Perplexity Computer (Standard harness).',
+    searchMode: 'asi',
+    requestMode: 'ASI',
+    quotaBucket: 'computer',
+    requiredPlan: 'max',
+    supportsThinking: false,
+    aliases: ['asi-opus', 'computer-opus'],
+    fallbackVisible: true,
+    surfaced: false,
+  },
+  {
+    id: 'pplx_asi_astra',
+    label: 'GPT-6 Astra (Computer)',
+    category: 'Computer Models',
+    description: 'GPT-6 Astra in Perplexity Computer (High harness).',
+    searchMode: 'asi',
+    requestMode: 'ASI',
+    quotaBucket: 'computer',
+    requiredPlan: 'max',
+    supportsThinking: false,
+    aliases: ['asi-astra', 'computer-astra'],
+    fallbackVisible: true,
+    surfaced: false,
+  },
+  {
+    id: 'pplx_asi_fable_5',
+    label: 'Claude Fable 5.1 (Computer)',
+    category: 'Computer Models',
+    description: 'Claude Fable 5.1 in Perplexity Computer (Ultra harness).',
+    searchMode: 'asi',
+    requestMode: 'ASI',
+    quotaBucket: 'computer',
+    requiredPlan: 'max',
+    supportsThinking: false,
+    aliases: ['asi-fable', 'computer-fable'],
+    fallbackVisible: true,
+    surfaced: false,
+  },
+  {
+    id: 'pplx_asi_gpt_6_1_sol',
+    label: 'GPT-6.1 Sol (Computer)',
+    category: 'Computer Models',
+    description: 'GPT-6.1 Sol in Perplexity Computer (Light harness).',
+    searchMode: 'asi',
+    requestMode: 'ASI',
+    quotaBucket: 'computer',
+    requiredPlan: 'max',
+    supportsThinking: false,
+    aliases: ['asi-sol', 'computer-sol'],
+    fallbackVisible: true,
+    surfaced: false,
+  },
+  {
+    id: 'pplx_asi_gemini_4_argon',
+    label: 'Gemini 4 Argon (Computer)',
+    category: 'Computer Models',
+    description: 'Gemini 4 Argon in Perplexity Computer.',
+    searchMode: 'asi',
+    requestMode: 'ASI',
+    quotaBucket: 'computer',
+    requiredPlan: 'max',
+    supportsThinking: false,
+    aliases: ['asi-argon', 'computer-argon'],
+    fallbackVisible: true,
+    surfaced: false,
+  },
+  {
+    id: 'pplx_asi_sonnet',
+    label: 'Claude Sonnet 5.5 (Computer)',
+    category: 'Computer Models',
+    description: 'Claude Sonnet 5.5 in Perplexity Computer.',
+    searchMode: 'asi',
+    requestMode: 'ASI',
+    quotaBucket: 'computer',
+    requiredPlan: 'max',
+    supportsThinking: false,
+    aliases: ['asi-sonnet', 'computer-sonnet'],
+    fallbackVisible: true,
+    surfaced: false,
+  },
+  {
+    id: 'pplx_alpha',
+    label: 'Deep Research',
+    category: 'Research & Labs',
+    description: 'In-depth reports and multi-step research synthesis.',
+    searchMode: 'research',
+    requestMode: 'COPILOT',
+    quotaBucket: 'research',
+    requiredPlan: 'pro',
+    supportsThinking: false,
+    aliases: ['deep-research', 'research'],
+    fallbackVisible: true,
+    surfaced: false,
+  },
+  {
+    id: 'pplx_agentic_research',
+    label: 'Agentic Research',
+    category: 'Research & Labs',
+    description: 'Multi-model agentic research synthesis on Perplexity Max.',
+    searchMode: 'agentic_research',
+    requestMode: 'COPILOT',
+    quotaBucket: 'agentic_research',
+    requiredPlan: 'max',
+    supportsThinking: false,
+    aliases: ['agentic-research'],
+    fallbackVisible: true,
+    surfaced: false,
+  },
+  {
+    id: 'pplx_beta',
+    label: 'Labs (Create Files & Apps)',
+    category: 'Research & Labs',
+    description: 'Perplexity Labs / Studio mode for creating files and apps.',
+    searchMode: 'studio',
+    requestMode: 'COPILOT',
+    quotaBucket: 'labs',
+    requiredPlan: 'pro',
+    supportsThinking: false,
+    aliases: ['labs', 'studio'],
+    fallbackVisible: true,
+    surfaced: false,
   },
 ];
 
@@ -438,6 +976,52 @@ export function buildModelsFromConfig(
     });
   }
 
+  // Include Perplexity Computer (ASI), Research, and Labs (Studio) models from config
+  const computeDefinitions = Object.entries(modelDefinitions)
+    .filter(([modelId, definition]) =>
+      (definition.mode === 'asi' || definition.mode === 'research' || definition.mode === 'agentic_research' || definition.mode === 'studio')
+      && !representedIds.has(modelId)
+      && !looksLikeInternalModel(modelId)
+      && !modelId.endsWith('_fast')
+      && !modelId.endsWith('_ultrafast')
+      && modelId !== 'pplx_asi_glm'
+    )
+    .sort((left, right) => left[1].label.localeCompare(right[1].label));
+
+  for (const [modelId, definition] of computeDefinitions) {
+    const baseLabel = firstNonEmptyString(definition.label, modelId);
+    const isAsi = definition.mode === 'asi';
+    const displayLabel = isAsi && !/computer/i.test(baseLabel) ? `${baseLabel} (Computer)` : baseLabel;
+    const label = seenLabels.has(displayLabel.toLowerCase()) ? `${displayLabel} (${modelId})` : displayLabel;
+    seenLabels.add(label.toLowerCase());
+    const quotaBucket: QuotaBucket = isAsi
+      ? 'computer'
+      : definition.mode === 'studio'
+        ? 'labs'
+        : definition.mode === 'agentic_research'
+          ? 'agentic_research'
+          : 'research';
+    const requiredPlan: AccountPlan = isAsi || definition.mode === 'agentic_research' ? 'max' : 'pro';
+    models.set(modelId, {
+      id: modelId,
+      label,
+      category: isAsi ? 'Computer Models' : 'Research & Labs',
+      description: firstNonEmptyString(
+        definition.description,
+        isAsi ? `${baseLabel} in Perplexity Computer (ASI) mode.` : `${baseLabel} mode on Perplexity.`
+      ),
+      searchMode: definition.mode,
+      requestMode: isAsi ? 'ASI' : 'COPILOT',
+      quotaBucket,
+      requiredPlan,
+      supportsThinking: false,
+      provider: definition.provider || 'PERPLEXITY',
+      sortOrder: 2_000 + order++,
+      surfaced: false,
+      isNew: false,
+    });
+  }
+
   if (models.size === 0) {
     return getFallbackModelCatalog();
   }
@@ -592,6 +1176,8 @@ export function getCategoryOrder(category: string): number {
     'xAI',
     'NVIDIA',
     'Z.ai',
+    'Computer Models',
+    'Research & Labs',
     'Additional Search Models',
     'Search Models',
     'Max Models',

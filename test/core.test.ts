@@ -41,7 +41,7 @@ function workspace(files: Record<string, string> = {}): { root: string; home: st
 }
 
 const agentSettings = (overrides: Partial<AgentSettings> = {}): AgentSettings => ({
-  autoApprove: { enabled: true, read: true, readOutsideWorkspace: false, write: false, execute: false, modeSwitch: true, subtasks: true, todo: true, retry: true },
+  autoApprove: { enabled: true, read: true, readOutsideWorkspace: false, write: false, execute: false, modeSwitch: true, subtasks: true, todo: true, retry: true, mcp: false, web: false },
   allowedCommands: [],
   deniedCommands: [],
   maxRequests: 30,

@@ -2,6 +2,32 @@
 
 All notable changes to PerplexiCode Kilo. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.3.0] - 2026-11-07
+
+### Added
+- **MCP (Model Context Protocol) support, Claude Code compatible.** New headless module `src/core/mcp.ts` (no `vscode` imports) with stdio and Streamable HTTP / SSE transports, `initialize` → `tools/list` / `resources/list` / `prompts/list`, `tools/call`, `resources/read`, server → client `ping` and `roots/list`, `notifications/tools/list_changed` refresh, per-server failure isolation (missing binary, crash with captured stderr, init timeout, slow tools) and deduplicated concurrent connects.
+  - **Config sources**, read in this order and merged by server name: `~/.claude.json` (root and `projects[<cwd>]`), `~/.claude/.mcp.json`, `~/.claude/mcp.json`, `~/.perplexicode/mcp.json`, the `mcpServers` block of every settings file, `<project>/.mcp.json` (bare `{ "name": {...} }` maps are accepted), `.claude/.mcp.json`, `.claude/mcp.json`, `.perplexicode/mcp.json`, `.mcp.local.json`, `*.local.json`, then `--mcp-config <file|json>` / `perplexicodeKilo.mcp.extraConfigs`. `${VAR}` and `${VAR:-default}` are expanded in `command`, `args`, `env`, `url` and `headers`, like Claude Code.
+  - **Trust**: stdio servers from project or local scope start only in a trusted workspace (VS Code Workspace Trust, `--trust-project` in the CLI); user, cli and http servers always start. Untrusted servers are shown with the reason instead of silently disappearing.
+  - **New agent tools**: `use_mcp_tool`, `access_mcp_resource`, `list_mcp_resources`. The model may also call a tool directly as `<mcp__server__tool>{...}</mcp__server__tool>`, the same qualified name Claude Code uses. MCP tools, resources and prompts are listed in the system prompt only when at least one server is connected.
+  - **Permission rules** in `allow` / `ask` / `deny`: `mcp__server__tool`, `mcp__server__*`, `mcp__server`, `mcp`, and `mcp(server)` / `mcp(server__tool)` / `mcp(server:tool)`. Plan mode blocks `use_mcp_tool` unless a rule allows it. Hooks receive `mcp__server__tool` as the tool name, so existing Claude Code `PreToolUse` matchers work.
+  - **CLI**: `pcode mcp list|add|remove|get|test`, `pcode mcp add <name> [-s user|project|local] [-t stdio|http|sse] [-e K=V] [-H "Header: v"] -- <command|url> [args]`, `--mcp-config`, `--strict-mcp-config`, `--no-mcp`, REPL `/mcp [reconnect [name]]`, and `pcode doctor` reports MCP servers.
+  - **VS Code**: settings `perplexicodeKilo.mcp.enabled`, `perplexicodeKilo.mcp.extraConfigs`, `perplexicodeKilo.agent.autoApprove.mcp`; command **PerplexiCode: MCP: Reconnect Servers**; a new **MCP** tab in the Library view (status, tools, resources, add / remove / reconnect, open the config file) and `/mcp` in the composer. Tool cards show the server name and MCP `isError` results as errors.
+- **Compute mode selection** (requested in issues): choose how Perplexity runs the request instead of only which model answers.
+  - Modes: `search` (default), `light` (GPT-6.1 Sol harness), `standard` (Claude Opus 5.5 harness), `high` (GPT-6 Astra harness), `ultra` (Claude Fable 5.1 harness, high effort), `computer` (ASI variant of the selected model), `research` (Deep Research), `agentic_research` (Max) and `labs` (Labs / Studio). Aliases: `compute`, `asi`, `max`, `deep_research`, `agentic`, `studio`, `default`, `auto`.
+  - **Fallback chain** when the plan or quota does not allow a mode: ASI harness → Comet browser agent → Search with the closest chat model; Deep Research → Best with a note. The UI and CLI say which mode is actually used (`is not available on your current accounts. Using Search mode`).
+  - **VS Code**: a compute pill next to the model picker, command **PerplexiCode: Select Compute Mode**, setting `perplexicodeKilo.computeMode`, status bar shows the active mode.
+  - **CLI**: `--compute <mode>`, REPL `/compute [mode]`, `pcode models` lists the compute modes and their orchestrator models, and `computeMode` in `.perplexicode/settings.json`.
+- **New built-in tools**: `glob_files` (gitignore-style patterns, workspace-bound), `search_and_replace` (literal or regex, optional line range, case-insensitive flag), `web_fetch` (HTTP(S) GET with redirects, size limit, HTML → readable text, `WebFetch(domain:host)` permission rules and `perplexicodeKilo.agent.autoApprove.web`).
+- **Tests**: new `test/mcp.test.ts` (19 tests, including a real stdio MCP test server in `test/mcp-test-server.js` with ndjson and Content-Length framing, an in-process HTTP MCP server with sessions and SSE, config layering, trust, permissions, parser, end-to-end agent sessions and `pcode mcp` e2e) and 7 compute-mode transport tests. `npm test` now runs 96 tests.
+
+### Fixed
+- `search_and_replace` in literal mode no longer interprets `$&` / `$1` in the replacement; invalid regular expressions produce a clear error instead of an exception.
+- `web_fetch` honours an already aborted signal before starting the request.
+- Permission rules whose tool name contains `*` or `.` (for example `mcp__github__*`) were silently dropped by the rule parser.
+- Windows: stdio MCP servers started through `npx`, `npm`, `pnpm`, `yarn` or other `.cmd` shims are resolved through `PATH` / `PATHEXT` and launched through `cmd.exe` with quoted arguments, so configs copied from Claude Code docs work without `cmd /c`.
+- Bare server maps (entries with `command` / `url` but no `mcpServers` wrapper) are accepted only in dedicated `mcp.json` files and `--mcp-config`; a `verify: { "command": "npm test" }` block in `settings.json` is no longer mistaken for an MCP server.
+- MCP connections answer server-initiated `ping` and `roots/list` requests instead of leaving them pending, so servers that require roots (filesystem, git) initialise correctly.
+
 ## [3.2.0] - 2026-11-06
 
 ### Fixed

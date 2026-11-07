@@ -2,6 +2,8 @@ import * as vscode from 'vscode';
 
 export interface StatusBarInfo {
   modelLabel: string;
+  /** 3.3: short compute-mode label ("Computer high"), empty for plain Search. */
+  computeLabel?: string;
   modeName: string;
   accountCount: number;
   activeAccountCount: number;
@@ -13,7 +15,7 @@ export interface StatusBarInfo {
  */
 export class StatusBarManager implements vscode.Disposable {
   private readonly item: vscode.StatusBarItem;
-  private info: StatusBarInfo = { modelLabel: 'Best', modeName: 'Code', accountCount: 0, activeAccountCount: 0, busy: false };
+  private info: StatusBarInfo = { modelLabel: 'Best', computeLabel: '', modeName: 'Code', accountCount: 0, activeAccountCount: 0, busy: false };
 
   constructor() {
     this.item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -35,7 +37,7 @@ export class StatusBarManager implements vscode.Disposable {
   }
 
   private render(): void {
-    const { modelLabel, modeName, accountCount, activeAccountCount, busy } = this.info;
+    const { modelLabel, computeLabel, modeName, accountCount, activeAccountCount, busy } = this.info;
     if (accountCount === 0) {
       this.item.text = '$(account) PerplexiCode: no account';
       this.item.tooltip = 'Click to sign in to Perplexity';
@@ -44,8 +46,8 @@ export class StatusBarManager implements vscode.Disposable {
       return;
     }
     this.item.backgroundColor = undefined;
-    this.item.text = `${busy ? '$(sync~spin)' : '$(sparkle)'} ${modeName} · ${modelLabel} | ${activeAccountCount}/${accountCount}`;
-    this.item.tooltip = `PerplexiCode\nMode: ${modeName}\nModel: ${modelLabel}\nAccounts: ${activeAccountCount}/${accountCount} active\nClick to change the model`;
+    this.item.text = `${busy ? '$(sync~spin)' : '$(sparkle)'} ${modeName} · ${modelLabel}${computeLabel ? ` · ${computeLabel}` : ''} | ${activeAccountCount}/${accountCount}`;
+    this.item.tooltip = `PerplexiCode\nMode: ${modeName}\nModel: ${modelLabel}\nCompute: ${computeLabel || 'Search'}\nAccounts: ${activeAccountCount}/${accountCount} active\nClick to change the model (PerplexiCode: Select Compute Mode for Computer/Research)`;
     this.item.command = 'perplexicodeKilo.selectModel';
   }
 }

@@ -33,6 +33,12 @@ const suites = [
     prebuild: true,
     options: { external: ['vscode', 'puppeteer-core', 'sql.js'] },
   },
+  {
+    // 3.3 MCP client (stdio + HTTP test servers), compute-mode CLI flags, new tools; reuses out/cli.js built above.
+    entry: 'mcp.test.ts',
+    outfile: 'mcp.test.cjs',
+    options: { external: ['vscode', 'puppeteer-core', 'sql.js'] },
+  },
 ];
 
 const only = process.argv[2];

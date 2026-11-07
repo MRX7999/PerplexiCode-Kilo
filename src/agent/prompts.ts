@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { getToolsForMode, ModeConfig, MODES } from './modes';
+import { getToolsForMode, ModeConfig, MODES, TOOL_GROUPS } from './modes';
 
 export interface ApiMessage {
   role: 'user' | 'assistant';
@@ -181,6 +181,74 @@ Usage:
 [ ] Write tests
 </todos>
 </update_todo_list>`,
+  glob_files: `## glob_files
+Find files by glob pattern (like Claude Code's Glob). Results are sorted by modification time, newest first. Use it to locate files by name or extension; use search_files to search file contents.
+Parameters:
+- path: (optional) directory to search, relative to the workspace root (default ".")
+- pattern: (required) glob such as **/*.test.ts or src/**/index.*
+Usage:
+<glob_files>
+<path>src</path>
+<pattern>**/*.ts</pattern>
+</glob_files>`,
+  search_and_replace: `## search_and_replace
+Replace text in an existing file: a literal string or a regex, optionally only between start_line and end_line, or several operations at once (like Claude Code's MultiEdit). Prefer apply_diff when the change needs surrounding context; prefer search_and_replace for renames and repeated small substitutions.
+Parameters:
+- path: (required)
+- search: (required unless operations is given) text or regex to find
+- replace: (required unless operations is given) replacement text; $1 style groups work with use_regex
+- use_regex: (optional) true to treat search as a JavaScript regex
+- ignore_case: (optional) true for case-insensitive matching
+- start_line / end_line: (optional) restrict the replacement to a 1-based line range
+- operations: (optional) JSON array of {"search", "replace", "use_regex", "ignore_case"} objects applied in order
+Usage:
+<search_and_replace>
+<path>src/config.ts</path>
+<search>oldFunctionName</search>
+<replace>newFunctionName</replace>
+</search_and_replace>`,
+  web_fetch: `## web_fetch
+Fetch a public http(s) URL (documentation, API reference, changelog, raw file) and return its readable text (HTML is converted to text, JSON is pretty-printed). Use it when you need the exact content of a page, not for general web search.
+Parameters:
+- url: (required) full URL
+- prompt: (optional) what you want to extract; it is echoed back with the content so you can focus your reading
+Usage:
+<web_fetch>
+<url>https://nodejs.org/api/fs.html</url>
+<prompt>How does fs.promises.cp handle symlinks?</prompt>
+</web_fetch>`,
+  use_mcp_tool: `## use_mcp_tool
+Call a tool provided by a connected MCP (Model Context Protocol) server. The servers, their tools and the parameters are listed in the MCP SERVERS section. You may also call the tool directly with its Claude Code name as the tag: <mcp__server__tool><param>value</param></mcp__server__tool>.
+Parameters:
+- server_name: (required) the server name as listed
+- tool_name: (required) the tool name as listed
+- arguments: (required) a JSON object with the tool's input parameters (use {} when the tool has none)
+Usage:
+<use_mcp_tool>
+<server_name>github</server_name>
+<tool_name>get_issue</tool_name>
+<arguments>
+{"owner": "octocat", "repo": "hello-world", "issue_number": 42}
+</arguments>
+</use_mcp_tool>`,
+  access_mcp_resource: `## access_mcp_resource
+Read a resource (file, record, document) exposed by a connected MCP server by its URI.
+Parameters:
+- server_name: (required)
+- uri: (required) resource URI as listed by the server (or by list_mcp_resources)
+Usage:
+<access_mcp_resource>
+<server_name>docs</server_name>
+<uri>docs://architecture/overview</uri>
+</access_mcp_resource>`,
+  list_mcp_resources: `## list_mcp_resources
+List the resources exposed by connected MCP servers (all servers, or one).
+Parameters:
+- server_name: (optional) restrict the listing to one server
+Usage:
+<list_mcp_resources>
+<server_name>docs</server_name>
+</list_mcp_resources>`,
 };
 
 const RULE_FILES = ['AGENTS.md', 'AGENT.md', '.kilocoderules', '.roorules', '.clinerules', '.cursorrules', '.windsurfrules'];
@@ -237,9 +305,12 @@ export function buildSystemPrompt(options: {
   settings: PromptSettings;
   rules: string;
   webSearch: boolean;
+  /** Connected MCP servers (from McpRegistry.formatSystemPromptSection). Empty = MCP tools are hidden. */
+  mcpSection?: string;
 }): string {
   const { mode, cwd, settings } = options;
-  const tools = getToolsForMode(mode);
+  const mcpSection = (options.mcpSection || '').trim();
+  const tools = getToolsForMode(mode).filter((tool) => mcpSection || !TOOL_GROUPS.mcp.includes(tool));
   const editRestriction = mode.groups.find((entry) => Array.isArray(entry) && entry[0] === 'edit');
   const toolDocs = tools.map((tool) => TOOL_DOCS[tool]).filter(Boolean).join('\n\n');
 
@@ -263,7 +334,7 @@ You are running inside the user's code editor as an autonomous coding agent (sim
 
 TOOL USE
 
-You have access to a set of tools that are executed upon the user's approval. You can use ONE tool per message, and you will receive the result of that tool use in the next message. Exception: up to 5 read-only tools (read_file, list_files, search_files, list_code_definition_names) may be batched in one message; their results come back together. Use tools step by step, each informed by the previous result.
+You have access to a set of tools that are executed upon the user's approval. You can use ONE tool per message, and you will receive the result of that tool use in the next message. Exception: up to 5 read-only tools (read_file, list_files, search_files, list_code_definition_names, glob_files) may be batched in one message; their results come back together. Use tools step by step, each informed by the previous result.
 
 # Tool Use Formatting
 
@@ -292,11 +363,17 @@ ${toolDocs}
 
 CAPABILITIES
 
-- You can list, search, read and edit files in the workspace${tools.includes('execute_command') ? ', and run shell commands on the user\'s computer' : ''}.
+- You can list, search, read and edit files in the workspace${tools.includes('execute_command') ? ', and run shell commands on the user\'s computer' : ''}${tools.includes('web_fetch') ? ', and fetch public web pages with web_fetch' : ''}${mcpSection ? ', and use the tools and resources of the connected MCP servers' : ''}.
 - environment_details at the end of each user message lists the current state (open tabs, time, mode, todo list). It is generated automatically; use it as context, the user did not write it.
 - ${options.webSearch ? 'Web search is enabled for this request: you may use up-to-date information from the web for documentation and APIs.' : 'Web search is disabled: rely on the workspace and your own knowledge.'}
 
-====
+${mcpSection ? `====
+
+MCP SERVERS
+
+${mcpSection}
+
+` : ''}====
 
 MODES
 

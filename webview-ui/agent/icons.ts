@@ -56,6 +56,8 @@ export const icons: Record<string, string> = {
   more: svg('<circle cx="3.5" cy="8" r=".9" fill="currentColor"/><circle cx="8" cy="8" r=".9" fill="currentColor"/><circle cx="12.5" cy="8" r=".9" fill="currentColor"/>'),
   at: svg('<circle cx="8" cy="8" r="2.4"/><path d="M10.4 8v1.1a1.6 1.6 0 0 0 3.2 0V8A5.6 5.6 0 1 0 11 12.8"/>'),
   slash: svg('<path d="M10.5 2.5 5.5 13.5"/>'),
+  cpu: svg('<rect x="4" y="4" width="8" height="8" rx="1.2"/><rect x="6.5" y="6.5" width="3" height="3" rx=".4"/><path d="M6 1.5v2.5M10 1.5v2.5M6 12v2.5M10 12v2.5M1.5 6h2.5M1.5 10h2.5M12 6h2.5M12 10h2.5"/>'),
+  plug: svg('<path d="M5.5 1.8v3.4M10.5 1.8v3.4"/><path d="M3.5 5.2h9v2.3a4.5 4.5 0 0 1-9 0z"/><path d="M8 12v2.3"/>'),
 };
 
 /** Provider logos approximated with simple shapes (the picker in the Perplexity app uses brand marks). */

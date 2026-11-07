@@ -69,7 +69,9 @@ A complete example is in [`examples/claude-code-compat`](../examples/claude-code
 ## Permissions
 
 Rules use the form `Tool` or `Tool(specifier)`. Tool names can be Claude names (`Read`, `Grep`, `Glob`,
-`LS`, `Edit`, `Write`, `Bash`, `Task`) or native tool names (`read_file`, `apply_diff`, …).
+`LS`, `Edit`, `Write`, `Bash`, `Task`, `WebFetch`) or native tool names (`read_file`, `apply_diff`, …).
+MCP tools (3.3) use the Claude Code qualified name `mcp__<server>__<tool>`; server and tool names are
+sanitised to `[A-Za-z0-9_-]` (a space becomes `_`).
 
 Rule syntax:
 
@@ -82,6 +84,12 @@ Rule syntax:
   - `~/...` is relative to the home folder.
   - `*.pem` without a slash matches at any depth.
 
+- MCP (3.3): `mcp__github__get_issue` (one tool), `mcp__github__*` or `mcp__github` (every tool and
+  resource of a server), `mcp` (all servers), and the specifier forms `mcp(github)`,
+  `mcp(github__get_issue)`, `mcp(github:get_issue)`. MCP tools have no implicit allow: without a rule
+  the auto-approve **MCP** toggle or the approval prompt decides.
+- `WebFetch(domain:docs.example.com)` (3.3) allows `web_fetch` for a host and its subdomains.
+
 A command chain (`a && b; c | d`) is allowed only when every part is allowed.
 
 Evaluation order:
@@ -89,7 +97,7 @@ Evaluation order:
 1. Tool list of the subagent
 2. `deny`
 3. Built-in secret protection (`.env*` except `.env.example`, `*.pem`, `*.key`, `id_rsa*`, `.ssh/**`, `wg*.conf` …). Symlinks are resolved first, and Bash commands that read these files are covered too.
-4. `plan` mode: edits and commands are denied
+4. `plan` mode: edits, commands and MCP tool calls are denied (`access_mcp_resource` stays read-only and allowed)
 5. `ask`
 6. `allow`
 7. `bypassPermissions` or `acceptEdits` (workspace files only)
@@ -205,6 +213,69 @@ Up to `readBatchSize` (default 5, max 9) consecutive read-only calls (`read_file
 in a single message, which saves model round-trips during exploration. Edits and commands still run
 one at a time.
 
+## MCP servers (3.3)
+
+`src/core/mcp.ts` implements the client side of the Model Context Protocol without `vscode` imports;
+the extension and the CLI share it through `McpRegistry`.
+
+Config sources, merged by server name (later wins):
+
+1. `~/.claude.json`: the root `mcpServers` block and `projects["<cwd>"].mcpServers` (scope `local`)
+2. `~/.claude/.mcp.json`, `~/.claude/mcp.json`, `~/.perplexicode/mcp.json` (scope `user`)
+3. `mcpServers` inside every settings layer (`~/.claude/settings.json`, `~/.perplexicode/settings.json`, …)
+4. `<cwd>/.mcp.json`, `.claude/.mcp.json`, `.claude/mcp.json`, `.perplexicode/mcp.json` (scope `project`;
+   a bare `{ "name": { ... } }` map without `mcpServers` is accepted in `mcp.json` files)
+5. `.mcp.local.json`, `.claude/settings.local.json`, `.perplexicode/settings.local.json` (scope `local`)
+6. `--mcp-config <file|json>` / `perplexicodeKilo.mcp.extraConfigs` (scope `cli`; `--strict-mcp-config`
+   keeps only these)
+
+Server entries follow the Claude Code schema: `{ "command", "args", "env", "cwd" }` for stdio,
+`{ "type": "http" | "sse", "url", "headers" }` for remote servers, `"disabled": true` to skip one.
+`${VAR}` and `${VAR:-default}` are expanded from the process environment plus the `env` block of the
+settings layers. Entries without `command` or `url` are reported as invalid instead of aborting the load.
+
+Trust: stdio servers from `project` and `local` scope start only when the folder is trusted (VS Code
+Workspace Trust; in the CLI `--trust-project`, or the one-time `Trust this folder?` prompt of the REPL,
+which is remembered in `~/.perplexicode/trusted.json`). Until then their status is
+`untrusted` and `pcode mcp list` prints `untrusted` in the status column. `user`, `cli` and all
+`http` / `sse` servers start regardless.
+
+Protocol: `initialize`, `notifications/initialized`, `tools/list`, `resources/list`, `prompts/list`,
+`tools/call`, `resources/read`. Server → client requests `ping` and `roots/list` are answered (roots =
+the workspace folder); other requests get `-32601`. `notifications/tools/list_changed` and the
+resource variant refresh the server's catalogue. Stdio accepts newline-delimited JSON and
+`Content-Length` framing. Failures are isolated per server: a missing binary, a crash (the stderr tail is
+kept in the error), an `initialize` timeout or an HTTP 4xx/5xx mark that server `error` and leave the
+others running. Concurrent `connectServer` calls for the same server share one connection attempt.
+On Windows, `npx` / `npm` / `pnpm` / `yarn` style `.cmd` shims are resolved through `PATH` and
+`PATHEXT` and started through `cmd.exe`.
+
+Agent tools: `use_mcp_tool` (`server_name`, `tool_name`, `arguments` as a JSON object),
+`access_mcp_resource` (`server_name`, `uri`), `list_mcp_resources` (`server_name` optional), and the
+direct form `<mcp__server__tool>{ "arg": 1 }</mcp__server__tool>`. The system prompt gets an MCP
+section only while at least one server is connected. Tool results with `isError: true` are returned to
+the model as `[ERROR] The MCP tool reported an error:` and shown as failed tool cards. Hooks receive
+`mcp__server__tool` as the tool name and the arguments object as `tool_input`.
+
+CLI: `pcode mcp list` (tab-separated `name type scope status target file` on stdout),
+`pcode mcp add <name> [-s user|project|local] [-t stdio|http|sse] [-e K=V]... [-H "Header: v"]... -- <command|url> [args]`,
+`pcode mcp remove <name> [-s scope]`, `pcode mcp get <name>` (connects, lists tools and resources),
+`pcode mcp test [name]`, `--mcp-config`, `--strict-mcp-config`, `--no-mcp`, REPL `/mcp [reconnect [name]]`.
+Saving writes `project` servers to `<cwd>/.mcp.json`, `user` servers to `~/.perplexicode/mcp.json` and
+`local` servers to `.perplexicode/settings.local.json`.
+
+## Compute modes (3.3)
+
+`COMPUTE_MODES` in `src/api/modelCatalog.ts` describes how a request is routed on Perplexity:
+`search` (default), the Computer harness presets `light` / `standard` / `high` / `ultra`, `computer`
+(ASI variant of the selected model), `research`, `agentic_research` and `labs`. `normalizeComputeMode`
+accepts the aliases `compute`, `asi`, `max`, `deep_research`, `agentic`, `studio`, `default`, `auto`.
+`resolveComputeRoute` picks the first route of a mode that the account pool's plan allows and whose
+quota bucket is not exhausted; `PerplexityTransport` walks the remaining routes when the API rejects
+one (ASI → Comet browser agent → Search) and reports the mode that was actually used. A thread is
+reused for follow-ups only while the route is unchanged. Settings: `computeMode` in the settings layers,
+`perplexicodeKilo.computeMode`, `--compute <mode>`, REPL `/compute [mode]`.
+
 ## CLI reference
 
 ```bash
@@ -219,10 +290,11 @@ pcode -r 9f3k2 --provider openai        # resume with a local model
 Flags: `-p/--print`, `--output-format text|json|stream-json`, `--permission-mode`,
 `--dangerously-skip-permissions`, `--allowedTools`, `--disallowedTools`, `--max-turns N` (`0` = no
 limit), `-m/--model`, `--thinking`, `--mode`, `-c/--continue`, `-r/--resume [id]`, `--cwd`,
-`--provider perplexity|openai`, `--web/--no-web`, `--trust-project`, `--no-journal`, `-v/--verbose`.
+`--provider perplexity|openai`, `--web/--no-web`, `--trust-project`, `--no-journal`, `-v/--verbose`,
+`--compute <mode>`, `--mcp-config <file|json>` (repeatable), `--strict-mcp-config`, `--no-mcp` (3.3).
 
-REPL commands: `/help`, `/mode`, `/permissions`, `/model`, `/compact`, `/clear`, `/agents`, `/skills`,
-`/status`, `/todos`, `/resume`, `/exit`. Ctrl+C stops the running task.
+REPL commands: `/help`, `/mode`, `/permissions`, `/model`, `/compute`, `/mcp`, `/compact`, `/clear`,
+`/agents`, `/skills`, `/status`, `/todos`, `/resume`, `/exit`. Ctrl+C stops the running task.
 
 Prompts in the REPL:
 
@@ -247,14 +319,15 @@ Accounts:
 - In VS Code, **PerplexiCode: Share Accounts with CLI** copies the extension's accounts to
   `~/.perplexicode/credentials.json` (mode 0600).
 
-Other commands: `pcode accounts`, `logout`, `sessions`, `models`, `agents`, `skills`, `doctor`.
+Other commands: `pcode accounts`, `logout`, `sessions`, `models`, `agents`, `skills`, `presets`,
+`mcp list|add|remove|get|test`, `doctor`.
 
 OpenAI-compatible provider settings: `PCODE_OPENAI_BASE_URL` (default `http://127.0.0.1:11434/v1`),
 `PCODE_OPENAI_API_KEY`, `PCODE_OPENAI_MODEL`, `PCODE_OPENAI_TEMPERATURE`.
 
 ## Tests
 
-`npm test` runs three suites:
+`npm test` runs four suites (96 tests):
 
 - `agent`: the 2.x agent loop.
 - `settingsStore`.
@@ -263,3 +336,9 @@ OpenAI-compatible provider settings: `PCODE_OPENAI_BASE_URL` (default `http://12
   (deny, plan, acceptEdits, verify loop, Stop and UserPromptSubmit hooks, subagent tool list, resume,
   compaction), the OpenAI SSE and JSON transport against a local mock server, and end-to-end runs of
   `out/cli.js -p` with `--output-format json` and `stream-json`, `-c`, headless denial, login and sessions.
+- `mcp` (3.3): 19 cases. A real stdio MCP server (`test/mcp-test-server.js`, ndjson and
+  `Content-Length` framing, server → client `roots/list` and `ping`, `list_changed`, crash and hang
+  knobs) and an in-process Streamable HTTP server (JSON and SSE replies, `Mcp-Session-Id`, 401/500)
+  cover the transports; the rest covers config layering and saving, trust, permission rules, the tool
+  parser, `glob_files` / `search_and_replace` / `web_fetch`, gated agent sessions that call MCP tools,
+  CLI argument parsing and `pcode mcp add|list|get|remove` end to end.

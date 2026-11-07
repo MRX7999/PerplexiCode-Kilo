@@ -2,7 +2,7 @@
  * Agent modes modelled on Kilo Code: Code, Architect, Ask, Debug, Orchestrator, Review.
  */
 
-export type ToolGroup = 'read' | 'edit' | 'command' | 'modes';
+export type ToolGroup = 'read' | 'edit' | 'command' | 'modes' | 'mcp' | 'web';
 
 export interface GroupOptions {
   /** Regex the edited path must match (Architect may only touch Markdown). */
@@ -35,7 +35,7 @@ export const MODES: ModeConfig[] = [
     description: 'Write, modify, and refactor code',
     roleDefinition: 'You are PerplexiCode, a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns, and best practices.',
     whenToUse: 'Use this mode when you need to write, modify, or refactor code: implementing features, fixing bugs, creating files, or improving existing code.',
-    groups: ['read', 'edit', 'command', 'modes'],
+    groups: ['read', 'edit', 'command', 'modes', 'mcp', 'web'],
     webSearchDefault: false,
   },
   {
@@ -45,7 +45,7 @@ export const MODES: ModeConfig[] = [
     description: 'Plan and design before implementation',
     roleDefinition: 'You are PerplexiCode, an experienced technical leader who is inquisitive and an excellent planner. Your goal is to gather information and get context to create a detailed plan for accomplishing the user\'s task, which the user will review and approve before switching to another mode to implement the solution.',
     whenToUse: 'Use this mode to plan, design, or strategize before implementation: system design, technical specifications, breaking down complex problems.',
-    groups: ['read', ['edit', { fileRegex: '\\.mdx?$', description: 'Markdown files only' }], 'modes'],
+    groups: ['read', ['edit', { fileRegex: '\\.mdx?$', description: 'Markdown files only' }], 'modes', 'mcp', 'web'],
     customInstructions: [
       '1. Do some information gathering (using the provided tools) to get more context about the task.',
       '2. Ask the user clarifying questions to get a better understanding of the task.',
@@ -63,7 +63,7 @@ export const MODES: ModeConfig[] = [
     description: 'Get answers and explanations',
     roleDefinition: 'You are PerplexiCode, a knowledgeable technical assistant focused on answering questions and providing information about software development, technology, and related topics.',
     whenToUse: 'Use this mode for explanations, documentation, or answers to technical questions without changing code.',
-    groups: ['read'],
+    groups: ['read', 'mcp', 'web'],
     customInstructions: 'You can analyze code, explain concepts, and access external resources. Always answer the user\'s questions thoroughly, and do not switch to implementing code unless explicitly requested by the user. Include Mermaid diagrams when they clarify your response. Answer directly in plain markdown when no tool is needed.',
     webSearchDefault: true,
   },
@@ -74,7 +74,7 @@ export const MODES: ModeConfig[] = [
     description: 'Diagnose and fix software issues',
     roleDefinition: 'You are PerplexiCode, an expert software debugger specializing in systematic problem diagnosis and resolution.',
     whenToUse: 'Use this mode when troubleshooting issues, investigating errors, or diagnosing problems.',
-    groups: ['read', 'edit', 'command', 'modes'],
+    groups: ['read', 'edit', 'command', 'modes', 'mcp', 'web'],
     customInstructions: 'Reflect on 5-7 different possible sources of the problem, distill those down to 1-2 most likely sources, and then add logs to validate your assumptions. Explicitly ask the user to confirm the diagnosis before fixing the problem.',
     webSearchDefault: false,
   },
@@ -121,10 +121,12 @@ export function getGroupOptions(mode: ModeConfig, group: ToolGroup): GroupOption
 }
 
 export const TOOL_GROUPS: Record<ToolGroup, string[]> = {
-  read: ['read_file', 'list_files', 'search_files', 'list_code_definition_names'],
-  edit: ['write_to_file', 'apply_diff', 'insert_content'],
+  read: ['read_file', 'list_files', 'search_files', 'list_code_definition_names', 'glob_files'],
+  edit: ['write_to_file', 'apply_diff', 'insert_content', 'search_and_replace'],
   command: ['execute_command'],
   modes: ['switch_mode', 'new_task'],
+  mcp: ['use_mcp_tool', 'access_mcp_resource', 'list_mcp_resources'],
+  web: ['web_fetch'],
 };
 
 /** Tools every mode can use. */

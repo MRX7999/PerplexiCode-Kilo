@@ -12,7 +12,7 @@ import { ModelFetcher } from '../src/api/modelFetcher';
 import { createCustomAgent, installAgentPreset, installSkillPreset, librarySnapshot } from '../src/core/library';
 
 const settings: AgentSettings = {
-  autoApprove: { enabled: true, read: true, readOutsideWorkspace: false, write: false, execute: true, modeSwitch: true, subtasks: true, todo: true, retry: true },
+  autoApprove: { enabled: true, read: true, readOutsideWorkspace: false, write: false, execute: true, modeSwitch: true, subtasks: true, todo: true, retry: true, mcp: false, web: false },
   allowedCommands: ['npm test', 'ls', 'git status'], deniedCommands: [], maxRequests: 40, maxReadLines: 500, commandTimeoutSec: 120,
   terminalOutputLines: 300, webSearch: 'auto', contextStrategy: 'auto', maxPromptChars: 60000, language: 'auto', customInstructions: '',
   modeInstructions: {}, diffEnabled: true, includeFileListOnStart: true,
