@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="620" viewBox="0 0 1600 620" fill="none" role="img" aria-labelledby="workflow-title workflow-desc">
+  <title id="workflow-title">PerplexiCode Kilo task workflow and conditional approval</title>
+  <desc id="workflow-desc">A brief supplies the goal and scope. Context adds rules, skills, and workspace information, then the model proposes an action. Permissions and PreToolUse hooks can allow, ask, or deny. A user is prompted only when approval is required; denied requests return feedback instead of executing. Approved tools run and their results and PostToolUse hook feedback return to the model. At completion, Stop hooks and an optional configured verification command can require more work. Configured checks run only after edits, with bounded retries. Completion reports the result and evidence status, which may be Needs review. Workspace Trust controls project hooks and project or local stdio MCP startup, not every individual operation.</desc>
+  <defs>
+    <pattern id="workflow-grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" stroke="#26344d" stroke-opacity=".24"/>
+    </pattern>
+    <marker id="workflow-arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="m1 1 5 3-5 3" stroke="#5de2e7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <marker id="workflow-ask-arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="m1 1 5 3-5 3" stroke="#eecb86" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <marker id="workflow-return-arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="m1 1 5 3-5 3" stroke="#a4a6ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; }
+      .overline { font-size:24px; font-weight:600; letter-spacing:3px; fill:#9baac0; }
+      .title { font-size:44px; font-weight:650; letter-spacing:-1px; fill:#f3f7fc; }
+      .heading { font-size:28px; font-weight:600; fill:#f3f7fc; }
+      .body { font-size:24px; fill:#9baac0; }
+      .label { font-size:24px; font-weight:550; fill:#f3f7fc; }
+    </style>
+  </defs>
+  <rect width="1600" height="620" rx="24" fill="#0b1020"/>
+  <rect x="1" y="1" width="1598" height="618" rx="23" stroke="#27344a"/>
+  <rect x="1" y="1" width="1598" height="618" rx="23" fill="url(#workflow-grid)"/>
+  <text x="56" y="60" class="overline">TASK / DECISION FLOW</text>
+  <text x="56" y="116" class="title">Every action has a decision point.</text>
+
+  <rect x="56" y="146" width="1488" height="50" rx="9" fill="#111c30" stroke="#30415a"/>
+  <text x="80" y="179" class="body">Workspace Trust controls project hooks and project/local stdio MCP startup, not every operation.</text>
+
+  <path d="M134 220h1296" stroke="#2c3b53"/>
+  <g fill="#0b1020" stroke="#465b72" stroke-width="2">
+    <circle cx="134" cy="220" r="5"/>
+    <circle cx="322" cy="220" r="5"/>
+    <circle cx="514" cy="220" r="5"/>
+    <circle cx="744" cy="220" r="5"/>
+    <circle cx="974" cy="220" r="5"/>
+    <circle cx="1186" cy="220" r="5"/>
+    <circle cx="1430" cy="220" r="5"/>
+  </g>
+
+  <rect x="56" y="244" width="156" height="160" rx="12" fill="#0e172b" stroke="#34465d"/>
+  <text x="78" y="284" class="heading">Brief</text>
+  <text x="78" y="329" class="body">Goal</text>
+  <text x="78" y="361" class="body">+ scope</text>
+
+  <rect x="236" y="244" width="172" height="160" rx="12" fill="#0e172b" stroke="#34465d"/>
+  <text x="256" y="284" class="heading">Context</text>
+  <text x="256" y="329" class="body">Rules, skills,</text>
+  <text x="256" y="361" class="body">workspace</text>
+
+  <rect x="432" y="244" width="164" height="160" rx="12" fill="#171e37" stroke="#555b90"/>
+  <text x="454" y="284" class="heading">Model</text>
+  <text x="454" y="329" class="body">Provider +</text>
+  <text x="454" y="361" class="body">task mode</text>
+
+  <rect x="620" y="244" width="248" height="160" rx="12" fill="#132638" stroke="#5de2e7" stroke-opacity=".7" stroke-width="1.5"/>
+  <text x="642" y="280" class="heading">Permission /</text>
+  <text x="642" y="313" class="heading">hook decision</text>
+  <text x="642" y="351" class="label">Allow · ask · deny</text>
+  <text x="642" y="384" class="body">PreToolUse</text>
+
+  <rect x="892" y="244" width="164" height="160" rx="12" fill="#0e172b" stroke="#34465d"/>
+  <text x="914" y="284" class="heading">Tool</text>
+  <text x="914" y="329" class="body">Run action;</text>
+  <text x="914" y="361" class="body">return result</text>
+
+  <rect x="1080" y="244" width="212" height="160" rx="12" fill="#0e172b" stroke="#34465d"/>
+  <text x="1102" y="284" class="heading">Verification</text>
+  <text x="1102" y="320" class="body">On completion:</text>
+  <text x="1102" y="352" class="body">Stop hook +</text>
+  <text x="1102" y="384" class="body">optional check*</text>
+
+  <rect x="1316" y="244" width="228" height="160" rx="12" fill="#132638" stroke="#5de2e7" stroke-opacity=".7"/>
+  <text x="1338" y="284" class="heading">Completion</text>
+  <text x="1338" y="329" class="body">Result +</text>
+  <text x="1338" y="361" class="body">evidence status</text>
+
+  <g stroke="#5de2e7" stroke-width="2" marker-end="url(#workflow-arrow)">
+    <path d="M212 324h18"/>
+    <path d="M408 324h18"/>
+    <path d="M596 324h18"/>
+    <path d="M868 324h18"/>
+    <path d="M1056 324h18"/>
+    <path d="M1292 324h18"/>
+  </g>
+
+  <path d="M744 404v30" stroke="#eecb86" stroke-width="2" marker-end="url(#workflow-ask-arrow)"/>
+  <rect x="620" y="440" width="248" height="58" rx="9" fill="#272334" stroke="#eecb86" stroke-opacity=".7"/>
+  <text x="744" y="477" text-anchor="middle" font-size="24" font-weight="550" fill="#eecb86">Ask → user prompt</text>
+  <path d="M868 469h89a17 17 0 0 0 17-17v-42" stroke="#eecb86" stroke-width="2" marker-end="url(#workflow-ask-arrow)"/>
+  <text x="896" y="503" font-size="24" fill="#eecb86">if approved</text>
+
+  <path d="M1186 404v108a16 16 0 0 1-16 16H530a16 16 0 0 1-16-16v-102" stroke="#a4a6ff" stroke-width="2" marker-end="url(#workflow-return-arrow)"/>
+  <path d="M1026 404v112a12 12 0 0 0 12 12M680 404v12a12 12 0 0 1-12 12h-72a12 12 0 0 0-12 12v76a12 12 0 0 0 12 12" stroke="#a4a6ff" stroke-opacity=".75" stroke-width="1.5"/>
+  <text x="56" y="462" class="body">Denied calls do not execute.</text>
+  <text x="56" y="494" class="body">Feedback returns to the model.</text>
+  <text x="514" y="560" font-size="24" fill="#a4a6ff">Results, PostToolUse feedback, or failed checks → model</text>
+  <text x="56" y="598" class="body">* Configured checks run after edits; retries are bounded. A completed task may still need review.</text>
+</svg>
