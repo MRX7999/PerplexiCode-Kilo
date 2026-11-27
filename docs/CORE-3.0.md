@@ -35,6 +35,10 @@ The config files follow the Claude Code formats: `settings.json` permissions and
 | `src/core/journal.ts` | Append-only JSONL journal + atomic snapshots, resume, interrupted-work detection |
 | `src/core/verification.ts` | `verified / needs_review / failed / blocked / no_changes` |
 | `src/core/worktree.ts` | Isolated git worktrees (`--worktree`), symlink & `git -C` confinement, Result Card Apply/Discard, parallel Orchestrator helpers (3.7) |
+| `src/core/lsp.ts` | `.lsp.json` loader and JSON-RPC `Content-Length` stdio LSP client for `definition`, `references`, `hover`, `diagnostics` (4.0) |
+| `src/core/remoteCore.ts` | `pcode serve` daemon (Unix socket `0600` + RFC 6455 WebSocket + `timingSafeEqual` bearer auth), `assertNoSessionSecretsOnWire`, and `RemoteCoreClient` / `RemoteAgentHost` keeping Perplexity sessions on the IDE machine (4.0) |
+| `src/api/remoteCatalogUpdater.ts` | SHA-256 verified out-of-band model catalog updater (`pcode models update`) with built-in snapshot fallback (4.0) |
+| `src/agent/inlineQuickEdit.ts` | `Cmd/Ctrl+I` selection quick-edit prompt builder and `QuickEditStreamAssembler` live diff engine (4.0) |
 | `src/core/compaction.ts` | `/compact` and threshold-based structured auto-compaction |
 | `src/core/runner.ts` | `CoreSession`: tasks, subagents, journal, resume, compact |
 | `src/core/openaiProvider.ts` | OpenAI-compatible transport (Ollama, LM Studio, vLLM, OpenRouter …) |
@@ -435,8 +439,10 @@ Accounts:
 - In VS Code, **PerplexiCode: Share Accounts with CLI** copies the extension's accounts to
   `~/.perplexicode/credentials.json` (mode 0600).
 
-Other commands: `pcode accounts`, `logout`, `sessions`, `models`, `agents`, `skills`, `presets`,
-`mcp list|add|remove|get|test`, `doctor`.
+Other commands: `pcode serve [--socket <path> | --ws --host <host> --port <port>]`, `pcode models [update]`, `pcode accounts`, `logout`, `sessions`, `agents`, `skills`, `presets`,
+`mcp list|add|remove|get|test|login|logout`, `worktree list|apply|discard`, `doctor [--bundle]`.
+
+REPL shortcuts (4.0): `!<command>` runs a local shell command and injects its output into the conversation context; `/rewind [seq|list]` rolls back both workspace files and the session transcript/journal to a checkpoint; commands running longer than the threshold display a live elapsed timer.
 
 OpenAI-compatible provider settings: `PCODE_OPENAI_BASE_URL` (default `http://127.0.0.1:11434/v1`),
 `PCODE_OPENAI_API_KEY`, `PCODE_OPENAI_MODEL`, `PCODE_OPENAI_TEMPERATURE`.

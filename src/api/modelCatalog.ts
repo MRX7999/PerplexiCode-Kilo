@@ -754,16 +754,53 @@ export function setRuntimeModelCatalog(models: ModelInfo[]): void {
 
 let bundledCatalogCache: ModelInfo[] | undefined;
 let buildingBundledCatalog = false;
+let verifiedRemoteConfig: { config: PerplexityModelsConfigSnapshot; snapshotDate?: string; sha256: string } | undefined;
 
 /**
- * Snapshot of https://www.perplexity.ai/rest/models/config shipped with the extension.
+ * F30: Activates a SHA-256 verified remote model catalog snapshot in memory without modifying
+ * the built-in `bundledModelsConfig.json` fallback. Pass `undefined` to revert to the bundled snapshot.
+ */
+export function setVerifiedRemoteModelsConfig(
+  entry: { config: PerplexityModelsConfigSnapshot; snapshotDate?: string; sha256: string } | undefined
+): void {
+  verifiedRemoteConfig = entry;
+  bundledCatalogCache = undefined;
+}
+
+export function getActiveCatalogSource(): { source: 'remote-verified' | 'bundled'; snapshotDate: string; sha256?: string } {
+  if (verifiedRemoteConfig) {
+    return {
+      source: 'remote-verified',
+      snapshotDate: verifiedRemoteConfig.snapshotDate || 'remote',
+      sha256: verifiedRemoteConfig.sha256,
+    };
+  }
+  return {
+    source: 'bundled',
+    snapshotDate: getBundledSnapshotDate(),
+  };
+}
+
+/**
+ * Snapshot of https://www.perplexity.ai/rest/models/config shipped with the extension
+ * (or a SHA-256 verified repository snapshot when F30 remote catalog update succeeded).
  * Used when the live config cannot be fetched (for example, Cloudflare blocks Node on macOS).
  */
 export function getBundledModelsConfig(): PerplexityModelsConfigSnapshot | undefined {
+  if (verifiedRemoteConfig) {
+    return verifiedRemoteConfig.config;
+  }
+  return normalizeModelsConfigPayload(bundledModelsConfig);
+}
+
+export function getPureBundledModelsConfig(): PerplexityModelsConfigSnapshot | undefined {
   return normalizeModelsConfigPayload(bundledModelsConfig);
 }
 
 export function getBundledSnapshotDate(): string {
+  if (verifiedRemoteConfig?.snapshotDate) {
+    return verifiedRemoteConfig.snapshotDate;
+  }
   return (bundledModelsConfig as { snapshot_date?: string }).snapshot_date || 'unknown';
 }
 

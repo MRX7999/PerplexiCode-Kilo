@@ -23,6 +23,7 @@ export const TOOL_PARAMS: Record<string, string[]> = {
   update_todo_list: ['todos'],
   // 3.3: Claude Code parity tools
   glob_files: ['path', 'pattern'],
+  lsp: ['operation', 'path', 'line', 'character'],
   search_and_replace: ['path', 'search', 'replace', 'use_regex', 'ignore_case', 'start_line', 'end_line', 'operations'],
   web_fetch: ['url', 'prompt'],
   // 3.3: Model Context Protocol
@@ -65,7 +66,7 @@ export interface ParsedAssistantMessage {
   source?: string;
 }
 
-const READ_ONLY_TOOLS = new Set(['read_file', 'list_files', 'search_files', 'list_code_definition_names', 'glob_files']);
+const READ_ONLY_TOOLS = new Set(['read_file', 'list_files', 'search_files', 'list_code_definition_names', 'glob_files', 'lsp']);
 
 export function parseAssistantMessage(raw: string, options: { partial?: boolean } = {}): ParsedAssistantMessage {
   let source = raw;

@@ -191,6 +191,20 @@ Usage:
 <path>src</path>
 <pattern>**/*.ts</pattern>
 </glob_files>`,
+  lsp: `## lsp
+Query semantic Language Server Protocol (LSP) intelligence: jump to definition, find references, inspect hover type signatures, or list compiler/linter diagnostics (backed by built-in VS Code providers in IDE and .lsp.json servers in CLI).
+Parameters:
+- operation: (required) one of definition | references | hover | diagnostics
+- path: (required for definition, references, hover; optional for diagnostics) file path relative to workspace root
+- line: (required for definition, references, hover) 1-based line number
+- character: (optional, default 1) 1-based column/character offset on the line
+Usage:
+<lsp>
+<operation>definition</operation>
+<path>src/app.ts</path>
+<line>42</line>
+<character>10</character>
+</lsp>`,
   search_and_replace: `## search_and_replace
 Replace text in an existing file: a literal string or a regex, optionally only between start_line and end_line, or several operations at once (like Claude Code's MultiEdit). Prefer apply_diff when the change needs surrounding context; prefer search_and_replace for renames and repeated small substitutions.
 Parameters:
@@ -334,7 +348,7 @@ You are running inside the user's code editor as an autonomous coding agent (sim
 
 TOOL USE
 
-You have access to a set of tools that are executed upon the user's approval. You can use ONE tool per message, and you will receive the result of that tool use in the next message. Exception: up to 5 read-only tools (read_file, list_files, search_files, list_code_definition_names, glob_files) may be batched in one message; their results come back together. Use tools step by step, each informed by the previous result.
+You have access to a set of tools that are executed upon the user's approval. You can use ONE tool per message, and you will receive the result of that tool use in the next message. Exception: up to 5 read-only tools (read_file, list_files, search_files, list_code_definition_names, glob_files, lsp) may be batched in one message; their results come back together. Use tools step by step, each informed by the previous result.
 
 # Tool Use Formatting
 

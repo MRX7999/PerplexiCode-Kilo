@@ -12,6 +12,8 @@ export * from './repoMapBench';
 export * from './worktree';
 export * from './mcpOAuth';
 export * from './crossReview';
+export * from './lsp';
+export * from './remoteCore';
 export * from './gate';
 export * from './runner';
 export * from './nodeHost';

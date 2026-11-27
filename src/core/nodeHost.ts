@@ -1,13 +1,20 @@
 import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import { AgentHost, CommandResult, spawnShellCommand } from '../agent/tools';
+import { AgentHost, CommandResult, LspQueryRequest, spawnShellCommand } from '../agent/tools';
+import { LspManager } from './lsp';
 
 /** AgentHost for plain Node (CLI, CI, SSH sessions on a VPS). No editor required. */
 export class NodeAgentHost implements AgentHost {
   private rg?: string | null;
+  private lsp?: LspManager;
 
-  constructor(readonly cwd: string, private readonly env: Record<string, string> = {}) {}
+  constructor(
+    readonly cwd: string,
+    private readonly env: Record<string, string> = {},
+    private readonly home?: string,
+    private readonly trustProjectLsp?: boolean
+  ) {}
 
   async readFile(absPath: string): Promise<string> {
     return fs.promises.readFile(absPath, 'utf8');
@@ -36,6 +43,20 @@ export class NodeAgentHost implements AgentHost {
 
   runCommand(command: string, cwd: string, options: { signal: AbortSignal; timeoutMs: number; onOutput?: (chunk: string) => void }): Promise<CommandResult> {
     return spawnShellCommand(command, cwd, { ...options, env: { ...process.env, ...this.env, PERPLEXICODE: '1', CI: process.env.CI || '' } });
+  }
+
+  async lspQuery(request: LspQueryRequest): Promise<string> {
+    if (!this.lsp) {
+      this.lsp = new LspManager(this.cwd, { homeDir: this.home, trustProject: this.trustProjectLsp });
+    }
+    return this.lsp.query(request);
+  }
+
+  async dispose(): Promise<void> {
+    if (this.lsp) {
+      await this.lsp.closeAll();
+      this.lsp = undefined;
+    }
   }
 
   ripgrepPath(): string | undefined {

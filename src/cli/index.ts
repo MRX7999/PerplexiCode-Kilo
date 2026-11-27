@@ -6,7 +6,22 @@ import { spawnSync } from 'child_process';
 import { MODES } from '../agent/modes';
 import type { AgentTask, AskResponse, CompletionProvider } from '../agent/task';
 import type { AgentSettings, UiMessage } from '../agent/types';
-import { getBundledSnapshotDate, COMPUTE_MODES, getComputeModeOption, getModelById, getModelCatalog, getModelLabel, isValidComputeModeInput, normalizeComputeMode, resolveComputeRoute } from '../api/modelCatalog';
+import {
+  getActiveCatalogSource,
+  getBundledSnapshotDate,
+  COMPUTE_MODES,
+  getComputeModeOption,
+  getModelById,
+  getModelCatalog,
+  getModelLabel,
+  isValidComputeModeInput,
+  normalizeComputeMode,
+  resolveComputeRoute,
+} from '../api/modelCatalog';
+import {
+  loadCachedVerifiedModelCatalog,
+  updateModelCatalogFromRepository,
+} from '../api/remoteCatalogUpdater';
 import type { ComputeMode } from '../api/types';
 import { loadSkills, loadSubagents } from '../core/agents';
 import { buildDiagnosticBundle, serializeDiagnosticBundle } from '../core/diagnostics';
@@ -33,6 +48,11 @@ import { findMcpCatalogEntry, installMcpCatalogEntry, MCP_CATALOG } from '../cor
 import { cliStores, parseCookieInput } from '../core/nodeStores';
 import { OpenAICompatibleProvider, openAIOptionsFromEnv } from '../core/openaiProvider';
 import { createPerplexityBackend } from '../core/perplexity';
+import {
+  generateServeToken,
+  startRemoteCoreServer,
+  writeServeTokenFile,
+} from '../core/remoteCore';
 import { CoreSession, RunResult } from '../core/runner';
 import { loadSettings, projectDefinesHooks } from '../core/settings';
 import { HookEngine } from '../core/hooks';
@@ -125,6 +145,15 @@ export interface CliOptions {
   /** F24: Enable/disable cross-model review before attempt_completion, and optional reviewer model ID. */
   crossModelReview?: boolean;
   crossModelReviewModel?: string;
+  /** F26: `pcode serve` daemon options (tokens come strictly from env/stdin/0600 file, never argv). */
+  serveSocket?: string;
+  serveHost?: string;
+  servePort?: number;
+  serveTokenEnv?: string;
+  serveTokenStdin?: boolean;
+  /** F30: `pcode models update` custom repository JSON / SHA-256 URLs. */
+  catalogUrl?: string;
+  catalogSha256Url?: string;
 }
 
 /**
@@ -144,7 +173,7 @@ export const PCODE_EXIT_CODES = {
 
 export type PcodeExitCode = (typeof PCODE_EXIT_CODES)[keyof typeof PCODE_EXIT_CODES];
 
-const SUBCOMMANDS = new Set(['login', 'logout', 'accounts', 'sessions', 'models', 'agents', 'skills', 'presets', 'mcp', 'worktree', 'doctor', 'help', 'version']);
+const SUBCOMMANDS = new Set(['login', 'logout', 'accounts', 'sessions', 'models', 'agents', 'skills', 'presets', 'mcp', 'worktree', 'serve', 'doctor', 'help', 'version']);
 
 function splitRules(value: string): string[] {
   // "Bash(npm test:*),Read Edit" → ["Bash(npm test:*)", "Read", "Edit"]; commas/spaces inside (...) are kept.
@@ -340,6 +369,23 @@ export function parseArgs(argv: string[]): CliOptions {
       case '--cross-review': case '--cross-model-review': options.crossModelReview = true; break;
       case '--no-cross-review': case '--no-cross-model-review': options.crossModelReview = false; break;
       case '--cross-review-model': options.crossModelReviewModel = value(); break;
+      case '--socket': options.serveSocket = path.resolve(value()); break;
+      case '--ws': options.servePort = options.servePort ?? 0; break;
+      case '--host': options.serveHost = value().trim(); break;
+      case '--port': {
+        const p = Number(value());
+        if (!Number.isInteger(p) || p < 0 || p > 65535) throw new Error('--port must be an integer between 0 and 65535');
+        options.servePort = p;
+        break;
+      }
+      case '--token-env': options.serveTokenEnv = value().trim(); break;
+      case '--token-stdin': options.serveTokenStdin = true; break;
+      case '--token': case '--bearer-token':
+        throw new Error(
+          'Passing bearer tokens on the command line (--token) is forbidden because CLI arguments are visible in process listings. Use PCODE_SERVE_TOKEN, --token-env <VAR>, --token-stdin, or let pcode serve write ~/.perplexicode/serve.token (0600).'
+        );
+      case '--catalog-url': options.catalogUrl = value().trim(); break;
+      case '--sha256-url': options.catalogSha256Url = value().trim(); break;
       case '-h': case '--help': options.help = true; break;
       case '--version': options.version = true; break;
       default:
@@ -400,7 +446,8 @@ Commands:
   pcode logout <alias|id>                  remove an account
   pcode accounts                           list accounts
   pcode sessions                           saved sessions of this folder
-  pcode models                             available model ids
+  pcode models [update]                    list models or update verified catalog from repository (bundled fallback)
+  pcode serve [--socket p | --port n]      start headless core daemon (Unix socket 0600 or WebSocket + bearer token)
   pcode agents | skills                    subagents / skills found for this folder
   pcode agents catalog | skills catalog    built-in presets you can install
   pcode agents add <id...> [-g]            install subagent presets (project; -g = ~/.perplexicode)
@@ -844,9 +891,88 @@ function headlessUi(options: CliOptions): SessionUi {
   };
 }
 
+/**
+ * F28: Live elapsed-time ticker for long-running shell commands in REPL / interactive CLI.
+ * Activates only after `thresholdMs` (default `PCODE_COMMAND_TIMER_MS` or 1000ms) so fast commands
+ * stay completely quiet while long builds/tests display live progress (`⏱ ... 2.0s`).
+ */
+export class LongCommandTimer {
+  private startedAt = 0;
+  private delayTimer?: NodeJS.Timeout;
+  private intervalTimer?: NodeJS.Timeout;
+  private showed = false;
+  private ticks = 0;
+  private readonly thresholdMs: number;
+  private readonly tickMs: number;
+  private readonly onTick: (line: string, elapsedMs: number) => void;
+
+  constructor(options: {
+    thresholdMs?: number;
+    tickMs?: number;
+    onTick?: (line: string, elapsedMs: number) => void;
+  } = {}) {
+    const envThreshold = Number(process.env.PCODE_COMMAND_TIMER_MS);
+    const envTick = Number(process.env.PCODE_COMMAND_TIMER_TICK_MS);
+    this.thresholdMs =
+      options.thresholdMs ?? (Number.isFinite(envThreshold) && envThreshold >= 50 ? envThreshold : 1000);
+    this.tickMs = options.tickMs ?? (Number.isFinite(envTick) && envTick >= 50 ? envTick : 1000);
+    this.onTick =
+      options.onTick
+      || ((line) => {
+        if (process.stderr.isTTY) {
+          process.stderr.write(`\r\x1b[K${dim(line)}`);
+        } else {
+          out(dim(line));
+        }
+      });
+  }
+
+  start(command: string): void {
+    this.stop();
+    this.startedAt = Date.now();
+    this.showed = false;
+    this.ticks = 0;
+    const shortCmd = command.replace(/\s+/g, ' ').trim().slice(0, 60);
+    const emit = () => {
+      this.showed = true;
+      this.ticks += 1;
+      const elapsed = Date.now() - this.startedAt;
+      this.onTick(`⏱ выполняю \`${shortCmd}\` … ${(elapsed / 1000).toFixed(1)}s`, elapsed);
+    };
+    this.delayTimer = setTimeout(() => {
+      emit();
+      this.intervalTimer = setInterval(emit, this.tickMs);
+      this.intervalTimer.unref?.();
+    }, this.thresholdMs);
+    this.delayTimer.unref?.();
+  }
+
+  stop(): { durationMs: number; showedTimer: boolean; ticks: number } {
+    if (this.delayTimer) {
+      clearTimeout(this.delayTimer);
+      this.delayTimer = undefined;
+    }
+    if (this.intervalTimer) {
+      clearInterval(this.intervalTimer);
+      this.intervalTimer = undefined;
+    }
+    const durationMs = this.startedAt > 0 ? Date.now() - this.startedAt : 0;
+    const showedTimer = this.showed;
+    const ticks = this.ticks;
+    if (showedTimer && process.stderr.isTTY) {
+      process.stderr.write('\r\x1b[K');
+    }
+    this.startedAt = 0;
+    this.showed = false;
+    this.ticks = 0;
+    return { durationMs, showedTimer, ticks };
+  }
+}
+
 class InteractiveUi implements SessionUi {
   readonly rl: readline.Interface;
   private readonly printer: Printer;
+  private readonly cmdTimer = new LongCommandTimer();
   private queue: Promise<unknown> = Promise.resolve();
   private readonly pipedLines: string[] = [];
   private readonly pipedWaiters: Array<{ resolve: (line: string) => void; reject: (err: Error) => void }> = [];
@@ -866,7 +992,7 @@ class InteractiveUi implements SessionUi {
         if (!line.startsWith('/')) return [[], line];
         const builtins = [
           '/help', '/mode', '/permissions', '/model', '/compute', '/mcp',
-          '/context', '/worktree', '/compact', '/clear', '/agents', '/skills',
+          '/context', '/worktree', '/rewind', '/compact', '/clear', '/agents', '/skills',
           '/status', '/todos', '/resume', '/exit',
         ];
         const candidates = [...new Set([...builtins, ...this.slashCandidatesRef()])];
@@ -928,7 +1054,14 @@ class InteractiveUi implements SessionUi {
   }
 
   event(_task: AgentTask, event: CoreEvent): void {
-    if (event.type === 'banner') {
+    if (event.type === 'command_start') {
+      this.cmdTimer.start(event.command);
+    } else if (event.type === 'command_end') {
+      const { durationMs, showedTimer } = this.cmdTimer.stop();
+      if (showedTimer) {
+        out(dim(`⏱ команда завершилась за ${(durationMs / 1000).toFixed(1)}s`));
+      }
+    } else if (event.type === 'banner') {
       out(cyan(formatCliStatusLine(event)));
     } else if (event.type === 'request_end' && event.routeLine) {
       out(dim(`[маршрут] ${event.routeLine}`));
@@ -1144,6 +1277,8 @@ const SLASH_HELP = `/help              this help
 /mcp [reconnect [name]]  MCP servers, their tools and resources
 /context [exclude|include <id>]  inspect next-request context, why items are included, and toggle exclusions
 /worktree [status|apply|discard] inspect, apply, or discard isolated git worktree changes
+/rewind [seq|list] roll back BOTH files and session transcript to checkpoint #seq (default: latest)
+!<command>         run a local shell command and append its output to session context
 /compact [focus]   summarise the conversation to save context
 /clear             start a new session
 /agents  /skills   list subagents, skills and MCP server:skill prompts
@@ -1209,6 +1344,33 @@ async function runInteractive(options: CliOptions): Promise<number> {
       break;
     }
     if (!line) continue;
+    if (line.startsWith('!')) {
+      const bangCmd = line.slice(1).trim();
+      if (!bangCmd) {
+        out(dim('usage: !<command> — выполнить локальную команду и добавить вывод в контекст сессии'));
+        continue;
+      }
+      const bangTimer = new LongCommandTimer();
+      const bangAbort = new AbortController();
+      const onBangSigint = () => bangAbort.abort();
+      process.once('SIGINT', onBangSigint);
+      bangTimer.start(bangCmd);
+      try {
+        const res = await bundle.session.runLocalBangCommand(bangCmd, { signal: bangAbort.signal });
+        const { durationMs } = bangTimer.stop();
+        const durTag = durationMs >= 1000 ? ` · ${(durationMs / 1000).toFixed(1)}s` : '';
+        out(`${res.exitCode === 0 ? green('●') : red('●')} ${bold('!')} ${bangCmd} ${dim(`(exit ${res.exitCode ?? '?'}${durTag} · добавлено в контекст)`)}`);
+        if (res.output.trim()) {
+          out(dim(res.output.trimEnd().split('\n').slice(-25).map((l) => `  ${l}`).join('\n')));
+        }
+      } catch (err) {
+        bangTimer.stop();
+        out(red(`✖ ${(err as Error).message}`));
+      } finally {
+        process.removeListener('SIGINT', onBangSigint);
+      }
+      continue;
+    }
     if (line.startsWith('/')) {
       const [cmd, ...rest] = line.slice(1).split(/\s+/);
       const arg = rest.join(' ').trim();
@@ -1320,6 +1482,36 @@ async function runInteractive(options: CliOptions): Promise<number> {
           bundle = await buildSession(options, ui);
           out(dim('new session'));
           break;
+        case 'rewind': {
+          if (arg === 'list' || arg === 'ls') {
+            const cps = s.listCheckpoints();
+            if (cps.length === 0) {
+              out(dim('нет чекпоинтов в текущей сессии'));
+            } else {
+              for (const cp of cps) {
+                const iso = new Date(cp.ts).toISOString().slice(11, 19);
+                out(`#${String(cp.seq).padEnd(3)} ${dim(iso)}  ${cp.created ? green('created ') : yellow('modified')}  ${cp.path}`);
+              }
+            }
+            break;
+          }
+          let seqNum: number | undefined;
+          if (arg) {
+            const parsedSeq = Number(arg.replace(/^#/, ''));
+            if (!Number.isInteger(parsedSeq) || parsedSeq < 1) {
+              out(red('usage: /rewind [seq|list]'));
+              break;
+            }
+            seqNum = parsedSeq;
+          }
+          try {
+            const r = await s.rewind(seqNum);
+            out(green(`✔ Откат к чекпоинту #${r.seq}: восстановлено файлов: ${r.restoredFiles}, сообщений в сессии: ${r.apiMessagesBefore} → ${r.apiMessagesAfter}.`));
+          } catch (err) {
+            out(red(`✖ ${(err as Error).message}`));
+          }
+          break;
+        }
         case 'agents':
           for (const a of s.subagents) out(`${bold(a.name)} ${dim(`[${a.scope}, ${a.mode}${a.model ? `, ${a.model}` : ''}]`)} ${a.description}`);
           if (s.subagents.length === 0) out(dim('no subagents (.perplexicode/agents/*.md or .claude/agents/*.md)'));
@@ -1729,7 +1921,30 @@ function cmdSessions(options: CliOptions): number {
   return 0;
 }
 
-function cmdModels(): number {
+async function cmdModels(options: CliOptions): Promise<number> {
+  const sub = options.args[0];
+  if (sub === 'update') {
+    const res = await updateModelCatalogFromRepository({
+      catalogUrl: options.catalogUrl,
+      sha256Url: options.catalogSha256Url,
+      cacheDir: perplexicodeHome(),
+    });
+    if (!res.updated) {
+      out(
+        red(
+          `✖ Не удалось обновить каталог моделей (${res.error || 'unknown error'}); используется встроенный запасной снимок (${res.modelCount} моделей).`
+        )
+      );
+      return PCODE_EXIT_CODES.RUNTIME_ERROR;
+    }
+    out(
+      green(
+        `✔ Каталог моделей обновлён (${res.modelCount} моделей, снимок ${res.snapshotDate || 'remote'}, sha256 ${res.sha256?.slice(0, 12)}…).`
+      )
+    );
+    return PCODE_EXIT_CODES.OK;
+  }
+  const active = getActiveCatalogSource();
   const catalog = getModelCatalog();
   for (const m of catalog.filter((x) => x.selectable !== false && x.surfaced !== false)) {
     process.stdout.write(`${m.id.padEnd(26)} ${m.label.padEnd(30)} ${m.requiredPlan}${m.supportsThinking ? ' · --thinking' : ''}\n`);
@@ -1738,7 +1953,77 @@ function cmdModels(): number {
   for (const mode of COMPUTE_MODES) {
     process.stdout.write(`${mode.id.padEnd(26)} ${mode.label.padEnd(30)} ${mode.requiredPlan}${mode.defaultModelId ? ` · ${mode.defaultModelId}` : ''}\n`);
   }
+  process.stdout.write(
+    `\nCatalog source: ${active.source} (snapshot ${active.snapshotDate}${active.sha256 ? `, sha256 ${active.sha256.slice(0, 12)}…` : ''})\n`
+  );
   return 0;
+}
+
+async function cmdServe(options: CliOptions): Promise<number> {
+  let token = '';
+  let tokenSource = '';
+  if (options.serveTokenStdin) {
+    token = (await readAllStdin()).trim();
+    tokenSource = 'stdin';
+  } else if (options.serveTokenEnv) {
+    token = (process.env[options.serveTokenEnv] || '').trim();
+    tokenSource = `env:${options.serveTokenEnv}`;
+  } else if ((process.env.PCODE_SERVE_TOKEN || '').trim()) {
+    token = process.env.PCODE_SERVE_TOKEN!.trim();
+    tokenSource = 'env:PCODE_SERVE_TOKEN';
+  } else {
+    token = generateServeToken();
+    const tokenFile = writeServeTokenFile(token, perplexicodeHome());
+    tokenSource = `file:${tokenFile} (0600)`;
+  }
+
+  if (!token) {
+    out(red('✖ Remote core daemon requires a non-empty bearer token.'));
+    return PCODE_EXIT_CODES.USAGE_ERROR;
+  }
+
+  const useWebSocket = options.servePort !== undefined || Boolean(options.serveHost);
+  const socketPath = useWebSocket
+    ? undefined
+    : options.serveSocket || path.join(perplexicodeHome(), 'serve.sock');
+
+  const server = await startRemoteCoreServer({
+    cwd: options.cwd,
+    token,
+    socketPath,
+    host: options.serveHost || '127.0.0.1',
+    port: useWebSocket ? (options.servePort ?? 0) : undefined,
+    trustProject: options.trustProject || isTrusted(options.cwd),
+    log: (line) => {
+      if (options.verbose) out(dim(`[serve] ${line}`));
+    },
+  });
+
+  const endpoint = server.wsUrl || `unix://${server.socketPath}`;
+  const transport = server.wsUrl ? 'websocket' : 'unix';
+
+  process.stdout.write(
+    `${JSON.stringify({
+      type: 'serve_ready',
+      endpoint,
+      transport,
+      cwd: options.cwd,
+      token_source: tokenSource,
+    })}\n`
+  );
+  out(green(`✔ pcode serve listening on ${endpoint} (token source: ${tokenSource})`));
+  out(dim('Perplexity sessions remain strictly on the connecting IDE client and are never copied to this daemon.'));
+
+  await new Promise<void>((resolve) => {
+    const shutdown = () => {
+      process.removeListener('SIGINT', shutdown);
+      process.removeListener('SIGTERM', shutdown);
+      void server.close().finally(() => resolve());
+    };
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+  });
+  return PCODE_EXIT_CODES.OK;
 }
 
 function cmdLibraryAdd(kind: 'agent' | 'skill', options: CliOptions): number {
@@ -1996,13 +2281,16 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     out(red(`--cwd ${options.cwd} does not exist`));
     return PCODE_EXIT_CODES.USAGE_ERROR;
   }
+  // F30: Activate cached SHA-256 verified remote catalog when present; falls back to bundled snapshot.
+  loadCachedVerifiedModelCatalog(perplexicodeHome());
   try {
     switch (options.command) {
       case 'login': return await cmdLogin(options);
       case 'logout': return await cmdLogout(options);
       case 'accounts': return await cmdAccounts();
       case 'sessions': return cmdSessions(options);
-      case 'models': return cmdModels();
+      case 'models': return await cmdModels(options);
+      case 'serve': return await cmdServe(options);
       case 'agents': return cmdAgents(options);
       case 'presets': return cmdPresets(options);
       case 'skills': return cmdSkills(options);

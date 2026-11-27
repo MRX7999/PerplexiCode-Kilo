@@ -8,6 +8,12 @@ import { PerplexityTransport } from './agent/transport';
 import { CapabilityFetcher } from './api/capabilityFetcher';
 import { COMPUTE_MODES, getModelLabel, resolveComputeRoute, setRuntimeModelCatalog } from './api/modelCatalog';
 import { ModelFetcher } from './api/modelFetcher';
+import {
+  DEFAULT_REMOTE_CATALOG_SHA256_URL,
+  DEFAULT_REMOTE_CATALOG_URL,
+  loadCachedVerifiedModelCatalog,
+  updateModelCatalogFromRepository,
+} from './api/remoteCatalogUpdater';
 import { RotationEngine } from './api/rotationEngine';
 import { RotationStrategy } from './api/types';
 import { LoginProvider } from './providers/loginProvider';
@@ -86,6 +92,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     updateStatusBar();
   };
 
+  // F30: Load any previously SHA-256 verified catalog cache before initializing models; falls back to bundled snapshot.
+  loadCachedVerifiedModelCatalog(context.globalStorageUri.fsPath);
   // Do not block activation on network calls: the UI comes up with the bundled catalog first.
   setRuntimeModelCatalog(modelFetcher.getFallbackModels());
   void controller.reloadModels().then(updateStatusBar);
@@ -404,6 +412,43 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     await controller.mcpOAuthLogout();
   });
 
+  register('perplexicodeKilo.remote.connect', async () => {
+    await controller.connectRemoteCore();
+  });
+  register('perplexicodeKilo.remote.disconnect', async () => {
+    await controller.disconnectRemoteCore(false);
+  });
+
+  register('perplexicodeKilo.models.updateCatalog', async () => {
+    const catalogUrl =
+      readSetting<string>('perplexicodeKilo.models.remoteCatalogUrl', DEFAULT_REMOTE_CATALOG_URL).trim()
+      || DEFAULT_REMOTE_CATALOG_URL;
+    const sha256Url =
+      readSetting<string>('perplexicodeKilo.models.remoteCatalogSha256Url', DEFAULT_REMOTE_CATALOG_SHA256_URL).trim()
+      || `${catalogUrl}.sha256`;
+    const res = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'PerplexiCode: Обновление каталога моделей…' },
+      () =>
+        updateModelCatalogFromRepository({
+          catalogUrl,
+          sha256Url,
+          cacheDir: context.globalStorageUri.fsPath,
+        })
+    );
+    if (!res.updated) {
+      void vscode.window.showWarningMessage(
+        `PerplexiCode: Не удалось обновить каталог моделей (${res.error || 'ошибка проверки'}). Используется встроенный снимок (${res.modelCount} моделей).`
+      );
+      return;
+    }
+    setRuntimeModelCatalog(res.models);
+    await controller.reloadModels();
+    updateStatusBar();
+    void vscode.window.showInformationMessage(
+      `PerplexiCode: Каталог моделей обновлён (${res.modelCount} моделей, снимок ${res.snapshotDate || 'remote'}).`
+    );
+  });
+
   register('perplexicodeKilo.cycleMode', async () => {
     const index = MODES.findIndex((mode) => mode.slug === controller.getModeSlug());
     await controller.setMode(MODES[(index + 1) % MODES.length].slug);
@@ -476,6 +521,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   register('perplexicodeKilo.explainCode', () => controller.runCodeAction('explain'));
   register('perplexicodeKilo.fixCode', () => controller.runCodeAction('fix'));
   register('perplexicodeKilo.improveCode', () => controller.runCodeAction('improve'));
+  register('perplexicodeKilo.quickEditSelection', () => controller.quickEditSelection());
   register('perplexicodeKilo.addToContext', () => controller.runCodeAction('add'));
   register('perplexicodeKilo.askAboutSelection', async () => {
     const editor = vscode.window.activeTextEditor;
@@ -564,6 +610,7 @@ class PerplexiCodeActionProvider implements vscode.CodeActionProvider {
       make('PerplexiCode: Fix with agent', 'perplexicodeKilo.fixCode', vscode.CodeActionKind.QuickFix, true);
     }
     if (!range.isEmpty) {
+      make('PerplexiCode: Quick Edit Selection (Cmd/Ctrl+I)', 'perplexicodeKilo.quickEditSelection', vscode.CodeActionKind.RefactorRewrite, !hasProblems);
       make('PerplexiCode: Explain code', 'perplexicodeKilo.explainCode', vscode.CodeActionKind.QuickFix);
       make('PerplexiCode: Improve code', 'perplexicodeKilo.improveCode', vscode.CodeActionKind.RefactorRewrite);
       make('PerplexiCode: Add to context', 'perplexicodeKilo.addToContext', vscode.CodeActionKind.QuickFix);

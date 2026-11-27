@@ -121,7 +121,7 @@ export function getGroupOptions(mode: ModeConfig, group: ToolGroup): GroupOption
 }
 
 export const TOOL_GROUPS: Record<ToolGroup, string[]> = {
-  read: ['read_file', 'list_files', 'search_files', 'list_code_definition_names', 'glob_files'],
+  read: ['read_file', 'list_files', 'search_files', 'list_code_definition_names', 'glob_files', 'lsp'],
   edit: ['write_to_file', 'apply_diff', 'insert_content', 'search_and_replace'],
   command: ['execute_command'],
   modes: ['switch_mode', 'new_task'],

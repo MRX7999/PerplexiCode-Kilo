@@ -20,6 +20,18 @@ export interface CommandResult {
   aborted: boolean;
 }
 
+export type LspOperation = 'definition' | 'references' | 'hover' | 'diagnostics';
+
+export interface LspQueryRequest {
+  operation: LspOperation;
+  /** Workspace-relative or absolute file path (optional for workspace-wide diagnostics). */
+  path?: string;
+  /** 1-based line number (required for definition, references, hover). */
+  line?: number;
+  /** 1-based column/character number (defaults to 1). */
+  character?: number;
+}
+
 export interface AgentHost {
   readonly cwd: string;
   readFile(absPath: string): Promise<string>;
@@ -30,6 +42,9 @@ export interface AgentHost {
   getDiagnostics?(absPath: string): Promise<string>;
   /** Returns all workspace problems formatted for the prompt. */
   getWorkspaceProblems?(): Promise<string>;
+  /** F27: Executes LSP navigation/diagnostics queries (`.lsp.json` in CLI, VS Code providers in IDE). */
+  lspQuery?(request: LspQueryRequest): Promise<string>;
+  dispose?(): Promise<void> | void;
   runCommand(command: string, cwd: string, options: { signal: AbortSignal; timeoutMs: number; onOutput?: (chunk: string) => void }): Promise<CommandResult>;
   ripgrepPath?(): string | undefined;
   openTabs?(): string[];
