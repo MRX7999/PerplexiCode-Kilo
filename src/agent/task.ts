@@ -41,8 +41,12 @@ import {
   webFetchTool,
 } from './tools';
 import { analyzeShellCommand, commandTouchesProtectedConfig, isProtectedAgentConfigPath } from './shellParser';
+import { buildRepoMap } from './repoMap';
 import { buildRouteSummary, CompletionRequest, CompletionResult, ThreadState } from './transport';
 import { getComputeModeOption } from '../api/modelCatalog';
+import { computeBackoffWithJitterMs } from '../api/rotationEngine';
+import { checkAutoCompactThreshold, structuredAutoCompact } from '../core/compaction';
+import { assembleAndInspectPrompt, ContextInspectionReport } from '../core/contextInspector';
 import type { CoreEvent, GateContext, GateVerdict, ToolGate } from '../core/types';
 import { EDIT_TOOLS, READ_TOOLS } from '../core/types';
 import {
@@ -169,6 +173,10 @@ export class AgentTask {
   private stopAttempts = 0;
   /** F02: Commands interrupted before recording exit status; cannot be blindly re-run until state is checked. */
   private readonly unconfirmedCommands = new Set<string>();
+  /** F12: Context items manually excluded from outgoing requests via Context Inspector. */
+  private readonly excludedContextIds = new Set<string>();
+  /** F13: Statistics of the latest auto/manual compaction run, surfaced in Context Inspector. */
+  private lastCompactionStats?: { before: number; after: number; compactedMessages: number };
 
   constructor(private readonly options: TaskOptions) {
     const restore = options.restore;
@@ -185,6 +193,9 @@ export class AgentTask {
       this.thread = restore.thread;
       this.completionResult = restore.completionResult;
       this.lastModelId = restore.modelId;
+      for (const excludedId of restore.excludedContextIds || []) {
+        this.excludedContextIds.add(excludedId);
+      }
       this.status = {
         state: restore.status === 'running' || restore.status === 'waiting' ? 'idle' : restore.status,
         requestCount: restore.requestCount,
@@ -241,7 +252,8 @@ export class AgentTask {
     if (extra === null) {
       return;
     }
-    const content = await this.withEnvironment(`<task>\n${text}\n</task>${extra}`, true);
+    const repoExtra = await this.maybeExpandInlineRepoMention(text);
+    const content = await this.withEnvironment(`<task>\n${text}\n</task>${repoExtra}${extra}`, true);
     this.apiMessages.push({ role: 'user', content, ts: Date.now() });
     await this.loop();
   }
@@ -264,9 +276,37 @@ export class AgentTask {
     if (extra === null) {
       return;
     }
-    const content = await this.withEnvironment(`<user_message>\n${text}\n</user_message>${extra}`, false);
+    const repoExtra = await this.maybeExpandInlineRepoMention(text);
+    const content = await this.withEnvironment(`<user_message>\n${text}\n</user_message>${repoExtra}${extra}`, false);
     this.apiMessages.push({ role: 'user', content, ts: Date.now() });
     await this.loop();
+  }
+
+  /** F12: Returns a detailed inspection of what will go into the next LLM request and why. */
+  async inspectContext(): Promise<ContextInspectionReport> {
+    const settings = this.options.getSettings();
+    const assembled = await this.assemblePromptForTurn(settings);
+    return assembled.report;
+  }
+
+  /** F12: Excludes or re-includes a context item (`rules`, `mcp`, `repo_map`, `msg:<idx>`) from future turns. */
+  setContextItemExcluded(id: string, excluded: boolean): void {
+    if (id === 'system_base' || id === 'msg:0') {
+      return;
+    }
+    if (excluded) {
+      this.excludedContextIds.add(id);
+    } else {
+      this.excludedContextIds.delete(id);
+    }
+    // Force full self-contained prompt on next turn so server thread does not retain excluded items
+    this.thread = undefined;
+    this.options.callbacks.onState(this);
+    this.options.callbacks.persist?.(this);
+  }
+
+  getExcludedContextIds(): string[] {
+    return [...this.excludedContextIds];
   }
 
   respond(askId: string, response: AskResponse): void {
@@ -433,6 +473,7 @@ export class AgentTask {
       requestCount: this.status.requestCount,
       completionResult: this.completionResult,
       routeLine: this.status.routeLine,
+      excludedContextIds: this.excludedContextIds.size > 0 ? [...this.excludedContextIds] : undefined,
     };
   }
 
@@ -494,6 +535,146 @@ export class AgentTask {
     }
   }
 
+  private async maybeExpandInlineRepoMention(text: string): Promise<string> {
+    if (text.includes('<repo_map>')) {
+      return '';
+    }
+    if (!/(^|\s)@repo(?=\s|$|[,.;:!?])/.test(text)) {
+      return '';
+    }
+    const settings = this.options.getSettings();
+    const host = this.options.host;
+    const editedInTask = [...new Set(this.checkpoints.map((cp) => toPosixRelative(host.cwd, cp.path)))];
+    const map = await buildRepoMap({
+      cwd: host.cwd,
+      maxChars: settings.repoMapMaxChars ?? 6000,
+      activeFile: host.activeFile?.(),
+      openFiles: host.openTabs?.() || host.visibleFiles?.(),
+      changedFiles: editedInTask.length > 0 ? editedInTask : undefined,
+      queryText: text,
+    });
+    return `\n\n<repo_map>\n${map.text}\n</repo_map>`;
+  }
+
+  private async assemblePromptForTurn(settings: AgentSettings): Promise<{
+    fullPrompt: string;
+    systemPrompt: string;
+    report: ContextInspectionReport;
+    droppedMessages: number;
+  }> {
+    const selection = this.options.getSelection();
+    const mode = this.modeConfig;
+    const webSearch = selection.webSearch !== undefined
+      ? selection.webSearch
+      : settings.webSearch === 'always' ? true : settings.webSearch === 'never' ? false : mode.webSearchDefault;
+    const rawRules = await this.getRules();
+    const rawMcp = await this.mcpSection();
+    const rulesAndInstructions = [
+      mode.customInstructions,
+      settings.modeInstructions[mode.slug],
+      settings.customInstructions,
+      rawRules,
+    ].filter(Boolean).join('\n\n');
+
+    const rulesExcluded = this.excludedContextIds.has('rules');
+    const mcpExcluded = this.excludedContextIds.has('mcp');
+    const baseSystemPrompt = buildSystemPrompt({
+      mode,
+      cwd: this.options.host.cwd,
+      settings: {
+        customInstructions: rulesExcluded ? '' : settings.customInstructions,
+        modeInstructions: rulesExcluded ? {} : settings.modeInstructions,
+        language: settings.language,
+        maxPromptChars: settings.maxPromptChars,
+        diffEnabled: settings.diffEnabled,
+      },
+      rules: rulesExcluded ? '' : rawRules,
+      webSearch,
+      mcpSection: mcpExcluded ? '' : rawMcp,
+    });
+
+    let repoMapBlock: string | undefined;
+    let repoMapOmittedFiles: number | undefined;
+    const hasInlineRepoMap = this.apiMessages.some((m) => m.content.includes('<repo_map>'));
+    if (settings.repoMapEnabled && !hasInlineRepoMap) {
+      const host = this.options.host;
+      const editedInTask = [...new Set(this.checkpoints.map((cp) => toPosixRelative(host.cwd, cp.path)))];
+      const latestQuery = this.apiMessages[0]?.content || this.title;
+      const mapResult = await buildRepoMap({
+        cwd: host.cwd,
+        maxChars: settings.repoMapMaxChars ?? 6000,
+        activeFile: host.activeFile?.(),
+        openFiles: host.openTabs?.() || host.visibleFiles?.(),
+        changedFiles: editedInTask.length > 0 ? editedInTask : undefined,
+        queryText: latestQuery,
+      });
+      repoMapBlock = mapResult.text;
+      repoMapOmittedFiles = mapResult.omittedFiles;
+    }
+
+    const assembled = assembleAndInspectPrompt({
+      baseSystemPrompt,
+      systemIncludesRulesAndMcp: true,
+      rulesBlock: rulesAndInstructions || undefined,
+      mcpSection: rawMcp || undefined,
+      repoMapBlock,
+      repoMapReason: settings.repoMapEnabled
+        ? 'Автоматически подключено настройкой repoMapEnabled (приоритет активному файлу и текущему diff)'
+        : 'Подключено упоминанием @repo в сообщении',
+      repoMapOmittedFiles,
+      messages: this.apiMessages,
+      maxPromptChars: settings.maxPromptChars,
+      autoCompactThresholdRatio: settings.autoCompactThreshold ?? 0.8,
+      autoCompactKeepSteps: settings.autoCompactKeepSteps ?? 4,
+      excludedIds: this.excludedContextIds,
+      lastCompactionStats: this.lastCompactionStats,
+    });
+
+    const droppedMessages = assembled.report.items.filter((item) => item.status === 'omitted').length;
+    return {
+      fullPrompt: assembled.fullPrompt,
+      systemPrompt: assembled.systemPrompt,
+      report: assembled.report,
+      droppedMessages,
+    };
+  }
+
+  private maybeAutoCompact(systemChars: number, settings: AgentSettings): boolean {
+    const thresholdRatio = settings.autoCompactThreshold ?? 0.8;
+    const keepSteps = settings.autoCompactKeepSteps ?? 4;
+    const check = checkAutoCompactThreshold({
+      systemChars,
+      messages: this.apiMessages,
+      maxPromptChars: settings.maxPromptChars,
+      thresholdRatio,
+    });
+    if (!check.shouldCompact) {
+      return false;
+    }
+    const compacted = structuredAutoCompact({
+      messages: this.apiMessages,
+      todos: this.todos,
+      keepSteps,
+      maxSummaryChars: Math.max(1500, Math.floor(settings.maxPromptChars * 0.2)),
+    });
+    if (compacted.compactedMessages === 0 || compacted.after >= compacted.before) {
+      return false;
+    }
+    this.apiMessages = compacted.messages;
+    this.lastCompactionStats = {
+      before: compacted.before,
+      after: compacted.after,
+      compactedMessages: compacted.compactedMessages,
+    };
+    this.thread = undefined;
+    this.emitEvent({ type: 'compacted', before: compacted.before, after: compacted.after });
+    this.say({
+      type: 'info',
+      text: `Авто-сжатие контекста (${compacted.before} → ${compacted.after} симв., сохранены последние ${compacted.keptSteps} шагов).`,
+    });
+    return true;
+  }
+
   private async request(settings: AgentSettings): Promise<CompletionResult | undefined> {
     while (!this.abortController.signal.aborted) {
       const selection = this.options.getSelection();
@@ -501,26 +682,16 @@ export class AgentTask {
       const webSearch = selection.webSearch !== undefined
         ? selection.webSearch
         : settings.webSearch === 'always' ? true : settings.webSearch === 'never' ? false : mode.webSearchDefault;
-      const rules = await this.getRules();
-      const mcpSection = await this.mcpSection();
-      const systemPrompt = buildSystemPrompt({
-        mode,
-        cwd: this.options.host.cwd,
-        settings: {
-          customInstructions: settings.customInstructions,
-          modeInstructions: settings.modeInstructions,
-          language: settings.language,
-          maxPromptChars: settings.maxPromptChars,
-          diffEnabled: settings.diffEnabled,
-        },
-        rules,
-        webSearch,
-        mcpSection,
-      });
-      const full = buildFullPrompt(systemPrompt, this.apiMessages, settings.maxPromptChars);
+      let built = await this.assemblePromptForTurn(settings);
+      if (this.maybeAutoCompact(built.systemPrompt.length, settings)) {
+        built = await this.assemblePromptForTurn(settings);
+      }
+      const full = { prompt: built.fullPrompt, droppedMessages: built.droppedMessages };
       const latest = this.apiMessages[this.apiMessages.length - 1];
-      const allowThread = settings.contextStrategy === 'thread'
-        || (settings.contextStrategy === 'auto' && full.droppedMessages > 0);
+      const allowThread = this.excludedContextIds.size === 0 && (
+        settings.contextStrategy === 'thread'
+        || (settings.contextStrategy === 'auto' && full.droppedMessages > 0)
+      );
       const followUpPrompt = allowThread && this.thread && latest?.role === 'user'
         ? buildFollowUpPrompt(latest, `Current mode: ${mode.slug}.`)
         : undefined;
@@ -652,7 +823,7 @@ export class AgentTask {
           && this.apiRetries < 4
         ) {
           this.apiRetries += 1;
-          const retryDelayMs = Math.min(5000, 1500 * this.apiRetries);
+          const retryDelayMs = computeBackoffWithJitterMs(this.apiRetries - 1);
           this.setBanner(
             'retrying',
             'повторяю запрос',

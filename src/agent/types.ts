@@ -3,6 +3,8 @@ import type { TodoItem } from './toolParser';
 import type { ApiMessage } from './prompts';
 import type { ComputeMode } from '../api/types';
 
+export type { ApiMessage, TodoItem };
+
 export type DiffLine = { type: ' ' | '+' | '-' | '@'; text: string };
 
 export type AskKind =
@@ -107,6 +109,14 @@ export interface AgentSettings {
   includeFileListOnStart: boolean;
   /** F04: Stop task instead of falling back to another model/compute mode. */
   stopOnFallback?: boolean;
+  /** F11/F14: Automatically attach @repo symbol/import/test map to task system context. */
+  repoMapEnabled?: boolean;
+  /** F11: Hard character budget for @repo repository map. Default 6000. */
+  repoMapMaxChars?: number;
+  /** F13: Ratio of maxPromptChars (0.3..0.98) triggering structured auto-compaction; 0 disables. Default 0.8. */
+  autoCompactThreshold?: number;
+  /** F13: Number of latest dialogue steps kept untouched during auto-compaction. Default 4. */
+  autoCompactKeepSteps?: number;
 }
 
 export interface ModelSelection {
@@ -157,6 +167,8 @@ export interface PersistedTask {
   requestCount: number;
   completionResult?: string;
   routeLine?: string;
+  /** F12: Context item IDs manually excluded by user via Context Inspector. */
+  excludedContextIds?: string[];
 }
 
 export interface HistoryItem {

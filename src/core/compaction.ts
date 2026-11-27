@@ -1,20 +1,24 @@
-import type { ApiMessage } from '../agent/prompts';
 import type { CompletionProvider } from '../agent/task';
-import type { ModelSelection } from '../agent/types';
+import type { ApiMessage, ModelSelection, TodoItem } from '../agent/types';
 
 /**
- * /compact: summarise the transcript with the current model and replace it with the summary plus
- * the most recent messages. The Perplexity follow-up thread is reset because its server-side
- * context no longer matches.
+ * Conversation compaction (`/compact` and threshold-based structured auto-compaction).
+ *
+ * When a long coding session approaches `maxPromptChars`, older turns are summarized into a
+ * structured state block while preserving the system prompt and the last N steps untouched.
  */
 
 export const COMPACT_INSTRUCTIONS = `You are compacting the transcript of a coding-agent session so the work can continue in a fresh context.
-Write a dense summary in the language of the user's task with these sections:
-1. Task: the user's goal and explicit requirements, verbatim where important.
-2. Decisions and constraints: choices made, things the user rejected, permission denials.
-3. Work done: files created/edited (paths) and what changed; commands run with their results (exit codes, failing tests).
-4. Current state: what is verified, what is broken, open errors (exact messages).
-5. Next steps: the concrete remaining steps, in order.
+Write a dense, factual Markdown summary using these four structured headings:
+## Изменённые файлы
+- Every file created, modified, or deleted (exact workspace-relative paths and what changed).
+## Проверенные гипотезы
+- Files inspected, commands/tests executed, exit codes, and root causes confirmed or ruled out.
+## Ограничения
+- User goal, explicit instructions, architectural constraints, denied actions, and safety boundaries.
+## Статус todo
+- Completed items, in-progress step, and remaining items.
+
 Do not invent anything. Do not call tools. Output only the summary.`;
 
 export interface CompactOptions {
@@ -26,19 +30,360 @@ export interface CompactOptions {
   focus?: string;
   signal?: AbortSignal;
   maxTranscriptChars?: number;
+  todos?: readonly TodoItem[];
 }
 
-export async function compactMessages(options: CompactOptions): Promise<{ messages: ApiMessage[]; summary: string; before: number; after: number }> {
+export interface CompactionResult {
+  before: number;
+  after: number;
+  summary: string;
+  messages: ApiMessage[];
+}
+
+export interface StructuredCompactionSections {
+  modifiedFiles: string[];
+  verifiedHypotheses: string[];
+  constraints: string[];
+  todoStatus: string[];
+}
+
+export interface StructuredCompactionResult extends CompactionResult {
+  sections: StructuredCompactionSections;
+  compactedMessages: number;
+  keptMessages: number;
+  keptSteps: number;
+}
+
+export interface AutoCompactCheck {
+  shouldCompact: boolean;
+  estimatedChars: number;
+  thresholdChars: number;
+  thresholdRatio: number;
+}
+
+export function estimateMessagesChars(messages: readonly ApiMessage[]): number {
+  return messages.reduce((sum, message) => sum + message.content.length + 32, 0);
+}
+
+/**
+ * Checks whether the upcoming prompt exceeds `maxPromptChars * thresholdRatio`.
+ * `thresholdRatio <= 0` disables auto-compaction.
+ */
+export function checkAutoCompactThreshold(params: {
+  systemChars: number;
+  messages: readonly ApiMessage[];
+  maxPromptChars: number;
+  thresholdRatio: number;
+}): AutoCompactCheck {
+  const ratio = Number.isFinite(params.thresholdRatio) ? params.thresholdRatio : 0.8;
+  if (ratio <= 0 || params.maxPromptChars <= 0) {
+    const estimatedChars = params.systemChars + estimateMessagesChars(params.messages);
+    return {
+      shouldCompact: false,
+      estimatedChars,
+      thresholdChars: params.maxPromptChars,
+      thresholdRatio: ratio,
+    };
+  }
+  const clampedRatio = Math.min(0.98, Math.max(0.3, ratio));
+  const thresholdChars = Math.floor(params.maxPromptChars * clampedRatio);
+  const estimatedChars = params.systemChars + estimateMessagesChars(params.messages);
+  return {
+    shouldCompact: estimatedChars >= thresholdChars,
+    estimatedChars,
+    thresholdChars,
+    thresholdRatio: clampedRatio,
+  };
+}
+
+function clipLine(text: string, maxLen = 180): string {
+  const oneLine = text.replace(/\s+/g, ' ').trim();
+  if (oneLine.length <= maxLen) {
+    return oneLine;
+  }
+  return `${oneLine.slice(0, Math.max(20, maxLen - 3)).trimEnd()}...`;
+}
+
+function extractStructuredSections(
+  headMessages: readonly ApiMessage[],
+  todos?: readonly TodoItem[]
+): StructuredCompactionSections {
+  const modifiedMap = new Map<string, string>();
+  const hypotheses: string[] = [];
+  const seenHypotheses = new Set<string>();
+  const constraints: string[] = [];
+  const seenConstraints = new Set<string>();
+
+  const addHypothesis = (line: string) => {
+    const cleaned = clipLine(line, 190);
+    if (cleaned && !seenHypotheses.has(cleaned) && hypotheses.length < 18) {
+      seenHypotheses.add(cleaned);
+      hypotheses.push(cleaned);
+    }
+  };
+
+  const addConstraint = (line: string) => {
+    const cleaned = clipLine(line, 190);
+    if (cleaned && !seenConstraints.has(cleaned) && constraints.length < 12) {
+      seenConstraints.add(cleaned);
+      constraints.push(cleaned);
+    }
+  };
+
+  for (let idx = 0; idx < headMessages.length; idx += 1) {
+    const msg = headMessages[idx];
+    const content = msg.content || '';
+
+    // Carry forward facts from any earlier compacted_context block
+    if (content.includes('<compacted_context')) {
+      const prevModified = /## Изменённые файлы\n([\s\S]*?)(?=\n## |\n<\/compacted_context>|$)/.exec(content);
+      if (prevModified) {
+        for (const raw of prevModified[1].split('\n')) {
+          const item = raw.replace(/^-\s*/, '').trim();
+          if (item && item !== '(нет изменённых файлов)') {
+            const pathKey = item.split(':')[0].trim();
+            modifiedMap.set(pathKey, item);
+          }
+        }
+      }
+      const prevHyp = /## Проверенные гипотезы\n([\s\S]*?)(?=\n## |\n<\/compacted_context>|$)/.exec(content);
+      if (prevHyp) {
+        for (const raw of prevHyp[1].split('\n')) {
+          const item = raw.replace(/^-\s*/, '').trim();
+          if (item && item !== '(нет проверенных гипотез)') {
+            addHypothesis(item);
+          }
+        }
+      }
+      const prevCon = /## Ограничения\n([\s\S]*?)(?=\n## |\n<\/compacted_context>|$)/.exec(content);
+      if (prevCon) {
+        for (const raw of prevCon[1].split('\n')) {
+          const item = raw.replace(/^-\s*/, '').trim();
+          if (item && item !== '(явных ограничений не зафиксировано)') {
+            addConstraint(item);
+          }
+        }
+      }
+      continue;
+    }
+
+    if (idx === 0 && msg.role === 'user') {
+      const taskMatch = /<task>\s*([\s\S]*?)\s*<\/task>/.exec(content);
+      const rawGoal = taskMatch ? taskMatch[1] : content;
+      addConstraint(`Исходная задача: ${clipLine(rawGoal, 220)}`);
+    }
+
+    if (msg.role === 'assistant') {
+      // Detect edit tool calls
+      const editToolRegex = /<(write_to_file|apply_diff|search_and_replace|insert_content|delete_file)>\s*[\s\S]*?<path>([^<]+)<\/path>/g;
+      let editMatch: RegExpExecArray | null;
+      while ((editMatch = editToolRegex.exec(content)) !== null) {
+        const toolName = editMatch[1];
+        const filePath = editMatch[2].trim();
+        if (filePath && !modifiedMap.has(filePath)) {
+          modifiedMap.set(filePath, `${filePath}: ${toolName}`);
+        }
+      }
+
+      // Detect read/search/command hypotheses
+      const readRegex = /<read_file>\s*[\s\S]*?<path>([^<]+)<\/path>/g;
+      let readMatch: RegExpExecArray | null;
+      while ((readMatch = readRegex.exec(content)) !== null) {
+        addHypothesis(`Изучен файл ${readMatch[1].trim()}`);
+      }
+      const searchRegex = /<search_files>\s*[\s\S]*?<regex>([^<]+)<\/regex>/g;
+      let searchMatch: RegExpExecArray | null;
+      while ((searchMatch = searchRegex.exec(content)) !== null) {
+        addHypothesis(`Поиск по шаблону /${clipLine(searchMatch[1], 60)}/`);
+      }
+    }
+
+    if (msg.role === 'user') {
+      // Successful file edit results with diff stats
+      const appliedRegex = /The (new file was created|changes were applied) successfully:\s*([^\s(]+)\s*(\([^)]+\))?/g;
+      let appMatch: RegExpExecArray | null;
+      while ((appMatch = appliedRegex.exec(content)) !== null) {
+        const kind = appMatch[1] === 'new file was created' ? 'создан' : 'изменён';
+        const filePath = appMatch[2].trim();
+        const stats = appMatch[3] ? ` ${appMatch[3]}` : '';
+        modifiedMap.set(filePath, `${filePath}: ${kind}${stats}`);
+      }
+
+      // Command execution outcomes
+      const cmdResultRegex = /\[execute_command for '([^']+)'\]\s*Result:\s*([\s\S]*?)(?=\n\n\[|$)/g;
+      let cmdMatch: RegExpExecArray | null;
+      while ((cmdMatch = cmdResultRegex.exec(content)) !== null) {
+        const cmd = clipLine(cmdMatch[1], 80);
+        const exitMatch = /Exit code:\s*(-?\d+|null)/i.exec(cmdMatch[2]);
+        const exitInfo = exitMatch ? ` (exit ${exitMatch[1]})` : '';
+        addHypothesis(`Команда \`${cmd}\`${exitInfo}: ${clipLine(cmdMatch[2], 90)}`);
+      }
+
+      // Post-edit diagnostics
+      if (content.includes('New problems detected after saving the file:')) {
+        const diagSnippet = content.split('New problems detected after saving the file:')[1] || '';
+        addHypothesis(`Диагностика после правки: ${clipLine(diagSnippet, 120)}`);
+      }
+
+      // Explicit feedback, denials, or rule blocks
+      const feedbackMatch = /<feedback>\s*([\s\S]*?)\s*<\/feedback>/.exec(content);
+      if (feedbackMatch) {
+        addConstraint(`Уточнение пользователя: ${feedbackMatch[1]}`);
+      }
+      if (/Permission rule|denied this action|requires explicit confirmation|blocked by SSRF/i.test(content)) {
+        addConstraint(`Ограничение безопасности: ${clipLine(content, 150)}`);
+      }
+    }
+  }
+
+  let todoLines: string[] = [];
+  if (todos && todos.length > 0) {
+    todoLines = todos.map((item) => {
+      const mark = item.status === 'completed' ? '[x]' : item.status === 'in_progress' ? '[-]' : '[ ]';
+      return `${mark} ${clipLine(item.text, 140)}`;
+    });
+  } else {
+    // Fallback: inspect last <update_todo_list> in compacted messages
+    for (let i = headMessages.length - 1; i >= 0; i -= 1) {
+      const todoMatch = /<todos>\s*([\s\S]*?)\s*<\/todos>/.exec(headMessages[i].content);
+      if (todoMatch) {
+        todoLines = todoMatch[1]
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .slice(0, 15);
+        break;
+      }
+    }
+  }
+
+  return {
+    modifiedFiles: [...modifiedMap.values()],
+    verifiedHypotheses: hypotheses,
+    constraints,
+    todoStatus: todoLines,
+  };
+}
+
+export function formatStructuredCompactionSummary(sections: StructuredCompactionSections, maxChars = 6000): string {
+  const renderList = (items: string[], emptyLabel: string) =>
+    items.length > 0 ? items.map((item) => `- ${item}`).join('\n') : `- ${emptyLabel}`;
+
+  const raw = [
+    '## Изменённые файлы',
+    renderList(sections.modifiedFiles, '(нет изменённых файлов)'),
+    '',
+    '## Проверенные гипотезы',
+    renderList(sections.verifiedHypotheses, '(нет проверенных гипотез)'),
+    '',
+    '## Ограничения',
+    renderList(sections.constraints, '(явных ограничений не зафиксировано)'),
+    '',
+    '## Статус todo',
+    renderList(sections.todoStatus, '(список задач пуст)'),
+  ].join('\n');
+
+  if (raw.length <= maxChars) {
+    return raw;
+  }
+  return `${raw.slice(0, Math.max(200, maxChars - 32)).trimEnd()}\n... [сводка сокращена]`;
+}
+
+/**
+ * F13: Deterministic structured auto-compaction triggered when prompt approaches `maxPromptChars`.
+ * - System prompt is external and NEVER modified.
+ * - The last `keepSteps` steps (each step = 1 assistant turn + 1 user/tool turn, i.e. `2 * keepSteps`
+ *   messages when available) are preserved verbatim without touching a single character.
+ * - Older turns are replaced by a structured summary with 4 sections:
+ *   Изменённые файлы, Проверенные гипотезы, Ограничения, Статус todo.
+ */
+export function structuredAutoCompact(params: {
+  messages: ApiMessage[];
+  todos?: readonly TodoItem[];
+  keepSteps?: number;
+  maxSummaryChars?: number;
+}): StructuredCompactionResult {
+  const { messages, todos } = params;
+  const keepSteps = Math.max(1, Math.floor(params.keepSteps ?? 4));
+  const before = messages.reduce((sum, m) => sum + m.content.length, 0);
+
+  // Determine untouched tail: keep last N steps (2 * keepSteps messages, or 2 * keepSteps - 1)
+  const desiredTailMessages = keepSteps * 2;
+  if (messages.length <= desiredTailMessages + 1) {
+    const emptySections = extractStructuredSections([], todos);
+    return {
+      before,
+      after: before,
+      summary: '',
+      messages: [...messages],
+      sections: emptySections,
+      compactedMessages: 0,
+      keptMessages: messages.length,
+      keptSteps: keepSteps,
+    };
+  }
+
+  let tailStart = messages.length - desiredTailMessages;
+  if (tailStart < 1) {
+    tailStart = 1;
+  }
+
+  const head = messages.slice(0, tailStart);
+  const untouchedTail = messages.slice(tailStart);
+
+  const sections = extractStructuredSections(head, todos);
+  const summary = formatStructuredCompactionSummary(sections, params.maxSummaryChars ?? 6000);
+  const compactedEnvelope = [
+    `<compacted_context mode="auto" compacted_messages="${head.length}" kept_steps="${keepSteps}">`,
+    summary,
+    '</compacted_context>',
+  ].join('\n');
+
+  const now = Date.now();
+  const prefix: ApiMessage[] = untouchedTail[0]?.role === 'user'
+    ? [
+      { role: 'user', content: compactedEnvelope, ts: now },
+      { role: 'assistant', content: 'Принято. Продолжаю работу с учётом структурированной сводки контекста.', ts: now },
+    ]
+    : [{ role: 'user', content: compactedEnvelope, ts: now }];
+
+  const compacted: ApiMessage[] = [...prefix, ...untouchedTail];
+  const after = compacted.reduce((sum, m) => sum + m.content.length, 0);
+
+  return {
+    before,
+    after,
+    summary,
+    messages: compacted,
+    sections,
+    compactedMessages: head.length,
+    keptMessages: untouchedTail.length,
+    keptSteps: keepSteps,
+  };
+}
+
+export async function compactMessages(options: CompactOptions): Promise<{
+  messages: ApiMessage[];
+  summary: string;
+  before: number;
+  after: number;
+}> {
   const keep = Math.max(0, options.keepLast ?? 2);
   const head = options.messages.slice(0, Math.max(0, options.messages.length - keep));
   const tail = options.messages.slice(head.length);
   if (head.length === 0) {
-    return { messages: options.messages, summary: '', before: options.messages.length, after: options.messages.length };
+    return {
+      messages: options.messages,
+      summary: '',
+      before: options.messages.length,
+      after: options.messages.length,
+    };
   }
   const limit = options.maxTranscriptChars ?? 120_000;
-  let transcript = head.map((message) => `[${message.role === 'user' ? 'USER' : 'ASSISTANT'}]\n${message.content}`).join('\n\n');
+  let transcript = head
+    .map((message) => `[${message.role === 'user' ? 'USER' : 'ASSISTANT'}]\n${message.content}`)
+    .join('\n\n');
   if (transcript.length > limit) {
-    // Keep the start (task) and the most recent part.
     transcript = `${transcript.slice(0, Math.floor(limit * 0.3))}\n\n[... ${transcript.length - limit} characters omitted ...]\n\n${transcript.slice(-Math.floor(limit * 0.7))}`;
   }
   const prompt = `${COMPACT_INSTRUCTIONS}${options.focus ? `\nFocus especially on: ${options.focus}` : ''}\n\n====\n\nTRANSCRIPT\n\n${transcript}\n\n====\n\nWrite the summary now.`;
@@ -61,7 +406,6 @@ export async function compactMessages(options: CompactOptions): Promise<{ messag
     { role: 'assistant', content: 'Understood. I will continue from this summary and re-read files before editing them.', ts: now },
     ...tail,
   ];
-  // The transcript must end with a USER message for the agent loop.
   if (messages[messages.length - 1].role !== 'user') {
     messages.push({ role: 'user', content: '[Context was compacted. Continue the task.]', ts: now });
   }

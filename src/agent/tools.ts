@@ -26,7 +26,7 @@ export interface AgentHost {
   /** Writes through the editor so open documents, undo and formatters stay consistent. */
   writeFile(absPath: string, content: string): Promise<void>;
   deleteFile?(absPath: string): Promise<void>;
-  /** Returns new error-level diagnostics for the file after an edit (empty string when none). */
+  /** Returns new error and warning diagnostics for the file after an edit (empty string when none). */
   getDiagnostics?(absPath: string): Promise<string>;
   /** Returns all workspace problems formatted for the prompt. */
   getWorkspaceProblems?(): Promise<string>;
@@ -1253,4 +1253,77 @@ export function htmlToReadableText(html: string): string {
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
+
+export interface IdeDiagnosticEntry {
+  severity: 'error' | 'warning' | 'info' | 'hint';
+  /** 1-based line number */
+  line: number;
+  column?: number;
+  message: string;
+  source?: string;
+  code?: string | number;
+}
+
+export function diagnosticSignature(entry: IdeDiagnosticEntry): string {
+  return `${entry.severity}|${entry.message.trim()}|${entry.source || ''}|${entry.code ?? ''}`;
+}
+
+/**
+ * Computes newly introduced Error and Warning diagnostics after an IDE file edit
+ * (`apply_diff`, `write_to_file`, `search_and_replace`, `insert_content`).
+ * Uses multiset subtraction so line-number shifts of pre-existing diagnostics are ignored,
+ * while newly duplicated diagnostics with the same message are still reported.
+ */
+export function diffPostEditDiagnostics(
+  relPath: string,
+  before: readonly IdeDiagnosticEntry[],
+  after: readonly IdeDiagnosticEntry[],
+  maxItems = 30
+): string {
+  const isRelevant = (d: IdeDiagnosticEntry) => d.severity === 'error' || d.severity === 'warning';
+  const baselineCounts = new Map<string, number>();
+  for (const item of before) {
+    if (!isRelevant(item)) {
+      continue;
+    }
+    const key = diagnosticSignature(item);
+    baselineCounts.set(key, (baselineCounts.get(key) || 0) + 1);
+  }
+
+  const fresh: IdeDiagnosticEntry[] = [];
+  for (const item of after) {
+    if (!isRelevant(item)) {
+      continue;
+    }
+    const key = diagnosticSignature(item);
+    const remaining = baselineCounts.get(key) || 0;
+    if (remaining > 0) {
+      baselineCounts.set(key, remaining - 1);
+      continue;
+    }
+    fresh.push(item);
+  }
+
+  if (fresh.length === 0) {
+    return '';
+  }
+
+  fresh.sort((a, b) => {
+    if (a.severity !== b.severity) {
+      return a.severity === 'error' ? -1 : 1;
+    }
+    return a.line - b.line;
+  });
+
+  const lines = fresh.slice(0, maxItems).map((item) => {
+    const sevLabel = item.severity === 'error' ? 'Error' : 'Warning';
+    const tag = item.source ? `${sevLabel}/${item.source}` : sevLabel;
+    return `- [${tag}] Line ${Math.max(1, item.line)}: ${item.message}`;
+  });
+  if (fresh.length > maxItems) {
+    lines.push(`... (+${fresh.length - maxItems} more diagnostics)`);
+  }
+  return [relPath, ...lines].join('\n');
+}
+
 

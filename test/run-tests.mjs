@@ -57,6 +57,13 @@ const suites = [
     prebuild: true,
     options: { external: ['vscode', 'puppeteer-core', 'sql.js'] },
   },
+  {
+    // 3.6 IDE post-edit diagnostics, structural @repo map, context inspector, threshold auto-compaction, 24-task benchmark, jittered backoff & per-account RPM.
+    entry: 'release-3.6.test.ts',
+    outfile: 'release-3.6.test.cjs',
+    prebuild: true,
+    options: { external: ['vscode', 'puppeteer-core', 'sql.js'] },
+  },
 ];
 
 const only = process.argv[2];

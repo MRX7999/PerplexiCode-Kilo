@@ -1211,7 +1211,8 @@ test('F08: diagnostics bundle & `pcode doctor --bundle` include versions/stages/
   const exported = fs.readFileSync(outPath, 'utf8');
   const parsedExport = JSON.parse(exported);
   assert.equal(parsedExport.redacted, true);
-  assert.equal(parsedExport.versions.perplexicode, '3.5.0');
+  const expectedVersion = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')).version;
+  assert.equal(parsedExport.versions.perplexicode, expectedVersion);
   for (const [key, secret] of Object.entries(TOXIC)) {
     assert.ok(!exported.includes(secret), `CLI doctor --bundle leaked [${key}]`);
   }

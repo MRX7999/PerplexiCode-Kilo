@@ -1,13 +1,24 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { AgentHost, CommandResult, spawnShellCommand, toPosixRelative } from './tools';
+import {
+  AgentHost,
+  CommandResult,
+  diffPostEditDiagnostics,
+  IdeDiagnosticEntry,
+  spawnShellCommand,
+  toPosixRelative,
+} from './tools';
 
 /** AgentHost backed by the VS Code / Antigravity editor APIs. */
 export class VsCodeAgentHost implements AgentHost {
-  private readonly errorsBefore = new Map<string, Set<string>>();
+  private readonly diagnosticsBefore = new Map<string, IdeDiagnosticEntry[]>();
 
-  constructor(readonly cwd: string, private readonly revealEdits: () => boolean) {}
+  constructor(
+    readonly cwd: string,
+    private readonly revealEdits: () => boolean,
+    private readonly diagnosticsSettleMs = 1200
+  ) {}
 
   async readFile(absPath: string): Promise<string> {
     const open = vscode.workspace.textDocuments.find((doc) => doc.uri.fsPath === absPath);
@@ -19,7 +30,7 @@ export class VsCodeAgentHost implements AgentHost {
 
   async writeFile(absPath: string, content: string): Promise<void> {
     const uri = vscode.Uri.file(absPath);
-    this.errorsBefore.set(absPath, new Set(errorKeys(uri)));
+    this.diagnosticsBefore.set(absPath, toIdeDiagnostics(vscode.languages.getDiagnostics(uri)));
     const open = vscode.workspace.textDocuments.find((doc) => doc.uri.fsPath === absPath);
     if (open) {
       const edit = new vscode.WorkspaceEdit();
@@ -59,16 +70,13 @@ export class VsCodeAgentHost implements AgentHost {
     } catch {
       return '';
     }
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    const before = this.errorsBefore.get(absPath) || new Set<string>();
-    const fresh = vscode.languages.getDiagnostics(uri)
-      .filter((diagnostic) => diagnostic.severity === vscode.DiagnosticSeverity.Error)
-      .filter((diagnostic) => !before.has(diagnosticKey(diagnostic)));
-    if (fresh.length === 0) {
-      return '';
+    if (this.diagnosticsSettleMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, this.diagnosticsSettleMs));
     }
+    const before = this.diagnosticsBefore.get(absPath) || [];
+    const after = toIdeDiagnostics(vscode.languages.getDiagnostics(uri));
     const rel = toPosixRelative(this.cwd, absPath);
-    return [`${rel}`, ...fresh.slice(0, 30).map((diagnostic) => `- [${diagnostic.source || 'error'}] Line ${diagnostic.range.start.line + 1}: ${diagnostic.message}`)].join('\n');
+    return diffPostEditDiagnostics(rel, before, after, 30);
   }
 
   async getWorkspaceProblems(): Promise<string> {
@@ -129,12 +137,27 @@ export class VsCodeAgentHost implements AgentHost {
   }
 }
 
-function diagnosticKey(diagnostic: vscode.Diagnostic): string {
-  return `${diagnostic.message}|${diagnostic.source || ''}|${diagnostic.code ?? ''}`;
+function toIdeDiagnostics(diagnostics: readonly vscode.Diagnostic[]): IdeDiagnosticEntry[] {
+  return diagnostics.map((diagnostic) => {
+    const severity: IdeDiagnosticEntry['severity'] =
+      diagnostic.severity === vscode.DiagnosticSeverity.Error
+        ? 'error'
+        : diagnostic.severity === vscode.DiagnosticSeverity.Warning
+          ? 'warning'
+          : diagnostic.severity === vscode.DiagnosticSeverity.Information
+            ? 'info'
+            : 'hint';
+    const rawCode = typeof diagnostic.code === 'object' && diagnostic.code !== null
+      ? diagnostic.code.value
+      : diagnostic.code;
+    return {
+      severity,
+      line: diagnostic.range.start.line + 1,
+      column: diagnostic.range.start.character + 1,
+      message: diagnostic.message,
+      source: diagnostic.source,
+      code: rawCode,
+    };
+  });
 }
 
-function errorKeys(uri: vscode.Uri): string[] {
-  return vscode.languages.getDiagnostics(uri)
-    .filter((diagnostic) => diagnostic.severity === vscode.DiagnosticSeverity.Error)
-    .map(diagnosticKey);
-}

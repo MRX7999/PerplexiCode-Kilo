@@ -5,7 +5,7 @@
 <img src="docs/visuals/hero.png" alt="PerplexiCode Kilo: one agent core for the IDE and pcode CLI, with MCP integrations and configurable approvals" width="100%" />
 
 [![Release](https://img.shields.io/github/v/release/MRX7999/PerplexiCode-Kilo?label=release&color=20b8cd)](https://github.com/MRX7999/PerplexiCode-Kilo/releases/latest)
-[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-3.5.0-007acc)](https://marketplace.visualstudio.com/items?itemName=MRX7999.perplexicode-kilo)
+[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-3.6.0-007acc)](https://marketplace.visualstudio.com/items?itemName=MRX7999.perplexicode-kilo)
 [![Open VSX](https://img.shields.io/open-vsx/v/MRX7999/perplexicode-kilo?label=Open%20VSX&color=a60ee5)](https://open-vsx.org/extension/MRX7999/perplexicode-kilo)
 [![Open VSX downloads](https://img.shields.io/open-vsx/dt/MRX7999/perplexicode-kilo?label=installs&color=5eead4)](https://open-vsx.org/extension/MRX7999/perplexicode-kilo)
 [![CI](https://img.shields.io/github/actions/workflow/status/MRX7999/PerplexiCode-Kilo/ci.yml?branch=master&label=CI)](https://github.com/MRX7999/PerplexiCode-Kilo/actions/workflows/ci.yml)
@@ -41,13 +41,14 @@ Plan, write, run and debug code with GPT-6.1 Sol, Claude Opus 5.5, Gemini 4 Argo
 | **Diff approvals** | Every edit is shown as an inline diff with **Save** / **Reject**; commands get **Run** / **Reject**. |
 | **Auto-approve** | Separate toggles for reads, writes, commands (allow and deny prefixes), mode switches, subtasks, todo updates and retries, plus a request limit. |
 | **Checkpoints** | A checkpoint after every edit with one-click **Restore**. |
-| **Context mentions** | `@/path/to/file`, `@/folder/`, `@problems`, `@git-changes`, `@selection`. |
+| **Context mentions** | `@repo` (structural symbol/import/test map), `@/path/to/file`, `@/folder/`, `@problems`, `@git-changes`, `@selection`. |
 | **Editor actions** | Explain / Fix / Improve / Add to Context from the context menu and lightbulb quick fixes; terminal selection to context. |
 | **Workspace rules** | Loads `AGENTS.md`, `.kilocode/rules`, `.roo/rules`, `.clinerules` and `~/.kilocode/rules`. |
 | **Task UI** | Todo list with progress, streaming Markdown, reasoning blocks, tool cards, terminal output, follow-up suggestions, prompt enhancer. |
 | **History** | Searchable task history; reopen, delete or export past tasks. |
 | **Commit messages** | Generates a commit message from staged changes in the Source Control view. |
 | **Multi-account** | Several Perplexity accounts with quota display and automatic failover. |
+| **Context intelligence** (3.6) | Post-edit IDE Error + Warning diagnostics on `apply_diff` / `write_to_file` / `search_and_replace`, non-vector `@repo` structural map (`4.29 → 1.00` `read_file` calls and `-63.3%` prompt volume on the 24-task benchmark), live Context Inspector (`/context`) with per-item exclusions, threshold-triggered structured auto-compaction preserving the system prompt and last `N` steps, and jittered backoff + 12 RPM per-account limit. |
 | **Reliability & hardening** (3.5) | Safe resume without re-running unconfirmed commands, live task state cards (`жду подтверждения` / `повторяю запрос` / `проверяю результат` / `нужно вмешательство`), route line + `stopOnFallback`, SSRF-hardened `web_fetch`, segment-level shell allow/deny parser, SHA-256 verified installers, redacted `pcode doctor --bundle` diagnostics with preview, and protected `.perplexicode`/`.claude`/`.mcp.json` configs ([SECURITY.md](SECURITY.md)). |
 | **MCP servers** (3.3) | Connect Claude Code style MCP servers (stdio, HTTP, SSE) from `.mcp.json`, `~/.claude.json` and settings. Their tools, resources and prompts are available to the agent with `mcp__server__tool` permission rules. See [3.3](#33-mcp-servers-and-compute-modes). |
 | **Compute modes** (3.3) | Pick how Perplexity runs the request: Search, Computer harness (Light / Standard / High / Ultra), Deep Research or Labs, with automatic fallback when your plan does not include a mode. |
@@ -414,6 +415,8 @@ Max models unlock automatically for Max accounts. If a Max model is picked on a 
 | PerplexiCode: Add Terminal Selection to Context | terminal context menu | terminal context menu |
 | PerplexiCode: Generate Commit Message | Source Control title bar | Source Control title bar |
 | PerplexiCode: Select Model / Mode / Compute Mode | status bar | status bar |
+| PerplexiCode: Inspect Task Context… | task header / `/context` / Command Palette | task header / `/context` / Command Palette |
+| PerplexiCode: Copy Diagnostics Bundle… | task header / Command Palette | task header / Command Palette |
 | PerplexiCode: MCP: Reconnect Servers | Command Palette | Command Palette |
 | PerplexiCode: Task History · Settings · Open in Editor Tab | view title bar | view title bar |
 | PerplexiCode: Add / Manage Accounts · Set Account Rotation Strategy · Refresh Models and Quotas | Command Palette | Command Palette |
@@ -451,6 +454,12 @@ Max models unlock automatically for Max accounts. If a Max model is picked on a 
 | `perplexicodeKilo.agent.webSearch` | `auto` | Whether Perplexity may search the web for agent requests. |
 | `perplexicodeKilo.agent.contextStrategy` | `auto` | Thread follow-ups or full self-contained prompts. |
 | `perplexicodeKilo.agent.maxPromptChars` | `60000` | Prompt size limit; older turns are condensed. |
+| `perplexicodeKilo.agent.repoMapEnabled` | `true` | Include the structural `@repo` map (symbols, signatures, imports, related tests) within budget. |
+| `perplexicodeKilo.agent.repoMapMaxChars` | `6000` | Hard character ceiling for `@repo`. |
+| `perplexicodeKilo.agent.autoCompactThreshold` | `0.8` | Fraction of `maxPromptChars` triggering structured auto-compaction (`0` disables). |
+| `perplexicodeKilo.agent.autoCompactKeepSteps` | `4` | Latest dialogue steps kept untouched during auto-compaction. |
+| `perplexicodeKilo.agent.stopOnFallback` | `false` | Stop the task instead of falling back to another compute mode, model or account. |
+| `perplexicodeKilo.rotation.maxRequestsPerMinute` | `12` | Conservative per-account RPM cap before rotating or throttling. |
 | `perplexicodeKilo.agent.language` | `auto` | Reply language, e.g. `en`, `ru`. |
 | `perplexicodeKilo.agent.customInstructions` | — | Instructions added to every mode. |
 | `perplexicodeKilo.agent.modeInstructions` | `{}` | Per-mode instructions keyed by mode slug. |

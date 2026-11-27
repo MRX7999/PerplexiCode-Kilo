@@ -317,6 +317,80 @@ await shot('28-release-35-diag-modal');
 check((await clickPosted('[data-action="diag-copy"]')).some((m) => m.type === 'copy' && m.text.includes('3.5.0')), '3.5 confirm button copies previewed diagnostics');
 check(Boolean(await page.$('#diag-modal.hidden')), '3.5 diagnostics modal closes after copy');
 
+// 3.6: Context Inspector modal (F12) & @repo mention highlight (F11).
+await page.setViewport({ width: 780, height: 900, deviceScaleFactor: 2 });
+check((await clickPosted('#task-context-inspector')).some((m) => m.type === 'requestContextInspection'), '3.6 header context inspector button requests inspection report');
+await send({
+  type: 'contextInspection',
+  report: {
+    totalChars: 24800,
+    maxPromptChars: 60000,
+    usageRatio: 24800 / 60000,
+    autoCompactThresholdRatio: 0.8,
+    autoCompactThresholdChars: 48000,
+    compactedCharsSaved: 8400,
+    excludedCount: 1,
+    items: [
+      {
+        id: 'system_base',
+        category: 'system',
+        label: 'Системный промпт (режим Code, правила и инструменты)',
+        chars: 11200,
+        originalChars: 11200,
+        status: 'included',
+        canExclude: false,
+        excluded: false,
+        reason: 'Обязательные системные инструкции текущего режима; при авто-сжатии не изменяются.',
+        preview: 'You are PerplexiCode, a highly skilled software engineer...',
+      },
+      {
+        id: 'repo_map',
+        category: 'repo_map',
+        label: 'Карта репозитория (@repo)',
+        chars: 5420,
+        originalChars: 5420,
+        status: 'included',
+        canExclude: true,
+        excluded: false,
+        reason: 'Активный файл src/agent/task.ts и текущий git diff в приоритете (бюджет 6 000 симв.).',
+        preview: '# Repository map (28 files indexed) — src/agent/task.ts [active] — class AgentTask, inspectContext()',
+      },
+      {
+        id: 'msg_1',
+        category: 'compacted',
+        label: 'Структурированная сводка авто-сжатия (6 шагов)',
+        chars: 2890,
+        originalChars: 11290,
+        status: 'compacted',
+        canExclude: true,
+        excluded: false,
+        reason: 'Сжатая сводка предыдущих шагов (изменённые файлы, проверенные гипотезы, ограничения, статус todo)',
+        compactionDetail: 'сэкономлено 8 400 симв.',
+        preview: '## Изменённые файлы - src/agent/repoMap.ts · ## Проверенные гипотезы - npm test (exit 0)',
+      },
+      {
+        id: 'msg_2',
+        category: 'tool_result',
+        label: "Результат read_file ('src/core/compaction.ts')",
+        chars: 0,
+        originalChars: 5290,
+        status: 'excluded',
+        canExclude: true,
+        excluded: true,
+        reason: 'Исключено пользователем через Инспектор контекста.',
+        preview: '',
+      },
+    ],
+  },
+});
+check(Boolean(await page.$('#context-modal:not(.hidden)')), '3.6 context inspector modal opens');
+check(await page.$eval('#context-modal', (el) => el.textContent.includes('Инспектор контекста') && el.textContent.includes('Карта репозитория (@repo)') && el.textContent.includes('авто-сжатие активно')), '3.6 context inspector renders items, reasons, and compaction badge');
+check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), '3.6 context inspector modal has no horizontal overflow');
+await shot('29-release-36-context-inspector');
+check((await clickPosted('[data-ctx-toggle="repo_map"]')).some((m) => m.type === 'setContextItemExcluded' && m.id === 'repo_map' && m.excluded === true), '3.6 exclude button posts setContextItemExcluded');
+await page.click('[data-action="ctx-close"]');
+check(Boolean(await page.$('#context-modal.hidden')), '3.6 context inspector modal closes');
+
 const posted = await page.evaluate(() => window.__posted.map((m) => m.type));
 console.log('posted:', [...new Set(posted)].join(','));
 console.log('tabs:', tabs.length);

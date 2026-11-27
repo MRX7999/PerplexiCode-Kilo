@@ -3,6 +3,7 @@ import { AgentTask, AskResponse, CompletionProvider, McpToolProvider } from '../
 import type { TodoItem } from '../agent/toolParser';
 import type { AgentHost } from '../agent/tools';
 import type { AgentSettings, ModelSelection, PersistedTask, UiMessage } from '../agent/types';
+import type { ContextInspectionReport } from './contextInspector';
 import { loadSubagents, SubagentDefinition } from './agents';
 import { compactMessages } from './compaction';
 import { CoreGate } from './gate';
@@ -127,6 +128,12 @@ export class CoreSession {
       getSettings: () => ({
         ...this.options.agentSettings,
         stopOnFallback: this.options.agentSettings.stopOnFallback ?? this.settings.stopOnFallback,
+        repoMapEnabled: this.options.agentSettings.repoMapEnabled ?? this.settings.repoMapEnabled,
+        repoMapMaxChars: this.options.agentSettings.repoMapMaxChars ?? this.settings.repoMapMaxChars,
+        autoCompactThreshold:
+          this.options.agentSettings.autoCompactThreshold ?? this.settings.autoCompactThreshold,
+        autoCompactKeepSteps:
+          this.options.agentSettings.autoCompactKeepSteps ?? this.settings.autoCompactKeepSteps,
       }),
       getSelection: selection,
       getModelLabel: this.options.getModelLabel || ((modelId) => modelId),
@@ -253,6 +260,23 @@ export class CoreSession {
     task.replaceHistory(compacted.messages);
     this.handleEvent(task, { type: 'compacted', before: compacted.before, after: compacted.after });
     return { before: compacted.before, after: compacted.after };
+  }
+
+  /** 3.6 (F12): Inspects what will be sent in the next request, why, what is compacted, and what can be excluded. */
+  async inspectContext(): Promise<ContextInspectionReport | null> {
+    if (!this.root) {
+      return null;
+    }
+    return this.root.inspectContext();
+  }
+
+  /** 3.6 (F12): Excludes or re-includes a context block id for subsequent requests in the active session. */
+  setContextItemExcluded(id: string, excluded: boolean): boolean {
+    if (!this.root) {
+      return false;
+    }
+    this.root.setContextItemExcluded(id, excluded);
+    return true;
   }
 
   verification(): VerificationReport {
