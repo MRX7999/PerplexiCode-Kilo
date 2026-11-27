@@ -14,7 +14,7 @@
 [![Antigravity IDE](https://img.shields.io/badge/Antigravity%20IDE-supported-4285f4)](https://antigravity.google/download)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-[Overview](#features) · [Install](#install) · [Interface & agents](#31-agents-skills--presets) · [MCP catalog](#34-mcp-catalog-security-and-parrot-os) · [MCP & compute](#33-mcp-servers-and-compute-modes) · [CLI](#30-headless-core--pcode-cli) · [Models](#models) · [Commands](#commands-and-shortcuts) · [Settings](#settings) · [Миграция на 4.0](#миграция-на-40) · [Build](#build-from-source) · [Help](#troubleshooting)
+[Overview](#features) · [Install](#install) · [What's new in 4.0](#40-remote-core-lsp-repl--quick-edit) · [3.5–3.8](#38-mcp-oauth-slash-prompts--cross-model-review) · [Interface & agents](#31-agents-skills--presets) · [MCP catalog](#34-mcp-catalog-security-and-parrot-os) · [MCP & compute](#33-mcp-servers-and-compute-modes) · [CLI](#30-headless-core--pcode-cli) · [Models](#models) · [Commands](#commands-and-shortcuts) · [Settings](#settings) · [Migrating to 4.0](#миграция-на-40) · [Build](#build-from-source) · [Help](#troubleshooting)
 
 [Core reference](docs/CORE-3.0.md) · [Security policy & threat model](SECURITY.md) · [Security & Parrot OS guide](docs/MCP-SECURITY-PARROT.md)
 
@@ -32,7 +32,7 @@
 
 **A Kilo Code-style autonomous coding agent for Antigravity IDE and VS Code, powered by your Perplexity Pro / Max subscription.**
 
-Plan, write, run and debug code with GPT-6.1 Sol, Claude Opus 5.5, Gemini 4 Argon, Grok 4.7 and 85 more Perplexity models. No API keys.
+Plan, write, run and debug code with GPT-6.2 Sol, Claude Opus 5.5, Gemini 4 Carbon, Grok 4.7 and 120+ more Perplexity models. No API keys. Run the same agent core in the editor, in the terminal as `pcode`, or as a remote daemon on a build box — your Perplexity session never leaves your machine.
 
 | | |
 | --- | --- |
@@ -48,11 +48,15 @@ Plan, write, run and debug code with GPT-6.1 Sol, Claude Opus 5.5, Gemini 4 Argo
 | **History** | Searchable task history; reopen, delete or export past tasks. |
 | **Commit messages** | Generates a commit message from staged changes in the Source Control view. |
 | **Multi-account** | Several Perplexity accounts with quota display and automatic failover. |
-| **Remote core, LSP, REPL UX & Quick Edit** (4.0) | `pcode serve` daemon over `0600` Unix socket or bearer-authenticated WebSocket while Perplexity sessions remain strictly on the IDE machine; `lsp` tool (`definition`, `references`, `hover`, `diagnostics`) via `.lsp.json` in CLI and built-in providers in VS Code; REPL `!<command>` context injection, full file + session `/rewind`, and live long-command timer; SHA-256 verified catalog updates (`pcode models update`); `Cmd/Ctrl+I` inline selection quick-edit with streaming diff; nightly SSE canary workflow. See [Миграция на 4.0](#миграция-на-40). |
-| **MCP OAuth, `/server:skill` & cross-model review** (3.8) | OAuth 2.0 + PKCE loopback login/logout (`pcode mcp login <server>` / `logout` + IDE `SecretStorage` / CLI OS keychain + transparent `401` token refresh), MCP prompts in the `/` slash menu as `/server:skill` in IDE and REPL, argument-level `mcp__server__tool(key:glob)` permission rules where `deny` overrides `autoApprove.mcp`, and opt-in cross-family diff + `verify` review before `attempt_completion`. |
-| **Worktree isolation & parallel subagents** (3.7) | Run tasks in an isolated git worktree (`pcode --worktree [name]` or composer `worktree` pill) with strict symlink + `git -C` confinement, dirty-checkout pre-start warnings, a Result Card (diff, `verify`, **Применить** / **Отбросить** without auto-merge/push, conflict file list), parallel Orchestrator subagents (readers in main tree, writers in separate worktrees), `WorktreeCreate` / `WorktreeRemove` hooks, and deterministic `pcode -p` CI exit codes. |
-| **Context intelligence** (3.6) | Post-edit IDE Error + Warning diagnostics on `apply_diff` / `write_to_file` / `search_and_replace`, non-vector `@repo` structural map (`4.29 → 1.00` `read_file` calls and `-63.3%` prompt volume on the 24-task benchmark), live Context Inspector (`/context`) with per-item exclusions, threshold-triggered structured auto-compaction preserving the system prompt and last `N` steps, and jittered backoff + 12 RPM per-account limit. |
-| **Reliability & hardening** (3.5) | Safe resume without re-running unconfirmed commands, live task state cards (`жду подтверждения` / `повторяю запрос` / `проверяю результат` / `нужно вмешательство`), route line + `stopOnFallback`, SSRF-hardened `web_fetch`, segment-level shell allow/deny parser, SHA-256 verified installers, redacted `pcode doctor --bundle` diagnostics with preview, and protected `.perplexicode`/`.claude`/`.mcp.json` configs ([SECURITY.md](SECURITY.md)). |
+| **Remote core** (4.0) | `pcode serve` runs the agent core as a daemon on a `0600` Unix socket or a token-protected WebSocket. The IDE connects as a client; model calls stay on the IDE machine. See [4.0](#40-remote-core-lsp-repl--quick-edit). |
+| **`lsp` tool** (4.0) | Go to definition, find references, hover and diagnostics for the agent — VS Code language providers in the IDE, `.lsp.json` servers in the CLI. |
+| **Quick Edit** (4.0) | `Cmd/Ctrl+I` on a selection: describe the change and watch it stream into a side-by-side diff before you apply it. |
+| **REPL upgrades** (4.0) | `!<command>` runs a local command and adds its output to the context, `/rewind` rolls back files *and* the conversation, long commands show a live timer. |
+| **Model catalog updates** (4.0) | `pcode models update` / **Update Model Catalog from Repository** pulls a SHA-256 verified model list without waiting for a release; the bundled snapshot stays as the fallback. |
+| **MCP OAuth & `/server:skill`** (3.8) | OAuth 2.0 + PKCE sign-in for remote MCP servers, MCP prompts in the `/` menu, argument-level permission rules and an optional cross-model review before completion. See [3.8](#38-mcp-oauth-slash-prompts--cross-model-review). |
+| **Worktrees & parallel subagents** (3.7) | Run a task in an isolated git worktree, review the result card, then **Apply** or **Discard** — nothing is merged or pushed for you. Orchestrator runs subagents in parallel. See [3.7](#37-worktree-isolation--parallel-subagents). |
+| **Context intelligence** (3.6) | `@repo` structural map, new-error diagnostics after every edit, a live Context Inspector and structured auto-compaction. See [3.6](#36-context-intelligence). |
+| **Reliability & hardening** (3.5) | Safe resume, visible task state and model route, SSRF-safe `web_fetch`, a segment-level shell parser, verified installers and a redacted diagnostics bundle. See [3.5](#35-reliability--security-hardening). |
 | **MCP servers** (3.3) | Connect Claude Code style MCP servers (stdio, HTTP, SSE) from `.mcp.json`, `~/.claude.json` and settings. Their tools, resources and prompts are available to the agent with `mcp__server__tool` permission rules. See [3.3](#33-mcp-servers-and-compute-modes). |
 | **Compute modes** (3.3) | Pick how Perplexity runs the request: Search, Computer harness (Light / Standard / High / Ultra), Deep Research or Labs, with automatic fallback when your plan does not include a mode. |
 | **Agents, Skills & Presets** (3.1) | One-click subagents and skills from a built-in catalog, and task presets that set the mode, subagent and prompt for common jobs. See [below](#31-agents-skills--presets). |
@@ -69,7 +73,7 @@ Plan, write, run and debug code with GPT-6.1 Sol, Claude Opus 5.5, Gemini 4 Argo
 | **Orchestrator** | Split work into subtasks across modes | modes, subtasks |
 | **Review** | Review local changes before you commit | read, command, modes |
 
-Agent tools: `read_file`, `list_files`, `search_files`, `glob_files`, `list_code_definition_names`, `apply_diff`, `write_to_file`, `insert_content`, `search_and_replace`, `execute_command`, `web_fetch`, `use_mcp_tool`, `access_mcp_resource`, `list_mcp_resources`, `ask_followup_question`, `attempt_completion`, `switch_mode`, `new_task`, `update_todo_list`.
+Agent tools: `read_file`, `list_files`, `search_files`, `glob_files`, `list_code_definition_names`, `apply_diff`, `write_to_file`, `insert_content`, `search_and_replace`, `execute_command`, `web_fetch`, `lsp`, `use_mcp_tool`, `access_mcp_resource`, `list_mcp_resources`, `ask_followup_question`, `attempt_completion`, `switch_mode`, `new_task`, `update_todo_list`.
 
 ### How it works
 
@@ -78,6 +82,7 @@ Agent tools: `read_file`, `list_files`, `search_files`, `glob_files`, `list_code
 3. The reply is parsed for one XML tool call. Reads run immediately if auto-approved; edits and commands wait for **Save** / **Run** unless auto-approved.
 4. The tool result is sent back as the next message, and the loop continues until `attempt_completion`.
 5. Perplexity thread follow-ups are used when possible. If a follow-up fails, the full conversation is resent as one prompt, and accounts fail over on quota or auth errors.
+6. Every request shows its route — requested mode and model → what actually answered, and why. A dropped stream is retried without applying an edit or running a command twice.
 
 </details>
 
@@ -127,7 +132,7 @@ Other editors: add `--ide code`, `--ide cursor`, `--ide windsurf` or `--ide all`
 curl -fsSL https://raw.githubusercontent.com/MRX7999/PerplexiCode-Kilo/master/scripts/install.sh | bash -s -- --ide all
 ```
 
-The scripts download [`perplexicode-kilo.vsix`](https://github.com/MRX7999/PerplexiCode-Kilo/releases/latest/download/perplexicode-kilo.vsix) from the [latest release](https://github.com/MRX7999/PerplexiCode-Kilo/releases/latest), find the editor CLI on your `PATH` or inside the app bundle, install with `--force` and print the installed version. Read them first: [install.sh](scripts/install.sh), [install.ps1](scripts/install.ps1).
+The scripts download [`perplexicode-kilo.vsix`](https://github.com/MRX7999/PerplexiCode-Kilo/releases/latest/download/perplexicode-kilo.vsix) from the [latest release](https://github.com/MRX7999/PerplexiCode-Kilo/releases/latest), verify it against `SHA256SUMS.txt` from the same release (and stop on a mismatch), find the editor CLI on your `PATH` or inside the app bundle, install with `--force` and print the installed version. Read them first: [install.sh](scripts/install.sh), [install.ps1](scripts/install.ps1).
 
 ### Manual install with the Antigravity CLI
 
@@ -179,6 +184,165 @@ Run **PerplexiCode: Add Perplexity Account** and pick one method:
 | **Manual Paste** | Paste the full `Cookie` header from DevTools → Network on [perplexity.ai](https://www.perplexity.ai). |
 
 Sessions are kept in the editor's [SecretStorage](https://code.visualstudio.com/api/references/vscode-api#SecretStorage). You can add several accounts; requests are spread across them with **round-robin**, **least-used** or **failover-only** rotation.
+
+</details>
+
+<a id="40-remote-core-lsp-repl--quick-edit"></a>
+<a id="whats-new-in-40"></a>
+<details open>
+<summary><strong>What's new · 4.0</strong> · Remote core, LSP tool, REPL rewind, verified model catalog and Quick Edit</summary>
+
+### Remote core — `pcode serve`
+
+Run the agent core on another machine (a build server, a VM, a container) and drive it from your editor. File tools, commands and LSP run on the daemon; every model request is sent back to the IDE and goes to Perplexity from there. Cookies, CSRF tokens and session tokens are never sent over the wire — the daemon rejects any message that carries them (`RemoteSecurityViolationError`).
+
+| | |
+| --- | --- |
+| **Unix socket** (default) | `~/.perplexicode/serve.sock`, created with `0600` permissions. |
+| **WebSocket** | `--port <n>` (or `--ws` for a random port) on `127.0.0.1`; `--host` to change the interface. Every connection needs the bearer token, compared in constant time. |
+| **Token** | `PCODE_SERVE_TOKEN`, `--token-env <VAR>`, `--token-stdin`, or a generated `~/.perplexicode/serve.token` (`0600`). `--token <value>` on the command line is refused with exit code `64`. |
+| **IDE** | **PerplexiCode: Remote Core: Connect to pcode serve…** asks for the endpoint (`perplexicodeKilo.remote.url`) and the token, which is kept in SecretStorage. **Remote Core: Disconnect** returns to local mode. |
+| **Trust** | Project hooks, MCP and LSP servers on the daemon start only for trusted folders (`--trust-project`). |
+
+```bash
+pcode serve                         # Unix socket, token written to ~/.perplexicode/serve.token
+pcode serve --port 4190 --token-env PCODE_SERVE_TOKEN   # WebSocket on 127.0.0.1:4190
+ssh -L 4190:127.0.0.1:4190 build-box                     # reach a remote daemon through SSH
+```
+
+On start the daemon prints one `serve_ready` JSON line with the endpoint and the token source (never the token itself). To reach a daemon on another host, forward the socket or port over SSH instead of binding it to a public interface.
+
+### `lsp` tool
+
+The agent can ask the language server instead of grepping: `definition`, `references`, `hover` and `diagnostics`.
+
+- **IDE** — uses VS Code's own providers for every language you have installed, no setup.
+- **CLI / daemon** — reads stdio servers from `.lsp.json` (Claude Code format). Lookup order: `~/.perplexicode/lsp.json` → `~/.claude/.lsp.json` → `.perplexicode/lsp.json` → `.lsp.json`; project files need a trusted folder. Agent edits to `.lsp.json` always ask for confirmation.
+
+```jsonc
+// .lsp.json
+{
+  "servers": {
+    "typescript": { "command": "typescript-language-server", "args": ["--stdio"], "extensions": [".ts", ".tsx"] },
+    "python": { "command": "pyright-langserver", "args": ["--stdio"], "extensions": [".py"] }
+  }
+}
+```
+
+### REPL
+
+| Input | What happens |
+| --- | --- |
+| `!npm test` | Runs the command locally and adds the command, exit code and output to the conversation, so the next prompt can refer to it. |
+| `/rewind` · `/rewind list` · `/rewind 3` | Rolls back the workspace files (restores edited files, deletes files created after the checkpoint) **and** the session transcript to the latest or the chosen checkpoint. |
+| long commands | After one second a live `⏱` timer shows elapsed time (`PCODE_COMMAND_TIMER_MS` changes the threshold). |
+
+### Quick Edit — `Cmd/Ctrl+I`
+
+Select code, press `Cmd+I` (macOS) or `Ctrl+I` (Windows / Linux) and describe the change. The new code streams into a side-by-side diff with `+added / -removed` counters; nothing is written until you click **Применить правку** (Apply). Cancel the progress notification to stop the request. **Add Selection to Chat** is now on `Cmd/Ctrl+Shift+I`.
+
+### Model catalog without a release
+
+`pcode models update` and **PerplexiCode: Update Model Catalog from Repository** download `bundledModelsConfig.json` and its `.sha256` from this repository, check the digest and only then switch to the new list. On a mismatch, broken JSON or a network error the built-in snapshot is used. Point `perplexicodeKilo.models.remoteCatalogUrl` / `remoteCatalogSha256Url` (CLI `--catalog-url` / `--sha256-url`) at your own fork if you maintain one.
+
+### Nightly canary
+
+[`.github/workflows/canary.yml`](.github/workflows/canary.yml) sends one minimal request every night (03:17 UTC) with a test account and opens or updates a “Nightly Perplexity SSE Canary Alert” issue if Perplexity's response format changes. Add the cookie of a test account as the repository secret `PPLX_CANARY_COOKIE`; without it the job is skipped, not failed. Issue text is redacted.
+
+Upgrading from 3.x? Read [Migrating to 4.0](#миграция-на-40) — eleven behaviour changes, no renamed settings.
+
+</details>
+
+<a id="38-mcp-oauth-slash-prompts--cross-model-review"></a>
+<details>
+<summary><strong>MCP OAuth & review · 3.8</strong> · OAuth 2.0 + PKCE, <code>/server:skill</code>, argument rules and cross-model review</summary>
+
+| | |
+| --- | --- |
+| **OAuth 2.0 + PKCE** | `pcode mcp login <server>` / `pcode mcp logout <server>`, or **OAuth Login** / **OAuth Logout** on an HTTP/SSE server card in **Library → MCP**. Discovers the authorization server (RFC 8414 / RFC 9728), registers a client when the server supports it (RFC 7591), and receives the code on a `127.0.0.1` loopback. Tokens live in VS Code SecretStorage or the OS keychain (macOS Keychain, `secret-tool`, Windows Credential Manager; a `0600` file on headless systems) and are refreshed on HTTP `401`. |
+| **`/server:skill`** | Prompts published by connected MCP servers appear in the composer `/` menu and in the REPL as `/<server>:<prompt> [key="value" …]`. |
+| **Argument rules** | `mcp__db__query(sql:SELECT *)`, `mcp__db__query(sql:*DROP*)`, `mcp__k8s__apply({"metadata":{"namespace":"prod*"}})`, `mcp__vault__read_resource(uri:secret://*)`. `deny` wins over `autoApprove.mcp` and `bypassPermissions`, and malformed arguments fail closed. |
+| **Cross-model review** | Off by default. With `perplexicodeKilo.agent.crossModelReview` (CLI `--cross-review`) a model from a different family (Anthropic ↔ OpenAI ↔ Google ↔ xAI) reviews the git diff and the `verify` result before `attempt_completion` is accepted. Pick the reviewer with `crossModelReviewModel` / `--cross-review-model`. |
+
+```jsonc
+// .claude/settings.json
+{
+  "permissions": {
+    "allow": ["mcp__db__query(sql:SELECT *)"],
+    "deny":  ["mcp__db__query(sql:*DROP*)", "mcp__k8s__apply({\"metadata\":{\"namespace\":\"prod*\"}})"]
+  }
+}
+```
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/images/mcp-oauth.png" width="400" alt="Library → MCP with OAuth Login and Logout on server cards" /><br /><sub>OAuth status and Login / Logout in Library → MCP</sub></td>
+    <td align="center"><img src="docs/images/mcp-slash-prompt.png" width="400" alt="Composer slash menu with an MCP prompt /github:review_pr" /><br /><sub>An MCP prompt in the <code>/</code> menu</sub></td>
+  </tr>
+</table>
+
+OAuth was tested against a local OAuth / PKCE test server, not against a specific vendor.
+
+</details>
+
+<a id="37-worktree-isolation--parallel-subagents"></a>
+<details>
+<summary><strong>Worktrees · 3.7</strong> · Isolated tasks, Apply / Discard, parallel subagents and CI exit codes</summary>
+
+| | |
+| --- | --- |
+| **Isolated task** | `pcode -w [name]` / `--worktree`, REPL `/worktree`, or the **Worktree** pill in the composer (`perplexicodeKilo.agent.worktreeEnabled`). The task runs in a detached worktree from `HEAD`. Tools cannot leave it: `..`, symlinks, `git -C`, `--git-dir`, `GIT_DIR`, `cd` outside and `git push` are blocked. Uncommitted changes in your checkout trigger a warning first. |
+| **Result card** | Changed files, the diff and the `verify` status, with **Применить** (Apply) and **Отбросить** (Discard). Apply checks the patch first and writes to your working copy — no `merge`, `commit` or `push`. On a conflict nothing changes and the conflicting files are listed. CLI: `pcode worktree list \| apply <name> \| discard <name>`. |
+| **Parallel subagents** | Consecutive `new_task` calls in Orchestrator mode run at the same time, up to `maxParallelSubtasks` (default `3`, CLI `--max-parallel-subtasks`). Read-only subagents share the main tree; each writing subagent gets its own worktree. |
+| **Hooks** | `WorktreeCreate` and `WorktreeRemove` receive JSON on stdin, can block with exit code `2` or return a custom `worktreePath`. |
+| **Exit codes** | `pcode -p` returns a fixed code per outcome — see the table in [Headless core & pcode CLI](#30-headless-core--pcode-cli). |
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/images/worktree-result.png" width="400" alt="Worktree result card with diff, verify status and Apply / Discard" /><br /><sub>Result card: diff, <code>verify</code>, Apply / Discard</sub></td>
+    <td align="center"><img src="docs/images/worktree-conflict.png" width="400" alt="Apply stopped on a conflict, main tree unchanged, conflicting file listed" /><br /><sub>Apply stops on a conflict and lists the files</sub></td>
+  </tr>
+</table>
+
+</details>
+
+<a id="36-context-intelligence"></a>
+<details>
+<summary><strong>Context · 3.6</strong> · <code>@repo</code> map, post-edit diagnostics, Context Inspector and auto-compaction</summary>
+
+| | |
+| --- | --- |
+| **`@repo`** | A structural map of the project — symbols and signatures (TypeScript, JavaScript, Python, Go, Rust), imports, who imports a file and its tests — with the active file and the current git diff first, inside a hard budget (`repoMapMaxChars`, default `6000`). No vector database. On the 24-task benchmark in `src/core/repoMapBench.ts` it cut `read_file` calls before the first edit from 4.29 to 1.00 and prompt size by 63% with the same `verify` pass rate. |
+| **Diagnostics after edits** | After `apply_diff`, `write_to_file`, `search_and_replace` and `insert_content` the tool result lists only the errors and warnings the edit introduced. |
+| **Context Inspector** | Eye button in the task header, `/context`, or **PerplexiCode: Inspect Task Context…** (REPL `/context [exclude\|include <id>]`): what is in the prompt, why, how many characters, what was compacted — and exclude any item from the next requests. |
+| **Auto-compaction** | At `autoCompactThreshold` × `maxPromptChars` (default 80%) older turns become a structured summary — changed files, checked hypotheses, constraints, todo status — while the system prompt and the last `autoCompactKeepSteps` steps stay verbatim. |
+| **Rate limits** | Jittered exponential backoff and a per-account cap of `12` requests per minute (`perplexicodeKilo.rotation.maxRequestsPerMinute`, CLI `--max-rpm`). |
+
+<p align="center"><img src="docs/images/context-inspector.png" width="640" alt="Context Inspector: prompt budget, included blocks with reasons, compacted summary and per-item exclusion" /><br /><sub>Context Inspector</sub></p>
+
+</details>
+
+<a id="35-reliability--security-hardening"></a>
+<details>
+<summary><strong>Reliability & security · 3.5</strong> · Safe resume, task state, SSRF and shell hardening, diagnostics</summary>
+
+| | |
+| --- | --- |
+| **Stream safety** | A repeated final chunk, a stream cut inside a tool call or a reconnect after an applied edit never apply an edit or run a command twice (covered by SSE replay tests). |
+| **Safe resume** | A command interrupted before its exit code was recorded is marked *result not confirmed*. After `pcode -c` / `-r` or reopening the task, the agent must inspect the workspace before it may run that command again. |
+| **Task state** | A status card in the IDE and a `[статус]` line in the CLI: waiting for approval, retrying, checking the result, or needs you — with the reason and the rule that caused it. |
+| **Route line** | Each request shows requested mode/model → actual one and the reason (or `не сообщена` when Perplexity does not report it). `stopOnFallback` (CLI `--stop-on-fallback`) stops instead of silently switching. |
+| **`web_fetch` SSRF guard** | Loopback, RFC 1918, link-local, cloud metadata (`169.254.169.254`), CGNAT, ULA, `.localhost` / `.internal` are blocked, re-checked on every redirect. |
+| **Shell parser** | Chains (`;`, `&&`, `\|\|`, `\|`, `&`), `env` wrappers and `bash -c` scripts are split and every segment is checked against allow / deny. Substitutions, `eval` and redirections always ask. |
+| **Protected configs** | Edits to `.perplexicode/settings*.json`, hooks, `.mcp.json`, `.lsp.json` and `.claude/**` always need your confirmation, even with auto-approve or `bypassPermissions`. See [SECURITY.md](SECURITY.md). |
+| **Diagnostics bundle** | `pcode doctor --bundle` or **PerplexiCode: Copy Diagnostics Bundle…** — versions, stage timings and rule decisions, shown in full before export, with no cookies, headers, prompts, code or terminal output. |
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/images/status-card.png" width="260" alt="Task status card: waiting for approval with the protected-config rule" /><br /><sub>Task state with the rule that stopped it</sub></td>
+    <td align="center"><img src="docs/images/diagnostics-preview.png" width="260" alt="Diagnostics bundle preview with redacted fields" /><br /><sub>Diagnostics preview before copying</sub></td>
+  </tr>
+</table>
 
 </details>
 
@@ -298,7 +462,7 @@ PerplexiCode speaks the [Model Context Protocol](https://modelcontextprotocol.io
 | **Agent tools** | `use_mcp_tool`, `access_mcp_resource`, `list_mcp_resources`, or a direct `<mcp__server__tool>{"arg": 1}</mcp__server__tool>` call. Connected server prompts appear in the IDE `/` popup and CLI REPL as `/<server>:<skill> [key="val"]`. |
 | **OAuth 2.0 + PKCE** | `pcode mcp login <server>` and `pcode mcp logout <server>` (or **OAuth Login** / **OAuth Logout** in **Library → MCP**) run loopback OAuth 2.0 + PKCE S256 with RFC 8414 / 9728 metadata discovery, storing tokens in VS Code `SecretStorage` (IDE) or the OS keychain (CLI) and refreshing automatically on HTTP `401`. |
 | **Permissions** | Rules `mcp__server__tool`, `mcp__server__tool(key:glob)` / `mcp__server__tool({"nested":{"field":"glob"}})`, `mcp__server__read_resource(uri:glob)`, `mcp__server__*`, `mcp__server`, `mcp` and `mcp(server)` in `allow` / `ask` / `deny`. `deny` rules always win — even when `autoApprove.mcp` or `bypassPermissions` is enabled — and fail closed on malformed JSON arguments. |
-| **VS Code** | **Library → MCP** tab (status, tools, resources, prompts, OAuth Login/Logout, add / remove / reconnect, open the config file), `/mcp` and `/server:skill` in the composer, **PerplexiCode: MCP: Reconnect Servers**, **MCP: Login to Server (OAuth)…**, **MCP: Logout from Server (OAuth)…**, settings `perplexicodeKilo.mcp.enabled` and `perplexicodeKilo.mcp.extraConfigs`. |
+| **VS Code** | **Library → MCP** tab (status, tools, resources, prompts, OAuth Login/Logout, add / remove / reconnect, open the config file), `/mcp` and `/server:skill` in the composer, **PerplexiCode: MCP: Reconnect Servers**, **MCP: OAuth Login to Server…**, **MCP: OAuth Logout from Server…**, settings `perplexicodeKilo.mcp.enabled` and `perplexicodeKilo.mcp.extraConfigs`. |
 | **CLI** | `pcode mcp list \| add \| remove \| get \| test \| login \| logout`, `--mcp-config <file\|json>` (repeatable), `--strict-mcp-config`, `--no-mcp`, REPL `/mcp [reconnect [name]]` and `/<server>:<skill>`. `pcode doctor` shows the servers. |
 
 ```bash
@@ -328,7 +492,7 @@ A compute mode decides how Perplexity runs the request; the model picker still d
 | Mode | What runs | Plan |
 | --- | --- | :---: |
 | `search` (default) | Standard query with the selected model, optional Thinking and web search | Free |
-| `light` · `standard` · `high` · `ultra` | Perplexity Computer harness with GPT-6.1 Sol · Claude Opus 5.5 · GPT-6 Astra · Claude Fable 5.1 (Ultra uses high effort) | **Max** |
+| `light` · `standard` · `high` · `ultra` | Perplexity Computer harness with Claude Sonnet 5.5 · Claude Opus 5.5 · GPT-6.2 Astra · Claude Fable 5.2 (Ultra uses high effort) | **Max** |
 | `computer` | Computer (ASI) with the ASI variant of the selected model | **Max** |
 | `research` | Deep Research | Pro |
 | `agentic_research` | Agentic research synthesis | **Max** |
@@ -363,6 +527,9 @@ The extension and a terminal CLI share one agent core, so you get Kilo Code in t
 | **Subagents** | `new_task` can delegate to your own agents. Each one has its own prompt, model and tool list, and the tool list is enforced. |
 | **Resume anywhere** | Every IDE or CLI task writes a journal to `~/.perplexicode/sessions`. `pcode -c` continues the last one. Commands that were cut off by a crash are flagged, and the agent checks the real state before re-running them. |
 | **Fewer round-trips** | Up to 5 read-only tool calls from one answer run in one step. |
+| **Worktrees** (3.7) | `pcode -w [name]` runs the task in an isolated git worktree; `pcode worktree list \| apply <name> \| discard <name>` brings the result back or drops it. |
+| **Daemon** (4.0) | `pcode serve` exposes the core over a Unix socket or WebSocket for the IDE — see [Remote core](#40-remote-core-lsp-repl--quick-edit). |
+| **REPL extras** (3.6 – 4.0) | `!<command>`, `/rewind [list\|n]`, `/context`, `/worktree`, `/<server>:<prompt>` and a live timer for long commands. |
 | **Two transports** | Your Perplexity Pro/Max web session, with account rotation (shared with the extension through **PerplexiCode: Share Accounts with CLI** or `pcode login`), or any OpenAI-compatible endpoint (`--provider openai`: Ollama, LM Studio, vLLM). |
 
 ```bash
@@ -371,7 +538,27 @@ npm ci && npm run build && npm link          # puts `pcode` on PATH
 pcode login                                  # paste the Cookie header (hidden input) or use --browser
 pcode doctor
 pcode -p "fix the failing test" --permission-mode acceptEdits --allowedTools "Bash(npm test:*)"
+pcode -w -p "migrate to the new API" --cross-review    # isolated worktree + cross-model review
+pcode worktree apply <name>                             # copy the result into your checkout
+pcode models update                                     # refresh the model list (SHA-256 verified)
+pcode doctor --bundle -o diag.json                      # redacted diagnostics for an issue
 ```
+
+Exit codes of `pcode -p`, stable for CI:
+
+| Code | Meaning |
+| :---: | --- |
+| `0` | Done |
+| `1` | Runtime error |
+| `2` | `verify.command` failed |
+| `3` | Blocked by a rule, a hook or `--stop-on-fallback` |
+| `4` | `--max-turns` reached |
+| `5` | Not signed in |
+| `6` | Worktree apply conflict |
+| `64` | Invalid arguments (including a secret passed as an argument) |
+| `130` | Interrupted (`Ctrl+C`) |
+
+Other flags added in 3.5 – 4.0: `--stop-on-fallback`, `--repo-map` / `--no-repo-map`, `--repo-map-chars <n>`, `--max-rpm <n>`, `--max-parallel-subtasks <n>`, `--cross-review`, `--cross-review-model <id>`. Full list: `pcode --help`.
 
 See [docs/CORE-3.0.md](docs/CORE-3.0.md) for the full reference and [examples/claude-code-compat](examples/claude-code-compat) for a working configuration.
 
@@ -381,23 +568,32 @@ See [docs/CORE-3.0.md](docs/CORE-3.0.md) for the full reference and [examples/cl
 <details>
 <summary><strong>Models</strong> · Account discovery, fallback catalog and subscription handling</summary>
 
-The model list matches the current Perplexity picker. It is loaded live from your account's model config, with a bundled snapshot (2026-10-28, 89 models) as a fallback.
+The model list matches the current Perplexity picker. It is loaded live from your account's model config, with a bundled snapshot (2026-11-27, 133 models) as a fallback.
 
 | Model | Provider | Plan | Thinking |
 | --- | --- | :---: | :---: |
 | Best | Perplexity | Free | — |
-| GPT-6.1 Sol | OpenAI | Pro | ✓ |
-| GPT-6 Astra | OpenAI | **Max** | ✓ |
-| Gemini 4 Argon `NEW` | Google | **Max** | ✓ |
-| Gemini 3.8 Flash | Google | Pro | ✓ |
+| GPT-6.2 Sol `NEW` | OpenAI | Pro | ✓ |
+| GPT-6.2 Astra `NEW` | OpenAI | **Max** | ✓ |
+| Gemini 4 Carbon | Google | **Max** | ✓ |
+| Gemini 4 Neon `NEW` | Google | Pro | ✓ |
 | Claude Sonnet 5.5 | Anthropic | Pro | ✓ |
 | Claude Opus 5.5 | Anthropic | **Max** | ✓ |
-| Claude Fable 5.1 | Anthropic | **Max** | ✓ |
+| Claude Fable 5.2 | Anthropic | **Max** | ✓ |
 | Kimi K3 | Moonshot AI | Pro | built-in |
 | GLM 5.3 | Z.ai | Pro | built-in |
 | Grok 4.7 | xAI | Pro | ✓ |
 | Nemotron 3.5 Super VL | NVIDIA | Pro | — |
-| **More models** (77) | Anthropic, OpenAI, Google, xAI, Perplexity Sonar… | Pro / Max | per model |
+| **More models** (121) | Anthropic, OpenAI, Google, xAI, Perplexity Sonar… | Pro / Max | per model |
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/images/model-picker.png" width="300" alt="Model picker with the 2026-11-27 featured models" /><br /><sub>Featured models</sub></td>
+    <td align="center"><img src="docs/images/more-models.png" width="300" alt="More models list" /><br /><sub>More models</sub></td>
+  </tr>
+</table>
+
+When Perplexity adds models between releases, run `pcode models update` or **PerplexiCode: Update Model Catalog from Repository**: the new list is applied only if its SHA-256 matches, otherwise the bundled snapshot stays in use.
 
 Max models unlock automatically for Max accounts. If a Max model is picked on a Pro-only account pool, the request falls back to **Best**. Override plan detection with `perplexicodeKilo.subscriptionPlan` if needed, and use **PerplexiCode: Refresh Models and Quotas** after Perplexity adds new models.
 
@@ -412,6 +608,7 @@ Max models unlock automatically for Max accounts. If a Max model is picked on a 
 | PerplexiCode: Open Agent | `Cmd+Alt+K` | `Ctrl+Alt+K` |
 | PerplexiCode: New Task | `Cmd+Alt+N` | `Ctrl+Alt+N` |
 | PerplexiCode: Switch to Next Mode | `Cmd+.` | `Ctrl+.` |
+| PerplexiCode: Quick Edit Selection | `Cmd+I` | `Ctrl+I` |
 | PerplexiCode: Add Selection to Chat | `Cmd+Shift+I` | `Ctrl+Shift+I` |
 | PerplexiCode: Add to Context | `Cmd+K Cmd+A` | `Ctrl+K Ctrl+A` |
 | PerplexiCode: Explain / Fix / Improve Code | context menu, lightbulb | context menu, lightbulb |
@@ -421,7 +618,11 @@ Max models unlock automatically for Max accounts. If a Max model is picked on a 
 | PerplexiCode: Select Model / Mode / Compute Mode | status bar | status bar |
 | PerplexiCode: Inspect Task Context… | task header / `/context` / Command Palette | task header / `/context` / Command Palette |
 | PerplexiCode: Copy Diagnostics Bundle… | task header / Command Palette | task header / Command Palette |
-| PerplexiCode: MCP: Reconnect Servers | Command Palette | Command Palette |
+| PerplexiCode: MCP: Reconnect Servers · OAuth Login to Server… · OAuth Logout from Server… | Command Palette, Library → MCP | Command Palette, Library → MCP |
+| PerplexiCode: Remote Core: Connect to pcode serve… · Disconnect | Command Palette | Command Palette |
+| PerplexiCode: Update Model Catalog from Repository | Command Palette | Command Palette |
+| PerplexiCode: Compact Current Task · Set Permission Mode | Command Palette | Command Palette |
+| PerplexiCode: Share Accounts with CLI (pcode) | Command Palette | Command Palette |
 | PerplexiCode: Task History · Settings · Open in Editor Tab | view title bar | view title bar |
 | PerplexiCode: Add / Manage Accounts · Set Account Rotation Strategy · Refresh Models and Quotas | Command Palette | Command Palette |
 
@@ -458,6 +659,10 @@ Max models unlock automatically for Max accounts. If a Max model is picked on a 
 | `perplexicodeKilo.agent.webSearch` | `auto` | Whether Perplexity may search the web for agent requests. |
 | `perplexicodeKilo.agent.contextStrategy` | `auto` | Thread follow-ups or full self-contained prompts. |
 | `perplexicodeKilo.agent.maxPromptChars` | `60000` | Prompt size limit; older turns are condensed. |
+| `perplexicodeKilo.agent.permissionMode` | `default` | `default`, `acceptEdits`, `plan` or `bypassPermissions` — same rules as `pcode --permission-mode`. |
+| `perplexicodeKilo.agent.hooks.enabled` | `true` | Run hooks from `.claude/settings.json` / `.perplexicode/settings.json` (project hooks need a trusted workspace). |
+| `perplexicodeKilo.agent.journal.enabled` | `true` | Write the session journal to `~/.perplexicode/sessions` so tasks can be resumed from the CLI. |
+| `perplexicodeKilo.agent.readBatchSize` | `0` | Read-only tool calls run in one step; `0` uses the settings-file value (5). |
 | `perplexicodeKilo.agent.worktreeEnabled` | `false` | Run tasks inside an isolated git worktree from `HEAD` with strict symlink and `git -C` confinement. |
 | `perplexicodeKilo.agent.maxParallelSubtasks` | `3` | Maximum concurrent subagents in Orchestrator mode (readers in main tree, writers in isolated worktrees). |
 | `perplexicodeKilo.agent.repoMapEnabled` | `true` | Include the structural `@repo` map (symbols, signatures, imports, related tests) within budget. |
@@ -474,6 +679,7 @@ Max models unlock automatically for Max accounts. If a Max model is picked on a 
 | `perplexicodeKilo.agent.diffEnabled` | `true` | Use `apply_diff` instead of full rewrites. |
 | `perplexicodeKilo.agent.includeFileListOnStart` | `true` | Send the workspace file list with the first request. |
 | `perplexicodeKilo.agent.revealEditedFiles` | `true` | Open files after the agent edits them. |
+| `perplexicodeKilo.taskPresets` | `[]` | Your own task presets. |
 | `perplexicodeKilo.excludePatterns` | `node_modules`, `.git`, `dist`, `out`, `.next` | Globs excluded from context. |
 | `perplexicodeKilo.remote.url` | `""` | Remote `pcode serve` endpoint (`unix:///path/to/serve.sock` or `ws://127.0.0.1:4190`); bearer token is kept in OS `SecretStorage` and Perplexity cookies never leave the IDE machine. |
 | `perplexicodeKilo.models.remoteCatalogUrl` | `""` | Custom repository URL for SHA-256 verified `bundledModelsConfig.json` updates (empty uses the official `MRX7999/PerplexiCode-Kilo` URL; built-in snapshot stays fallback). |
@@ -482,7 +688,10 @@ Max models unlock automatically for Max accounts. If a Max model is picked on a 
 </details>
 
 <a id="миграция-на-40"></a>
+<a id="migrating-to-40"></a>
 ## Миграция на 4.0
+
+> **Migrating to 4.0.** No settings were renamed and Claude Code configs keep working. The list below (in Russian) covers every behaviour change from 3.4.0: secrets in CLI arguments are refused (exit `64`), shell chains are checked per segment, agent config edits always ask, `web_fetch` blocks private addresses, interrupted commands are not re-run blindly, MCP argument `deny` rules beat auto-approve, worktree results are applied only by you, `pcode -p` has fixed exit codes, a 12 RPM per-account cap and optional `stopOnFallback`, `pcode serve` never receives cookies, and `Cmd/Ctrl+I` now opens Quick Edit.
 
 Все существующие настройки `perplexicodeKilo.*`, сохранённые аккаунты в `SecretStorage` и конфигурации в формате Claude Code (`.claude/settings.json`, `hooks`, `agents`, `skills`, `.mcp.json`) сохраняют полную совместимость без переименования ключей. Ниже перечислены все несовместимые и поведенческие изменения, введённые на пути от `3.4.0` к `4.0.0`:
 
@@ -516,7 +725,7 @@ npx vsce package --out perplexicode-kilo.vsix  # build the VSIX
 
 `npm run test:webview` renders the webview in headless Chromium and saves screenshots to `out/test/` (needs a [Playwright](https://playwright.dev/) Chromium in `~/.cache/ms-playwright`).
 
-Releases are built by [GitHub Actions](.github/workflows/release.yml): pushing a `vX.Y.Z` tag runs the tests, packages the VSIX and attaches it to a GitHub release.
+Releases are built by [GitHub Actions](.github/workflows/release.yml): pushing a `vX.Y.Z` tag that matches `package.json` runs lint and tests, packages the VSIX, attaches it with `SHA256SUMS.txt` to a GitHub release and publishes it to Open VSX and the VS Code Marketplace. [`canary.yml`](.github/workflows/canary.yml) checks the Perplexity protocol every night.
 
 ### Project layout
 
@@ -524,13 +733,18 @@ Releases are built by [GitHub Actions](.github/workflows/release.yml): pushing a
 src/
   extension.ts          activation, commands, code actions, webview providers
   agent/                agent loop, modes, prompts, tool parser and executor, diff engine, transport, task store
-  api/                  Perplexity client, model catalog, bundled model config, quotas, account rotation
+  api/                  Perplexity client, model catalog, bundled model config (+ .sha256), quotas, account rotation
+  core/                 headless agent core shared by the IDE, the CLI and pcode serve (permissions, hooks, LSP, worktrees, repo map)
+  cli/                  pcode CLI, REPL and serve daemon
+  config/ · migration/  settings loading and 1.x / 2.x migration
   providers/            login flows
   storage/              account manager (SecretStorage)
   ui/                   status bar
 webview-ui/agent/       chat UI (TypeScript + CSS, bundled with esbuild)
 test/                   unit and agent tests, webview render harness
-scripts/                install.sh, install.ps1
+scripts/                install.sh, install.ps1 (SHA-256 verified)
+docs/                   CORE-3.0.md, screenshots and diagrams
+.github/workflows/      CI, release and nightly canary
 ```
 
 </details>
@@ -546,6 +760,12 @@ scripts/                install.sh, install.ps1
 | The CLI says `NOT registered` | Harmless Antigravity warning; check `--list-extensions --show-versions`. |
 | Install script cannot find the editor | Pass `--vsix` with a downloaded file, or use **Install from VSIX…**. |
 | Agent stops after many steps | Raise `perplexicodeKilo.agent.maxRequestsPerTask`. |
+| Task stopped with «нужно вмешательство» after a fallback | `stopOnFallback` is on and the requested mode or model is not available for your accounts. Pick another one or turn the setting off. |
+| `pcode` exits with code `64` | A secret was passed as an argument (for example `--token`). Use `PCODE_SERVE_TOKEN`, `--token-env`, `--token-stdin` or the hidden prompt. |
+| `lsp` says *No LSP servers configured* (CLI) | Add the server to `.lsp.json` or `~/.perplexicode/lsp.json`; project files also need `--trust-project`. |
+| Catalog update says the hash does not match | Nothing changed — the bundled snapshot is still used. Check `remoteCatalogUrl` / `remoteCatalogSha256Url` point to the same commit. |
+| Remote Core cannot connect | Check the endpoint and token (`~/.perplexicode/serve.token`), and that the socket or SSH tunnel exists. The IDE stays in local mode until it connects. |
+| Something else | `pcode doctor --bundle` or **Copy Diagnostics Bundle…** — attach the redacted file to an issue. |
 | `Unable to write to User Settings … is not a registered configuration` | The extension was updated while the window stayed open. Run **Developer: Reload Window**. Since 2.1.0 the change is saved anyway and moved into settings after the reload. |
 | Anything else | Open **Output → PerplexiCode** and attach the log to an [issue](https://github.com/MRX7999/PerplexiCode-Kilo/issues). |
 
