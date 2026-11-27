@@ -507,6 +507,13 @@ export class AgentController implements vscode.Disposable {
       diffEnabled: config.get<boolean>('diffEnabled', true),
       includeFileListOnStart: config.get<boolean>('includeFileListOnStart', true),
       stopOnFallback: config.get<boolean>('stopOnFallback', false),
+      repoMapEnabled: config.get<boolean>('repoMapEnabled', true),
+      repoMapMaxChars: clamp(config.get<number>('repoMapMaxChars', 6000), 500, 60000),
+      autoCompactThreshold: (() => {
+        const raw = config.get<number>('autoCompactThreshold', 0.8);
+        return raw <= 0 ? 0 : Math.min(0.98, Math.max(0.3, raw));
+      })(),
+      autoCompactKeepSteps: clamp(config.get<number>('autoCompactKeepSteps', 4), 1, 20),
     };
   }
 
@@ -856,6 +863,7 @@ export class AgentController implements vscode.Disposable {
   private async searchMentions(query: string): Promise<Array<{ label: string; value: string; kind: string }>> {
     const root = this.workspaceRoot();
     const specials = [
+      { label: 'repo', value: '@repo', kind: 'special' },
       { label: 'problems', value: '@problems', kind: 'special' },
       { label: 'git-changes', value: '@git-changes', kind: 'special' },
       { label: 'selection', value: '@selection', kind: 'special' },
@@ -1187,6 +1195,26 @@ export class AgentController implements vscode.Disposable {
           webview
         );
         break;
+      case 'requestContextInspection': {
+        const task =
+          (typeof message.taskId === 'string' && message.taskId ? this.tasks.get(message.taskId) : undefined) ||
+          this.currentTask;
+        const report = task ? await task.inspectContext() : null;
+        this.post({ type: 'contextInspection', report }, webview);
+        break;
+      }
+      case 'setContextItemExcluded': {
+        const task =
+          (typeof message.taskId === 'string' && message.taskId ? this.tasks.get(message.taskId) : undefined) ||
+          this.currentTask;
+        if (task && typeof message.id === 'string' && message.id) {
+          task.setContextItemExcluded(message.id, Boolean(message.excluded));
+          const report = await task.inspectContext();
+          this.post({ type: 'contextInspection', report }, webview);
+          this.postState();
+        }
+        break;
+      }
       case 'insertCode': {
         const editor = vscode.window.activeTextEditor;
         if (editor) {
@@ -1273,6 +1301,12 @@ export class AgentController implements vscode.Disposable {
   async openDiagnosticsPreview(): Promise<void> {
     await vscode.commands.executeCommand('perplexicodeKilo.chatView.focus');
     this.post({ type: 'diagnosticsPreview', json: this.buildDiagnosticsJson() });
+  }
+
+  async openContextInspector(): Promise<void> {
+    await vscode.commands.executeCommand('perplexicodeKilo.chatView.focus');
+    const report = this.currentTask ? await this.currentTask.inspectContext() : null;
+    this.post({ type: 'contextInspection', report });
   }
 
   private async exportTask(id: string): Promise<void> {

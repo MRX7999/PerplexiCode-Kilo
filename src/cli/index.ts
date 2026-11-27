@@ -10,6 +10,7 @@ import { getBundledSnapshotDate, COMPUTE_MODES, getComputeModeOption, getModelBy
 import type { ComputeMode } from '../api/types';
 import { loadSkills, loadSubagents } from '../core/agents';
 import { buildDiagnosticBundle, serializeDiagnosticBundle } from '../core/diagnostics';
+import { formatContextReportForCli } from '../core/contextInspector';
 import { applyPresetPrompt, installAgentPreset, installSkillPreset, librarySnapshot, loadTaskPresets } from '../core/library';
 import { listSessions, perplexicodeHome, SessionJournal, sessionsDir } from '../core/journal';
 import { loadMcpServers, McpRegistry, McpServerState, McpTransportType, projectDefinesStdioMcpServers, removeMcpServerConfig, saveMcpServerConfig } from '../core/mcp';
@@ -81,6 +82,11 @@ export interface CliOptions {
   mcpSet: string[];
   /** F04: stop instead of silently falling back to another mode/model/account. */
   stopOnFallback?: boolean;
+  /** F11: override repository map (@repo) on/off and budget. */
+  repoMapEnabled?: boolean;
+  repoMapMaxChars?: number;
+  /** F15: per-account requests-per-minute ceiling. */
+  maxRequestsPerMinute?: number;
   /** F08: `pcode doctor --bundle [--output <file>] [--yes]`. */
   bundle: boolean;
   bundleOutput?: string;
@@ -235,6 +241,20 @@ export function parseArgs(argv: string[]): CliOptions {
       case '--alias': options.alias = value(); break;
       case '--browser': options.browser = true; break;
       case '--stop-on-fallback': options.stopOnFallback = true; break;
+      case '--repo-map': options.repoMapEnabled = true; break;
+      case '--no-repo-map': options.repoMapEnabled = false; break;
+      case '--repo-map-chars': {
+        const n = Number(value());
+        if (!Number.isFinite(n) || n < 500) throw new Error('--repo-map-chars must be >= 500');
+        options.repoMapMaxChars = Math.floor(n);
+        break;
+      }
+      case '--max-rpm': {
+        const n = Number(value());
+        if (!Number.isFinite(n) || n < 1) throw new Error('--max-rpm must be >= 1');
+        options.maxRequestsPerMinute = Math.floor(n);
+        break;
+      }
       case '--bundle': options.bundle = true; break;
       case '-o': case '--output': options.bundleOutput = path.resolve(value()); break;
       case '-y': case '--yes': options.yes = true; break;
@@ -281,6 +301,10 @@ Options:
   --agent <name>              run the task as an installed subagent
   --provider <p>              perplexity (your Pro/Max session) | openai (OpenAI-compatible, e.g. Ollama)
   --web / --no-web            force web search on/off
+  --repo-map / --no-repo-map  enable or disable structural @repo map (default: on, budget 6000 chars)
+  --repo-map-chars <n>        character budget for @repo map (min 500)
+  --max-rpm <n>               per-account requests-per-minute cap (default: 12)
+  --stop-on-fallback          stop instead of falling back to another mode/model/account
   --cwd <dir>                 workspace folder (default: current)
   --trust-project             run hooks and project MCP servers from project settings in headless mode
   --mcp-config <file|json>    extra MCP servers (Claude Code format), repeatable; --strict-mcp-config uses only them
@@ -431,6 +455,10 @@ function agentSettings(options: CliOptions): AgentSettings {
     diffEnabled: true,
     includeFileListOnStart: true,
     stopOnFallback: options.stopOnFallback,
+    repoMapEnabled: options.repoMapEnabled ?? true,
+    repoMapMaxChars: options.repoMapMaxChars ?? 6000,
+    autoCompactThreshold: 0.8,
+    autoCompactKeepSteps: 4,
   };
 }
 
@@ -459,12 +487,17 @@ function trust(cwd: string): void {
   fs.writeFileSync(trustedFile(), JSON.stringify(list, null, 2), { mode: 0o600 });
 }
 
-async function createProvider(options: CliOptions, log: (line: string) => void): Promise<{ provider: CompletionProvider; label: (id: string, thinking: boolean) => string; defaultModel: string; accounts?: number }> {
+async function createProvider(options: CliOptions, log: (line: string) => void, maxRequestsPerMinute?: number): Promise<{ provider: CompletionProvider; label: (id: string, thinking: boolean) => string; defaultModel: string; accounts?: number }> {
   if (options.provider === 'openai') {
     const openai = openAIOptionsFromEnv(options.model);
     return { provider: new OpenAICompatibleProvider(openai), label: () => openai.model, defaultModel: openai.model };
   }
-  const backend = await createPerplexityBackend({ refreshCapabilities: !options.print || options.verbose, log });
+  const envRpm = process.env.PCODE_MAX_RPM ? Number(process.env.PCODE_MAX_RPM) : undefined;
+  const backend = await createPerplexityBackend({
+    refreshCapabilities: !options.print || options.verbose,
+    maxRequestsPerMinute: options.maxRequestsPerMinute ?? maxRequestsPerMinute ?? (Number.isFinite(envRpm) ? envRpm : undefined),
+    log,
+  });
   const accounts = backend.accountManager.getAccounts().length;
   if (accounts === 0) {
     throw new Error('No Perplexity account. Run `pcode login` (or "PerplexiCode: Share Accounts with CLI" in VS Code), or use --provider openai.');
@@ -522,7 +555,7 @@ async function buildSession(options: CliOptions, ui: SessionUi): Promise<Session
     out(yellow(`Project ${[hooksDefined ? 'hooks' : '', mcpDefined ? 'MCP stdio servers' : ''].filter(Boolean).join(' and ')} skipped (untrusted folder). Pass --trust-project to run them.`));
   }
   const settings = loadSettings(cwd, { trustProjectHooks: trusted });
-  const backend = await createProvider(options, (line) => ui.log(line));
+  const backend = await createProvider(options, (line) => ui.log(line), settings.maxRequestsPerMinute);
   const modelId = options.model || settings.model || process.env.PCODE_MODEL || backend.defaultModel;
   if (options.provider === 'perplexity' && !getModelById(modelId)) {
     throw new Error(`Unknown model '${modelId}'. Run \`pcode models\`.`);
@@ -538,11 +571,18 @@ async function buildSession(options: CliOptions, ui: SessionUi): Promise<Session
   const computeMode = options.provider === 'perplexity' ? options.computeMode : undefined;
   const extraAllow = [...options.allowedTools];
   const mcp = createMcpRegistry(options, trusted, (line) => ui.log(line));
+  const mergedAgentSettings: AgentSettings = {
+    ...agentSettings(options),
+    repoMapEnabled: options.repoMapEnabled ?? settings.repoMapEnabled ?? true,
+    repoMapMaxChars: options.repoMapMaxChars ?? settings.repoMapMaxChars ?? 6000,
+    autoCompactThreshold: settings.autoCompactThreshold ?? 0.8,
+    autoCompactKeepSteps: settings.autoCompactKeepSteps ?? 4,
+  };
   let sessionRef: CoreSession | undefined;
   const session = new CoreSession({
     cwd,
     provider: backend.provider,
-    agentSettings: agentSettings(options),
+    agentSettings: mergedAgentSettings,
     selection: { baseModelId: modelId, thinking: options.thinking, webSearch: options.web, computeMode },
     mode: options.mode,
     agent: options.agent,
@@ -865,6 +905,7 @@ const SLASH_HELP = `/help              this help
 /model [id]        show or switch model
 /compute [mode]    show or switch Perplexity compute mode (${COMPUTE_MODES.map((m) => m.id).join(', ')})
 /mcp [reconnect [name]]  MCP servers, their tools and resources
+/context [exclude|include <id>]  inspect next-request context, why items are included, and toggle exclusions
 /compact [focus]   summarise the conversation to save context
 /clear             start a new session
 /agents  /skills   list subagents / skills
@@ -993,6 +1034,22 @@ async function runInteractive(options: CliOptions): Promise<number> {
             out(red((error as Error).message));
           }
           break;
+        case 'context': {
+          const [sub, itemId] = (arg || '').trim().split(/\s+/);
+          if ((sub === 'exclude' || sub === 'include') && itemId) {
+            if (!s.setContextItemExcluded(itemId, sub === 'exclude')) {
+              out(dim('нет активной сессии для инспекции контекста'));
+              break;
+            }
+          }
+          const report = await s.inspectContext();
+          if (!report) {
+            out(dim('нет активной сессии для инспекции контекста'));
+          } else {
+            out(formatContextReportForCli(report));
+          }
+          break;
+        }
         case 'clear':
           await bundle.mcp?.closeAll().catch(() => undefined);
           bundle = await buildSession(options, ui);

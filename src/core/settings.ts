@@ -51,6 +51,16 @@ export interface CoreSettings {
   computeMode?: string;
   /** 3.5 (F04): stop task instead of falling back to another model/compute mode. */
   stopOnFallback?: boolean;
+  /** 3.6 (F11/F14): attach @repo repository map automatically. */
+  repoMapEnabled?: boolean;
+  /** 3.6 (F11): hard character budget for @repo map. */
+  repoMapMaxChars?: number;
+  /** 3.6 (F13): threshold ratio of maxPromptChars triggering structured auto-compaction. */
+  autoCompactThreshold?: number;
+  /** 3.6 (F13): number of latest dialogue steps kept untouched during auto-compaction. */
+  autoCompactKeepSteps?: number;
+  /** 3.6 (F15): conservative per-account requests-per-minute ceiling. */
+  maxRequestsPerMinute?: number;
   env: Record<string, string>;
   /** Execute up to N read-only tool calls from one model answer. 1 disables batching. */
   readBatchSize: number;
@@ -173,6 +183,23 @@ export function mergeLayer(target: CoreSettings, raw: Record<string, unknown>, a
   }
   if (typeof raw.stopOnFallback === 'boolean') {
     target.stopOnFallback = raw.stopOnFallback;
+  }
+  if (typeof raw.repoMapEnabled === 'boolean') {
+    target.repoMapEnabled = raw.repoMapEnabled;
+  }
+  if (typeof raw.repoMapMaxChars === 'number' && Number.isFinite(raw.repoMapMaxChars)) {
+    target.repoMapMaxChars = Math.max(200, Math.min(30_000, Math.floor(raw.repoMapMaxChars)));
+  }
+  if (typeof raw.autoCompactThreshold === 'number' && Number.isFinite(raw.autoCompactThreshold)) {
+    target.autoCompactThreshold = raw.autoCompactThreshold <= 0
+      ? 0
+      : Math.max(0.3, Math.min(0.98, raw.autoCompactThreshold));
+  }
+  if (typeof raw.autoCompactKeepSteps === 'number' && Number.isFinite(raw.autoCompactKeepSteps)) {
+    target.autoCompactKeepSteps = Math.max(1, Math.min(20, Math.floor(raw.autoCompactKeepSteps)));
+  }
+  if (typeof raw.maxRequestsPerMinute === 'number' && Number.isFinite(raw.maxRequestsPerMinute)) {
+    target.maxRequestsPerMinute = Math.max(1, Math.min(120, Math.floor(raw.maxRequestsPerMinute)));
   }
   if (typeof raw.readBatchSize === 'number') {
     target.readBatchSize = Math.max(1, Math.min(10, Math.floor(raw.readBatchSize)));

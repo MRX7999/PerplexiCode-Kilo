@@ -2,7 +2,7 @@
   "name": "perplexicode-kilo",
   "displayName": "PerplexiCode Kilo",
   "description": "Kilo Code-style autonomous coding agent (Code / Architect / Ask / Debug / Orchestrator / Review modes, tools, diffs, checkpoints, auto-approve) powered by your Perplexity Pro/Max subscription and its latest models.",
-  "version": "3.5.0",
+  "version": "3.6.0",
   "publisher": "MRX7999",
   "engines": {
     "vscode": "^1.85.0"
@@ -218,6 +218,12 @@
         "title": "Copy Diagnostics Bundle…",
         "category": "PerplexiCode",
         "icon": "$(output)"
+      },
+      {
+        "command": "perplexicodeKilo.inspectContext",
+        "title": "Inspect Task Context…",
+        "category": "PerplexiCode",
+        "icon": "$(eye)"
       }
     ],
     "keybindings": [
@@ -627,6 +633,39 @@
           "type": "boolean",
           "default": false,
           "description": "Stop the task instead of silently falling back to search/turbo or another account when the requested compute mode or model cannot be used."
+        },
+        "perplexicodeKilo.agent.repoMapEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include the structural repository map (@repo: symbols, signatures, imports, related tests, prioritizing active file and git diff) within a strict character budget."
+        },
+        "perplexicodeKilo.agent.repoMapMaxChars": {
+          "type": "number",
+          "default": 6000,
+          "minimum": 500,
+          "maximum": 60000,
+          "description": "Hard character budget for the @repo structural repository map."
+        },
+        "perplexicodeKilo.agent.autoCompactThreshold": {
+          "type": "number",
+          "default": 0.8,
+          "minimum": 0,
+          "maximum": 0.98,
+          "description": "Fraction of maxPromptChars (0.3..0.98) that triggers structured auto-compaction (edited files, verified hypotheses, constraints, todo status), preserving the system prompt and last N steps. Set 0 to disable."
+        },
+        "perplexicodeKilo.agent.autoCompactKeepSteps": {
+          "type": "number",
+          "default": 4,
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Number of latest dialogue steps kept untouched when auto-compaction runs."
+        },
+        "perplexicodeKilo.rotation.maxRequestsPerMinute": {
+          "type": "number",
+          "default": 12,
+          "minimum": 1,
+          "maximum": 120,
+          "description": "Conservative per-account requests-per-minute ceiling before throttling or rotating to another account."
         },
         "perplexicodeKilo.taskPresets": {
           "type": "array",

@@ -7,6 +7,8 @@ export * from './agents';
 export * from './journal';
 export * from './verification';
 export * from './compaction';
+export * from './contextInspector';
+export * from './repoMapBench';
 export * from './gate';
 export * from './runner';
 export * from './nodeHost';

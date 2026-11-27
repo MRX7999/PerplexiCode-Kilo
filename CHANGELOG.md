@@ -2,6 +2,16 @@
 
 All notable changes to PerplexiCode Kilo. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.6.0] - 2026-11-27
+
+### Added
+- **Post-edit IDE diagnostics with Warning + Error diffing (F10):** After `apply_diff`, `write_to_file`, `search_and_replace`, and `insert_content`, `VsCodeAgentHost` snapshots `vscode.languages.getDiagnostics` before saving and appends only newly introduced `Error` and `Warning` entries (`diffPostEditDiagnostics`) to the tool result.
+- **Structural repository map `@repo` without a vector DB (F11):** `buildRepoMap` indexes workspace symbols and signatures (TypeScript, JavaScript/CommonJS, Python, Go, Rust), resolved imports, reverse importers, and related test files (`*.test.*`, `*.spec.*`, `test/`), prioritizing the active editor file and current git diff within a strict character budget (`perplexicodeKilo.agent.repoMapMaxChars`, default `6000`; CLI `--repo-map` / `--no-repo-map` / `--repo-map-chars`).
+- **Context Inspector in IDE & CLI (F12):** Task header eye button (`Инспектор контекста`), `/context` slash command, `PerplexiCode: Inspect Task Context…`, and REPL `/context [exclude|include <id>]` show exact prompt budget usage, why each block is included, what was compacted, and let you exclude or re-include individual items for subsequent requests.
+- **Threshold-based structured auto-compaction (F13):** When the assembled prompt exceeds `maxPromptChars * autoCompactThreshold` (default `0.8`), `structuredAutoCompact` condenses older turns into four structured sections (`Изменённые файлы`, `Проверенные гипотезы`, `Ограничения`, `Статус todo`) while keeping the system prompt and the latest `N` dialogue steps (`autoCompactKeepSteps`, default `4`) untouched.
+- **24-task reproducible `@repo` benchmark vs 3.4 baseline (F14):** `runRepoMapBenchmark` (`src/core/repoMapBench.ts`) evaluates 24 bug-fix tasks across `read_file` count before the first valid edit (`4.29 → 1.00`, `-76.7%`), prompt characters sent (`150,858 → 55,347`, `-63.3%`), and `verify.command` pass rate (`100% → 100%`), enabling `repoMapEnabled` by default only when metrics do not degrade.
+- **Jittered exponential backoff & per-account RPM cap (F15):** `computeBackoffWithJitterMs` applies equal-jitter exponential backoff (`1.5s` base, `30s` ceiling) across transport retries and rate-limit cooldowns, and `RotationEngine` enforces a sliding 60-second per-account ceiling (`perplexicodeKilo.rotation.maxRequestsPerMinute`, CLI `--max-rpm`, conservative default `12` RPM) before rotating or throttling.
+
 ## [3.5.0] - 2026-11-27
 
 ### Added

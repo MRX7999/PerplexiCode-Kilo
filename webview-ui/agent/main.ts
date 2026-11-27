@@ -176,8 +176,34 @@ let titleExpanded = false;
 let stickToBottom = true;
 let mentionState: { start: number; query: string; items: Array<{ label: string; value: string; kind: string }>; index: number } | undefined;
 let slashState: { items: Array<{ label: string; value: string; description: string }>; index: number } | undefined;
+interface ContextInspectionItem {
+  id: string;
+  category: string;
+  label: string;
+  chars: number;
+  originalChars: number;
+  status: 'included' | 'compacted' | 'omitted' | 'excluded';
+  reason: string;
+  compactionDetail?: string;
+  canExclude: boolean;
+  excluded: boolean;
+  preview: string;
+}
+
+interface ContextInspectionReport {
+  totalChars: number;
+  maxPromptChars: number;
+  usageRatio: number;
+  autoCompactThresholdRatio: number;
+  autoCompactThresholdChars: number;
+  compactedCharsSaved: number;
+  excludedCount: number;
+  items: ContextInspectionItem[];
+}
+
 let enhancing = false;
 let diagnosticsPreviewJson: string | undefined;
+let contextInspectionReport: ContextInspectionReport | null | undefined;
 const expanded = new Set<string>();
 const collapsed = new Set<string>();
 
@@ -222,6 +248,7 @@ root.innerHTML = `
     <div id="view-settings" class="view hidden"></div>
     <div id="view-library" class="view hidden"></div>
     <div id="diag-modal" class="diag-modal hidden"></div>
+    <div id="context-modal" class="diag-modal hidden"></div>
   </div>`;
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -299,6 +326,10 @@ window.addEventListener('message', (event) => {
     case 'diagnosticsPreview':
       diagnosticsPreviewJson = String(message.json || '');
       renderDiagnosticsModal();
+      break;
+    case 'contextInspection':
+      contextInspectionReport = (message.report as ContextInspectionReport | null) ?? null;
+      renderContextModal();
       break;
     default:
       break;
@@ -488,7 +519,7 @@ function messageHtml(message: UiMessage): string {
 function renderUserText(text: string): string {
   const escaped = escapeHtml(text);
   return escaped
-    .replace(/(^|\s)(@\/[^\s]+|@problems|@git-changes|@selection)/g, '$1<span class="mention">$2</span>')
+    .replace(/(^|\s)(@\/[^\s]+|@repo|@problems|@git-changes|@selection)/g, '$1<span class="mention">$2</span>')
     .replace(/\n/g, '<br>');
 }
 
@@ -616,6 +647,7 @@ function renderTaskHeader(): void {
     ${task.depth > 0 ? `<div class="subtask-banner">${icons.subtask}<span>Subtask of: ${escapeHtml(task.parentTitle || 'parent task')}</span></div>` : ''}
     <div class="task-title-row">
       <button class="task-title ${titleExpanded ? 'expanded' : ''}" id="task-title-toggle"><span class="task-label">Task:</span> ${escapeHtml(task.title || 'New task')}</button>
+      <button class="icon-btn" id="task-context-inspector" data-action="inspectContext" title="Инспектор контекста">${icons.review}</button>
       <button class="icon-btn" id="task-diagnostics" data-action="copyDiagnostics" title="Скопировать диагностику">${icons.info}</button>
       <button class="icon-btn" id="task-export" title="Export task as Markdown">${icons.export}</button>
       <button class="icon-btn" id="task-close" title="Close task (start new)">${icons.x}</button>
@@ -958,6 +990,7 @@ function send(): void {
 const SLASH_COMMANDS = () => [
   ...(state?.modes || []).map((mode) => ({ label: `/${mode.slug}`, value: `mode:${mode.slug}`, description: `Switch to ${mode.name} mode` })),
   { label: '/newtask', value: 'newtask', description: 'Start a new task with the following text' },
+  { label: '/context', value: 'context', description: 'Инспектор контекста: что уходит в следующий запрос, почему и что исключить' },
   { label: '/history', value: 'history', description: 'Open task history' },
   { label: '/settings', value: 'settings', description: 'Open settings' },
   { label: '/web', value: 'web', description: 'Toggle web search (auto → on → off)' },
@@ -991,6 +1024,9 @@ function applySlash(value: string, restText = ''): void {
     input.value = '';
   } else if (value === 'history') {
     setView('history');
+    input.value = '';
+  } else if (value === 'context') {
+    post({ type: 'requestContextInspection', taskId: state?.task?.id });
     input.value = '';
   } else if (value === 'settings') {
     setView('settings');
@@ -1198,6 +1234,10 @@ function renderSettings(): void {
       body = `
         ${field('contextStrategy', 'Context strategy', 'Auto: resend the full task while it fits, then continue the Perplexity thread. Full: always resend. Thread: always use follow-ups.', select('contextStrategy', s.contextStrategy, [['auto', 'Auto'], ['full', 'Always full prompt'], ['thread', 'Perplexity thread follow-ups']]))}
         ${field('maxPromptChars', 'Max prompt size (chars)', 'Older messages are dropped from the middle when the prompt is larger', number('maxPromptChars', s.maxPromptChars, 8000, 400000))}
+        ${field('repoMapEnabled', 'Карта репозитория (@repo)', 'Символы, сигнатуры, импорты и связанные тесты с приоритетом активного файла и текущего diff', checkbox('repoMapEnabled', s.repoMapEnabled !== false))}
+        ${field('repoMapMaxChars', 'Бюджет карты репозитория (симв.)', 'Жёсткий потолок символов для блока @repo', number('repoMapMaxChars', s.repoMapMaxChars ?? 6000, 500, 60000))}
+        ${field('autoCompactThreshold', 'Порог авто-сжатия (0..0.98)', 'Доля от maxPromptChars для структурированного авто-сжатия (0 выключает)', number('autoCompactThreshold', s.autoCompactThreshold ?? 0.8, 0, 0.98))}
+        ${field('autoCompactKeepSteps', 'Нетронутых последних шагов при сжатии', 'Последние N шагов и системный промпт не затрагиваются', number('autoCompactKeepSteps', s.autoCompactKeepSteps ?? 4, 1, 20))}
         ${field('maxReadFileLines', 'Max lines per file read', 'Larger files are truncated; the model can read ranges', number('maxReadFileLines', s.maxReadLines, 50, 20000))}
         ${field('includeFileListOnStart', 'Include file list', 'Send the workspace file list with the first message', checkbox('includeFileListOnStart', s.includeFileListOnStart))}
         ${field('diffEnabled', 'Diff edits', 'Let the model use apply_diff (targeted SEARCH/REPLACE edits)', checkbox('diffEnabled', s.diffEnabled))}
@@ -1569,7 +1609,7 @@ function setView(next: ViewName): void {
 
 document.addEventListener('click', (event) => {
   const target = event.target as HTMLElement;
-  const el = target.closest('[data-action],[data-mode],[data-model],[data-toggle],[data-toggle-tool],[data-copy],[data-insert],[data-url],[data-file],[data-restore],[data-suggest],[data-ask-primary],[data-ask-secondary],[data-open-task],[data-delete-task],[data-export-task],[data-tab],[data-slash],[data-mention],[data-remove-account],[data-toggle-account],[data-run],[data-preset],[data-preset-delete],[data-install],[data-install-bundle],[data-lib-open],[data-lib-remove],[data-lib-tab],[data-lib-form],[data-agent-pick],[data-clear-chip],#more-models,#mode-btn,#model-btn,#compute-btn,[data-compute],[data-mcp-connect],[data-mcp-remove],[data-mcp-file],[data-mcp-category],[data-mcp-catalog-install],#web-btn,#enhance-btn,#send-btn,#task-title-toggle,#task-export,#task-close,#todos-toggle,#aa-toggle') as HTMLElement | null;
+  const el = target.closest('[data-action],[data-ctx-toggle],[data-mode],[data-model],[data-toggle],[data-toggle-tool],[data-copy],[data-insert],[data-url],[data-file],[data-restore],[data-suggest],[data-ask-primary],[data-ask-secondary],[data-open-task],[data-delete-task],[data-export-task],[data-tab],[data-slash],[data-mention],[data-remove-account],[data-toggle-account],[data-run],[data-preset],[data-preset-delete],[data-install],[data-install-bundle],[data-lib-open],[data-lib-remove],[data-lib-tab],[data-lib-form],[data-agent-pick],[data-clear-chip],#more-models,#mode-btn,#model-btn,#compute-btn,[data-compute],[data-mcp-connect],[data-mcp-remove],[data-mcp-file],[data-mcp-category],[data-mcp-catalog-install],#web-btn,#enhance-btn,#send-btn,#task-title-toggle,#task-export,#task-close,#todos-toggle,#aa-toggle') as HTMLElement | null;
 
   if (!target.closest('#model-menu') && !target.closest('#model-btn') && modelMenuOpen) {
     modelMenuOpen = false;
@@ -1731,6 +1771,15 @@ document.addEventListener('click', (event) => {
     return;
   }
   if (data.toggleAccount) { post({ type: 'toggleAccount', id: data.toggleAccount }); return; }
+  if (data.ctxToggle) {
+    post({
+      type: 'setContextItemExcluded',
+      taskId: state?.task?.id,
+      id: data.ctxToggle,
+      excluded: data.ctxExcluded !== '1',
+    });
+    return;
+  }
 
   switch (data.action) {
     case 'mcp-parrot-guide': post({ type: 'mcpParrotGuide' }); break;
@@ -1746,6 +1795,11 @@ document.addEventListener('click', (event) => {
     case 'resume': post({ type: 'sendMessage', text: input.value.trim() || 'Continue the task from where you left off.' }); input.value = ''; saveDraft(); break;
     case 'openSettingsJson': post({ type: 'openSettingsJson' }); break;
     case 'copyDiagnostics': post({ type: 'requestDiagnosticsPreview', taskId: state?.task?.id }); break;
+    case 'inspectContext': post({ type: 'requestContextInspection', taskId: state?.task?.id }); break;
+    case 'ctx-close':
+      contextInspectionReport = undefined;
+      renderContextModal();
+      break;
     case 'diag-close':
       diagnosticsPreviewJson = undefined;
       renderDiagnosticsModal();
@@ -1923,6 +1977,11 @@ document.addEventListener('keydown', (event) => {
     post({ type: 'setMode', mode: next.slug });
     showToast(`${next.name} mode`);
   }
+  if (event.key === 'Escape' && contextInspectionReport !== undefined) {
+    contextInspectionReport = undefined;
+    renderContextModal();
+    return;
+  }
   if (event.key === 'Escape' && diagnosticsPreviewJson !== undefined) {
     diagnosticsPreviewJson = undefined;
     renderDiagnosticsModal();
@@ -1966,6 +2025,85 @@ function renderDiagnosticsModal(): void {
       <div class="diag-actions">
         <button class="btn ghost small" data-action="diag-close">Отмена</button>
         <button class="btn primary small" data-action="diag-copy">${icons.copy} Скопировать диагностику</button>
+      </div>
+    </div>`;
+}
+
+function renderContextModal(): void {
+  const modal = $('context-modal');
+  if (contextInspectionReport === undefined) {
+    modal.innerHTML = '';
+    modal.classList.add('hidden');
+    return;
+  }
+  modal.classList.remove('hidden');
+  if (contextInspectionReport === null) {
+    modal.innerHTML = `
+      <div class="diag-dialog ctx-dialog" role="dialog" aria-modal="true" aria-label="Инспектор контекста">
+        <div class="diag-head">
+          <b>Инспектор контекста</b>
+          <span class="spacer"></span>
+          <button class="icon-btn" data-action="ctx-close" title="Закрыть">${icons.x}</button>
+        </div>
+        <div class="muted small">Нет активной задачи для инспекции контекста. Запустите задачу или откройте её из истории.</div>
+        <div class="diag-actions">
+          <button class="btn primary small" data-action="ctx-close">Закрыть</button>
+        </div>
+      </div>`;
+    return;
+  }
+  const r = contextInspectionReport;
+  const pct = Math.min(100, Math.round(r.usageRatio * 100));
+  const thresholdPct = Math.min(100, Math.round((r.autoCompactThresholdChars / Math.max(1, r.maxPromptChars)) * 100));
+  const wouldTrigger = r.autoCompactThresholdChars > 0 && r.totalChars >= r.autoCompactThresholdChars;
+  const hasCompacted = r.compactedCharsSaved > 0 || r.items.some((item) => item.status === 'compacted');
+  const itemsHtml = r.items
+    .map((item) => {
+      const included = item.status === 'included' || item.status === 'compacted';
+      const stateBadge = item.status === 'excluded' || item.excluded
+        ? '<span class="badge warn">исключено</span>'
+        : item.status === 'compacted'
+          ? '<span class="badge">сжато</span>'
+          : item.status === 'included'
+            ? '<span class="badge ok-badge">в запросе</span>'
+            : '<span class="badge warn">вне бюджета</span>';
+      const actionBtn = item.canExclude
+        ? `<button class="btn ${item.excluded ? 'secondary' : 'ghost'} small" data-ctx-toggle="${escapeHtml(item.id)}" data-ctx-excluded="${item.excluded ? '1' : '0'}">${item.excluded ? 'Вернуть' : 'Исключить'}</button>`
+        : '<span class="muted small">обязательный</span>';
+      const reasonLine = item.compactionDetail ? `${item.reason} · ${item.compactionDetail}` : item.reason;
+      return `<div class="ctx-item ${included ? '' : 'ctx-excluded'}">
+        <div class="ctx-item-head">
+          <b class="ctx-item-title">${escapeHtml(item.label)}</b>
+          ${stateBadge}
+          <span class="muted small">${item.chars.toLocaleString('en-US')} симв.</span>
+          <span class="spacer"></span>
+          ${actionBtn}
+        </div>
+        <div class="ctx-item-reason">${escapeHtml(reasonLine)}</div>
+        ${item.preview ? `<pre class="ctx-item-preview"><code>${escapeHtml(item.preview)}</code></pre>` : ''}
+      </div>`;
+    })
+    .join('');
+  modal.innerHTML = `
+    <div class="diag-dialog ctx-dialog" role="dialog" aria-modal="true" aria-label="Инспектор контекста">
+      <div class="diag-head">
+        <b>Инспектор контекста</b>
+        <span class="badge">${r.items.length} блоков</span>
+        ${hasCompacted ? '<span class="badge">авто-сжатие активно</span>' : ''}
+        ${r.excludedCount > 0 ? `<span class="badge warn">исключено: ${r.excludedCount}</span>` : ''}
+        <span class="spacer"></span>
+        <button class="icon-btn" data-action="ctx-close" title="Закрыть">${icons.x}</button>
+      </div>
+      <div class="ctx-meter-wrap">
+        <div class="ctx-meter-labels">
+          <span>Отправляется: <b>${r.totalChars.toLocaleString('en-US')}</b> / ${r.maxPromptChars.toLocaleString('en-US')} симв. (${pct}%)</span>
+          <span class="muted small">Порог авто-сжатия: ${r.autoCompactThresholdChars.toLocaleString('en-US')} симв. (${thresholdPct}%)${wouldTrigger ? ' · сработает на следующем шаге' : ''}</span>
+        </div>
+        <div class="ctx-meter"><div class="ctx-meter-fill ${wouldTrigger ? 'warn' : ''}" style="width:${pct}%"></div></div>
+      </div>
+      <div class="ctx-list">${itemsHtml}</div>
+      <div class="diag-actions">
+        <button class="btn primary small" data-action="ctx-close">Готово</button>
       </div>
     </div>`;
 }

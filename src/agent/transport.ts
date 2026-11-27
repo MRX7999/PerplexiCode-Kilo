@@ -9,7 +9,7 @@ import {
   resolveComputeRoute,
 } from '../api/modelCatalog';
 import { PerplexityWebClient } from '../api/perplexityClient';
-import { RotationEngine } from '../api/rotationEngine';
+import { computeBackoffWithJitterMs, RotationEngine } from '../api/rotationEngine';
 import {
   AccountSelectionRequirements,
   AccountSession,
@@ -160,6 +160,29 @@ function searchModeDisplayLabel(searchMode: PerplexitySearchMode, requestMode: P
  * original chat used (session refresh, failover account, thinking -> normal, COPILOT ->
  * CONCISE, finally Best).
  */
+export type SleepFn = (ms: number, signal: AbortSignal) => Promise<void>;
+
+function defaultSleepWithAbort(ms: number, signal: AbortSignal): Promise<void> {
+  if (ms <= 0) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new TransportError('Request cancelled.', 'aborted'));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new TransportError('Request cancelled.', 'aborted'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 export class PerplexityTransport {
   private emptySourcesRejected = false;
 
@@ -168,7 +191,9 @@ export class PerplexityTransport {
     private readonly rotationEngine: RotationEngine,
     private readonly capabilityFetcher: CapabilityFetcher,
     private readonly clientFactory: ClientFactory = (account) =>
-      new PerplexityWebClient(account.sessionToken, account.csrfToken, account.fullCookies)
+      new PerplexityWebClient(account.sessionToken, account.csrfToken, account.fullCookies),
+    private readonly sleepFn: SleepFn = defaultSleepWithAbort,
+    private readonly rng: () => number = Math.random
   ) {}
 
   async complete(request: CompletionRequest): Promise<CompletionResult> {
@@ -192,11 +217,27 @@ export class PerplexityTransport {
       requiredPlan: route.requiredPlan,
     };
 
-    let account = request.thread
-      ? accounts.find((entry) => entry.id === request.thread?.accountId && entry.status !== 'disabled') || null
+    const threadAccount = request.thread
+      ? accounts.find((entry) => entry.id === request.thread?.accountId && entry.status !== 'disabled' && entry.status !== 'expired') || null
+      : null;
+    let account = threadAccount && this.rotationEngine.canSendRequest(threadAccount.id)
+      ? threadAccount
       : null;
     if (!account) {
       account = this.rotationEngine.selectAccount(accounts, requirement);
+    }
+    if (!account) {
+      const rpmWaitMs = this.rotationEngine.getMsUntilPoolSlot(accounts, requirement);
+      if (rpmWaitMs > 0) {
+        const rpmCap = this.rotationEngine.getMaxRequestsPerMinute();
+        request.onRetry?.({
+          reason: `Лимит ${rpmCap} запр./мин на аккаунт достигнут, ожидание ${Math.ceil(rpmWaitMs / 1000)} с`,
+          rule: 'rateLimit.rpm',
+        });
+        await this.sleepFn(rpmWaitMs, request.signal);
+        account = (threadAccount && this.rotationEngine.canSendRequest(threadAccount.id) ? threadAccount : null)
+          || this.rotationEngine.selectAccount(accounts, requirement);
+      }
     }
 
     // If a non-search compute mode (e.g. Computer/ASI on a Pro account) has no eligible account,
@@ -313,6 +354,17 @@ export class PerplexityTransport {
     const prompt = attempt.useFollowUp && request.followUpPrompt ? request.followUpPrompt : request.fullPrompt;
     const modelLabel = getModelLabel(attempt.modelId);
     request.onAccount?.(attempt.account.alias, modelLabel);
+
+    const slotWaitMs = this.rotationEngine.getMsUntilAccountSlot(attempt.account.id);
+    if (slotWaitMs > 0) {
+      const rpmCap = this.rotationEngine.getMaxRequestsPerMinute();
+      request.onRetry?.({
+        reason: `Лимит ${rpmCap} запр./мин для ${attempt.account.alias}, пауза ${Math.ceil(slotWaitMs / 1000)} с`,
+        rule: 'rateLimit.rpm',
+      });
+      await this.sleepFn(slotWaitMs, request.signal);
+    }
+    this.rotationEngine.recordRequest(attempt.account.id);
 
     try {
       const result = await this._stream(request, attempt, prompt);
@@ -464,12 +516,14 @@ export class PerplexityTransport {
         this.emptySourcesRejected = true;
       }
       const nextRetry = (attempt.retryCount || 0) + 1;
+      const delayMs = computeBackoffWithJitterMs(nextRetry - 1, { rng: this.rng });
       request.onRetry?.({
         reason: isTruncated
-          ? `Поток оборвался внутри вызова инструмента (попытка ${nextRetry}/2)`
-          : `Пустой ответ от сервера (попытка ${nextRetry}/2)`,
+          ? `Поток оборвался внутри вызова инструмента (попытка ${nextRetry}/2, пауза ${delayMs} мс)`
+          : `Пустой ответ от сервера (попытка ${nextRetry}/2, пауза ${delayMs} мс)`,
         rule: isTruncated ? 'transport.truncated_tool_call' : 'transport.empty_answer',
       });
+      await this.sleepFn(delayMs, request.signal);
       return {
         ...attempt,
         sources: nextSources,

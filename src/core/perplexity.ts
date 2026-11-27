@@ -11,12 +11,12 @@ import { cliStores } from './nodeStores';
  * with the extension's account rotation, follow-up threads and recovery chain. The accounts live in
  * ~/.perplexicode (shared by `pcode` and the extension's "Share Accounts with CLI" command).
  */
-export async function createPerplexityBackend(options: { refreshCapabilities?: boolean; log?: (line: string) => void } = {}) {
+export async function createPerplexityBackend(options: { refreshCapabilities?: boolean; maxRequestsPerMinute?: number; log?: (line: string) => void } = {}) {
   const stores = cliStores();
   // AccountManager only uses get/update and get/store/delete; the file stores implement them.
   const accountManager = new AccountManager(stores.state as never, stores.secrets as never);
   await accountManager.initialize();
-  const rotationEngine = new RotationEngine();
+  const rotationEngine = new RotationEngine({ maxRequestsPerMinute: options.maxRequestsPerMinute });
   const capabilityFetcher = new CapabilityFetcher();
   const modelFetcher = new ModelFetcher();
   setRuntimeModelCatalog(modelFetcher.getFallbackModels());

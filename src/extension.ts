@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { initSettingsStore, onDidChangeFallbackSetting } from './config/settingsStore';
+import { initSettingsStore, onDidChangeFallbackSetting, readSetting } from './config/settingsStore';
 import { migrateLegacySettings, runLegacyMigration } from './migration/legacyImport';
 import { AgentController } from './agent/controller';
 import { getModeBySlug, MODES } from './agent/modes';
@@ -39,7 +39,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const accountManager = new AccountManager(context.globalState, context.secrets);
   await accountManager.initialize();
 
-  const rotationEngine = new RotationEngine();
+  const rotationEngine = new RotationEngine({
+    maxRequestsPerMinute: readSetting<number>('perplexicodeKilo.rotation.maxRequestsPerMinute', 12),
+  });
   const storedStrategy = context.globalState.get<RotationStrategy>(ROTATION_KEY);
   if (storedStrategy === 'round-robin' || storedStrategy === 'least-used' || storedStrategy === 'failover-only') {
     rotationEngine.setStrategy(storedStrategy);
@@ -218,6 +220,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   register('perplexicodeKilo.copyDiagnostics', async () => {
     await controller.openDiagnosticsPreview();
+  });
+
+  register('perplexicodeKilo.inspectContext', async () => {
+    await controller.openContextInspector();
   });
 
   register('perplexicodeKilo.manageAccounts', async () => {
@@ -508,10 +514,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (event.affectsConfiguration('perplexicodeKilo.subscriptionPlan')) {
         void initializeModels(false);
       }
+      if (event.affectsConfiguration('perplexicodeKilo.rotation.maxRequestsPerMinute')) {
+        rotationEngine.setMaxRequestsPerMinute(
+          readSetting<number>('perplexicodeKilo.rotation.maxRequestsPerMinute', 12)
+        );
+      }
     }),
     onDidChangeFallbackSetting((key) => {
       if (key === 'perplexicodeKilo.subscriptionPlan') {
         void initializeModels(false);
+      }
+      if (key === 'perplexicodeKilo.rotation.maxRequestsPerMinute') {
+        rotationEngine.setMaxRequestsPerMinute(
+          readSetting<number>('perplexicodeKilo.rotation.maxRequestsPerMinute', 12)
+        );
       }
     })
   );
