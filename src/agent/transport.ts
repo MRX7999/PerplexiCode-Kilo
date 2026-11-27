@@ -162,6 +162,17 @@ function searchModeDisplayLabel(searchMode: PerplexitySearchMode, requestMode: P
  */
 export type SleepFn = (ms: number, signal: AbortSignal) => Promise<void>;
 
+const NETWORK_ERROR_MARKERS = [
+  'connection timed out', 'connection failed', 'could not connect', 'response timed out', 'socket hang up',
+  'econnreset', 'econnrefused', 'etimedout', 'enotfound', 'eai_again', 'enetunreach', 'ehostunreach',
+];
+
+/** True for transport-level failures (DNS, TCP, TLS, timeouts) that are not caused by the account. */
+export function isNetworkErrorMessage(message: string): boolean {
+  const lowered = message.toLowerCase();
+  return NETWORK_ERROR_MARKERS.some((marker) => lowered.includes(marker));
+}
+
 function defaultSleepWithAbort(ms: number, signal: AbortSignal): Promise<void> {
   if (ms <= 0) {
     return Promise.resolve();
@@ -500,6 +511,7 @@ export class PerplexityTransport {
       || ['rejected by perplexity', 'not available for the current account', 'access denied', 'forbidden', '400'].some((n) => lowered.includes(n));
     const isEmpty = lowered.includes('empty answer');
     const isTruncated = lowered.includes('incomplete tool call') || lowered.includes('was cut off') || lowered.includes('disconnected prematurely');
+    const isNetwork = isNetworkErrorMessage(lowered);
 
     // 1. A broken follow-up thread: resend the self-contained prompt as a new thread.
     if (attempt.useFollowUp) {
@@ -557,7 +569,9 @@ export class PerplexityTransport {
       this.capabilityFetcher.noteQuotaFailure(attempt.account, attempt.quotaBucket);
     } else if (isAccessDenied) {
       markModelUnavailable(attempt.account, attempt.modelId);
-    } else if (!isEmpty) {
+    } else if (!isEmpty && !isNetwork) {
+      // A network failure says nothing about the account; counting it would disable the only account
+      // after three timeouts and turn the real error into "No active Perplexity account".
       this.rotationEngine.markFailed(attempt.account, false);
     }
 

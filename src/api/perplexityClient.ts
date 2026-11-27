@@ -14,6 +14,12 @@ const USER_AGENT = process.platform === 'darwin'
   ? 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36 Edg/146.0.0.0'
   : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36 Edg/146.0.0.0';
 const MAX_RETRIES = 2;
+/** TCP + TLS handshake budget for a new socket; a blackholed route fails fast and is retried. */
+const CONNECT_TIMEOUT_MS = 20_000;
+/** Time to wait for response headers once the request is sent. */
+const RESPONSE_HEADERS_TIMEOUT_MS = 60_000;
+/** Idle keep-alive sockets are closed after this, so a NAT/VPN-dropped socket is not reused later. */
+const IDLE_SOCKET_TIMEOUT_MS = 30_000;
 
 // Chrome-like TLS cipher suite ordering to avoid Cloudflare JA3 fingerprint detection
 const CHROME_CIPHERS = [
@@ -36,6 +42,7 @@ const CHROME_CIPHERS = [
 
 const chromeAgent = new https.Agent({
   keepAlive: true,
+  timeout: IDLE_SOCKET_TIMEOUT_MS,
   ciphers: CHROME_CIPHERS,
   minVersion: 'TLSv1.2' as tls.SecureVersion,
   maxVersion: 'TLSv1.3' as tls.SecureVersion,
@@ -165,6 +172,26 @@ export class PerplexityWebClient {
 
     const cookie = this._buildCookie();
 
+    let gotResponse = false;
+    let connectTimer: NodeJS.Timeout | undefined;
+    const clearConnectTimer = () => {
+      if (connectTimer) {
+        clearTimeout(connectTimer);
+        connectTimer = undefined;
+      }
+    };
+    const retryOrFail = (error: Error, delayMs: number) => {
+      if (retryCount < MAX_RETRIES) {
+        setTimeout(() => {
+          if (!abortController.signal.aborted) {
+            this._doRequest(query, meta, callbacks, options, abortController, retryCount + 1);
+          }
+        }, delayMs);
+        return;
+      }
+      callbacks.onError(error);
+    };
+
     const req = https.request(
       {
         method: 'POST',
@@ -184,9 +211,11 @@ export class PerplexityWebClient {
           'sec-fetch-mode': 'cors',
           'sec-fetch-site': 'same-origin',
         },
-        timeout: 60_000,
+        timeout: RESPONSE_HEADERS_TIMEOUT_MS,
       },
       (res) => {
+        gotResponse = true;
+        clearConnectTimer();
         if (res.statusCode && res.statusCode !== 200) {
           let errorBody = '';
           res.on('data', (chunk: Buffer) => {
@@ -214,25 +243,45 @@ export class PerplexityWebClient {
       }
     );
 
+    req.on('socket', (socket: tls.TLSSocket) => {
+      if (!socket.connecting) {
+        return;
+      }
+      connectTimer = setTimeout(() => {
+        connectTimer = undefined;
+        req.destroy(new Error(`could not connect to ${PERPLEXITY_HOST} within ${CONNECT_TIMEOUT_MS / 1000} s`));
+      }, CONNECT_TIMEOUT_MS);
+      socket.once('secureConnect', clearConnectTimer);
+    });
+
     req.on('error', (error: Error) => {
-      if (abortController.signal.aborted) {
+      clearConnectTimer();
+      if (abortController.signal.aborted || gotResponse) {
         return;
       }
-
-      if (retryCount < MAX_RETRIES) {
-        const delay = Math.pow(2, retryCount) * 1000;
-        setTimeout(() => {
-          this._doRequest(query, meta, callbacks, options, abortController, retryCount + 1);
-        }, delay);
-        return;
-      }
-
-      callbacks.onError(new Error(`Connection failed: ${error.message}`));
+      // A pooled keep-alive socket that the network dropped fails on reuse; retry at once on a new one.
+      const delay = req.reusedSocket ? 0 : Math.pow(2, retryCount) * 1000;
+      retryOrFail(new Error(`Connection failed: ${error.message}`), delay);
     });
 
     req.on('timeout', () => {
+      if (gotResponse) {
+        return; // the response stream has its own idle timeout below
+      }
+      clearConnectTimer();
+      const reused = req.reusedSocket;
       req.destroy();
-      callbacks.onError(new Error('Connection timed out.'));
+      if (abortController.signal.aborted) {
+        return;
+      }
+      const error = new Error(
+        `Connection timed out: no response from ${PERPLEXITY_HOST} within ${RESPONSE_HEADERS_TIMEOUT_MS / 1000} s. Check your network, VPN or proxy.`
+      );
+      if (reused) {
+        retryOrFail(error, 0);
+        return;
+      }
+      callbacks.onError(error);
     });
 
     abortController.signal.addEventListener('abort', () => {

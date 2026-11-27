@@ -13,8 +13,12 @@ import {
   QuickEditStreamAssembler,
   runInlineQuickEdit,
 } from '../src/agent/inlineQuickEdit';
+import { buildRepoMap, REPO_MAP_NO_WORKSPACE_TEXT } from '../src/agent/repoMap';
 import { AgentTask, CompletionProvider } from '../src/agent/task';
+import { isBroadScanRoot } from '../src/agent/tools';
+import { isNetworkErrorMessage, PerplexityTransport, TransportError } from '../src/agent/transport';
 import { parseAssistantMessage } from '../src/agent/toolParser';
+import { CapabilityFetcher } from '../src/api/capabilityFetcher';
 import type { AgentSettings } from '../src/agent/types';
 import {
   getModelCatalog,
@@ -27,6 +31,8 @@ import {
   updateModelCatalogFromRepository,
   verifyAndParseRemoteCatalog,
 } from '../src/api/remoteCatalogUpdater';
+import { RotationEngine } from '../src/api/rotationEngine';
+import type { AccountSession, StreamCallbacks } from '../src/api/types';
 import { LongCommandTimer, parseArgs } from '../src/cli/index';
 import { loadLspConfigs, LspManager } from '../src/core/lsp';
 import { NodeAgentHost } from '../src/core/nodeHost';
@@ -932,4 +938,151 @@ test('F31: `QuickEditStreamAssembler` & `runInlineQuickEdit` stream live diffs a
   assert.match(readme, /pcode serve/);
   assert.match(readme, /stopOnFallback/);
   assert.match(readme, /worktree/);
+});
+
+// ---------------------------------------------------------------------------
+// 4.0.2 — no-folder tasks must not walk the home directory; network errors must not disable accounts
+// ---------------------------------------------------------------------------
+
+function withFakeHome<T>(run: (home: string) => Promise<T>): Promise<T> {
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pcode-402-home-')));
+  fs.mkdirSync(path.join(home, 'Documents', 'secret-project'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'Documents', 'secret-project', 'privateModule.ts'), 'export const privateValue = 1;\n');
+  fs.writeFileSync(path.join(home, 'home-notes.txt'), 'notes\n');
+  const previous = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  return run(home).finally(() => {
+    process.env.HOME = previous.HOME;
+    process.env.USERPROFILE = previous.USERPROFILE;
+  });
+}
+
+test('4.0.2: isBroadScanRoot flags the home directory and filesystem roots only', () => {
+  const home = path.join(os.tmpdir(), 'pcode-402-fake-home');
+  assert.equal(isBroadScanRoot(home, home), true);
+  assert.equal(isBroadScanRoot(`${home}${path.sep}`, home), true);
+  assert.equal(isBroadScanRoot(path.parse(home).root, home), true);
+  assert.equal(isBroadScanRoot(path.join(home, 'project'), home), false);
+  assert.equal(isBroadScanRoot(os.tmpdir(), home), false);
+});
+
+test('4.0.2: buildRepoMap skips the home directory instead of walking it', async () => {
+  await withFakeHome(async (home) => {
+    const skipped = await buildRepoMap({ cwd: home });
+    assert.equal(skipped.text, REPO_MAP_NO_WORKSPACE_TEXT);
+    assert.equal(skipped.totalFilesScanned, 0);
+    assert.doesNotMatch(skipped.text, /privateModule/);
+
+    const project = await buildRepoMap({ cwd: path.join(home, 'Documents', 'secret-project') });
+    assert.match(project.text, /privateModule\.ts/, 'a real folder is still mapped');
+  });
+});
+
+test('4.0.2: buildRepoMap stops the directory walk at its directory budget', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pcode-402-wide-'));
+  for (let i = 0; i < 30; i += 1) {
+    fs.mkdirSync(path.join(root, `dir${String(i).padStart(2, '0')}`));
+    fs.writeFileSync(path.join(root, `dir${String(i).padStart(2, '0')}`, `mod${i}.ts`), `export const v${i} = ${i};\n`);
+  }
+  const limited = await buildRepoMap({ cwd: root, maxDirsScan: 5, maxChars: 20000 });
+  assert.ok(limited.totalFilesScanned <= 4, `walk must stop after 5 directories, scanned ${limited.totalFilesScanned}`);
+  const full = await buildRepoMap({ cwd: root, maxChars: 20000 });
+  assert.equal(full.totalFilesScanned, 30);
+});
+
+test('4.0.2: a task with no folder open (cwd = home) reaches the model without a file list or repo map', async () => {
+  await withFakeHome(async (home) => {
+    const prompts: string[] = [];
+    const provider: CompletionProvider = {
+      complete: async (req) => {
+        prompts.push(req.fullPrompt);
+        return makeMockCompletion('<attempt_completion><result>ok</result></attempt_completion>') as any;
+      },
+    };
+    const task = new AgentTask({
+      host: new NodeAgentHost(home, {}, home),
+      provider,
+      mode: 'ask',
+      getSettings: () => baseAgentSettings({ includeFileListOnStart: true, repoMapEnabled: true }),
+      getSelection: () => ({ baseModelId: 'turbo', thinking: false, webSearch: false }),
+      getModelLabel: () => 'Best',
+      callbacks: {
+        onMessage: () => {},
+        onState: (owner) => {
+          const askId = owner.status.state === 'waiting' ? owner.status.askId : undefined;
+          if (askId) {
+            queueMicrotask(() => owner.respond(askId, { response: 'yes' }));
+          }
+        },
+      },
+    });
+    const started = Date.now();
+    await task.start('тест');
+    assert.equal(task.status.state, 'completed');
+    assert.equal(prompts.length, 1, 'the request must be sent');
+    assert.ok(Date.now() - started < 5000, 'start must not stall on a home-directory scan');
+    assert.doesNotMatch(prompts[0], /privateModule|home-notes\.txt/, 'home files must not be listed or mapped');
+    assert.doesNotMatch(prompts[0], /# Repository Map/);
+  });
+});
+
+test('4.0.2: network timeouts are surfaced and never disable the only account', async () => {
+  const account: AccountSession = {
+    id: 'acc-net',
+    alias: 'Account-net',
+    sessionToken: 'tok-redacted-test',
+    csrfToken: 'csrf-redacted-test',
+    status: 'active',
+    addedAt: new Date(0).toISOString(),
+    queriestoday: 0,
+    queriesTotalLifetime: 0,
+    errorCount: 0,
+    capabilities: {
+      plan: 'max',
+      availableModels: ['turbo', 'claude55sonnet'],
+      unavailableModels: [],
+      modes: ['search', 'research'],
+      fetchedAt: new Date().toISOString(),
+      source: 'cached',
+    } as any,
+  } as AccountSession;
+  const timeoutMessage = 'Connection timed out: no response from www.perplexity.ai within 60 s. Check your network, VPN or proxy.';
+  let calls = 0;
+  const client = {
+    streamQuery: (_q: string, _m: string, callbacks: StreamCallbacks) => {
+      calls += 1;
+      const controller = new AbortController();
+      setTimeout(() => callbacks.onError(new Error(timeoutMessage)), 0);
+      return controller;
+    },
+  } as any;
+  const manager = { getAccounts: () => [account], saveMetas: async () => undefined, refreshSession: async () => false } as any;
+  const transport = new PerplexityTransport(manager, new RotationEngine(), new CapabilityFetcher(), () => client);
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    await assert.rejects(
+      () =>
+        transport.complete({
+          fullPrompt: 'тест',
+          baseModelId: 'claude55sonnet',
+          thinking: false,
+          webSearch: false,
+          signal: new AbortController().signal,
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof TransportError);
+        assert.match(error.message, /Connection timed out/);
+        assert.doesNotMatch(error.message, /No active Perplexity account/);
+        return true;
+      }
+    );
+  }
+  assert.equal(calls, 4);
+  assert.equal(account.status, 'active');
+  assert.equal(account.errorCount, 0);
+
+  assert.equal(isNetworkErrorMessage('Connection failed: getaddrinfo ENOTFOUND www.perplexity.ai'), true);
+  assert.equal(isNetworkErrorMessage('Connection failed: could not connect to www.perplexity.ai within 20 s'), true);
+  assert.equal(isNetworkErrorMessage('HTTP 403: Forbidden'), false);
 });

@@ -1,7 +1,7 @@
 import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import { IGNORED_DIRS, toPosixRelative } from './tools';
+import { IGNORED_DIRS, isBroadScanRoot, toPosixRelative } from './tools';
 
 export interface RepoSymbol {
   kind: 'function' | 'class' | 'interface' | 'type' | 'enum' | 'const' | 'method' | 'struct' | 'trait';
@@ -37,7 +37,15 @@ export interface RepoMapOptions {
   queryText?: string;
   /** Max files scanned in workspace. Default: 600. */
   maxFilesScan?: number;
+  /** Max directories visited while collecting files. Default: 2000. */
+  maxDirsScan?: number;
+  /** Wall-clock budget for the synchronous directory walk, in ms. Default: 1500. */
+  scanBudgetMs?: number;
 }
+
+/** Text used when the map is skipped because the agent runs in the home directory or a filesystem root. */
+export const REPO_MAP_NO_WORKSPACE_TEXT =
+  '# Repository Map (skipped: no workspace folder is open, the task runs in the home directory. Open a project folder to enable @repo.)';
 
 export interface RepoMapResult {
   text: string;
@@ -376,11 +384,14 @@ export function extractSymbolsAndImports(relPath: string, content: string): {
   return { symbols, rawImports: [...rawImports] };
 }
 
-function collectSourceFiles(cwd: string, maxFiles: number): string[] {
+function collectSourceFiles(cwd: string, maxFiles: number, maxDirs = 2000, budgetMs = 1500): string[] {
   const results: string[] = [];
   const queue: string[] = [cwd];
-  while (queue.length > 0 && results.length < maxFiles) {
+  const deadline = Date.now() + Math.max(1, budgetMs);
+  let visitedDirs = 0;
+  while (queue.length > 0 && results.length < maxFiles && visitedDirs < maxDirs && Date.now() < deadline) {
     const dir = queue.shift()!;
+    visitedDirs += 1;
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -524,7 +535,19 @@ function extractQueryTokens(queryText?: string): Set<string> {
 export async function buildRepoMap(options: RepoMapOptions): Promise<RepoMapResult> {
   const maxChars = Math.max(120, Math.floor(options.maxChars ?? 6000));
   const maxFilesScan = options.maxFilesScan ?? 600;
-  const relFiles = collectSourceFiles(options.cwd, maxFilesScan);
+  if (isBroadScanRoot(options.cwd)) {
+    const skippedText = REPO_MAP_NO_WORKSPACE_TEXT.slice(0, maxChars);
+    return {
+      text: skippedText,
+      totalFilesScanned: 0,
+      includedFiles: 0,
+      omittedFiles: 0,
+      maxChars,
+      usedChars: skippedText.length,
+      files: [],
+    };
+  }
+  const relFiles = collectSourceFiles(options.cwd, maxFilesScan, options.maxDirsScan, options.scanBudgetMs);
   const allFilesSet = new Set(relFiles);
 
   const activeFile = normalizeRel(options.cwd, options.activeFile);

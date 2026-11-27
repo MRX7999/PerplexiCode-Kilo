@@ -5,7 +5,7 @@
 <img src="docs/visuals/hero.png" alt="PerplexiCode Kilo: one agent core for the IDE and pcode CLI, with MCP integrations and configurable approvals" width="100%" />
 
 [![Release](https://img.shields.io/github/v/release/MRX7999/PerplexiCode-Kilo?label=release&color=20b8cd)](https://github.com/MRX7999/PerplexiCode-Kilo/releases/latest)
-[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-4.0.1-007acc)](https://marketplace.visualstudio.com/items?itemName=MRX7999.perplexicode-kilo)
+[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-4.0.2-007acc)](https://marketplace.visualstudio.com/items?itemName=MRX7999.perplexicode-kilo)
 [![Open VSX](https://img.shields.io/open-vsx/v/MRX7999/perplexicode-kilo?label=Open%20VSX&color=a60ee5)](https://open-vsx.org/extension/MRX7999/perplexicode-kilo)
 [![Open VSX downloads](https://img.shields.io/open-vsx/dt/MRX7999/perplexicode-kilo?label=installs&color=5eead4)](https://open-vsx.org/extension/MRX7999/perplexicode-kilo)
 [![CI](https://img.shields.io/github/actions/workflow/status/MRX7999/PerplexiCode-Kilo/ci.yml?branch=master&label=CI)](https://github.com/MRX7999/PerplexiCode-Kilo/actions/workflows/ci.yml)
@@ -773,6 +773,8 @@ docs/                   CORE-3.0.md, screenshots and diagrams
 | The CLI says `NOT registered` | Harmless Antigravity warning; check `--list-extensions --show-versions`. |
 | Install script cannot find the editor | Pass `--vsix` with a downloaded file, or use **Install from VSIX…**. |
 | Agent stops after many steps | Raise `perplexicodeKilo.agent.maxRequestsPerTask`. |
+| Task sits at *0 requests* with no folder open | Open a project folder. Since 4.0.2 a task in the home directory skips the start-up file list and the `@repo` map, so it no longer stalls on `~/Library` or iCloud folders. |
+| `Connection timed out` / `Connection failed: could not connect to www.perplexity.ai` | Your machine cannot reach `www.perplexity.ai` over TCP. Check with `curl -sv -m 20 -o /dev/null https://www.perplexity.ai/`, then your VPN, proxy or router exclusions. Since 4.0.2 network errors no longer mark the account as failed, so you will not see *No active Perplexity account* afterwards. |
 | Task stopped with *needs you* after a fallback | `stopOnFallback` is on and the requested mode or model is not available for your accounts. Pick another one or turn the setting off. |
 | `pcode` exits with code `64` | A secret was passed as an argument (for example `--token`). Use `PCODE_SERVE_TOKEN`, `--token-env`, `--token-stdin` or the hidden prompt. |
 | `lsp` says *No LSP servers configured* (CLI) | Add the server to `.lsp.json` or `~/.perplexicode/lsp.json`; project files also need `--trust-project`. |

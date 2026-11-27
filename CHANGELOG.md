@@ -2,6 +2,13 @@
 
 All notable changes to PerplexiCode Kilo. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [4.0.2] - 2026-11-27
+
+### Fixed
+- **Tasks with no folder open no longer hang at "0 requests".** With no workspace folder the agent runs in the home directory, and the start-up file list and the automatic `@repo` map walked all of it synchronously (`~/Library`, iCloud, Photos), which could stall on macOS before the first request was sent. The home directory and filesystem roots are now skipped (`isBroadScanRoot`), `@repo` explains that no folder is open, and the `@repo` directory walk has a directory (2000) and time (1.5 s) budget.
+- **Network errors no longer disable the account.** Three `Connection timed out.` errors in a row used to mark the only account as failed, so the next retry reported *No active Perplexity account can serve this request* instead of the real network problem. DNS, TCP, TLS and timeout errors now leave the account untouched and are shown as they are.
+- **Clearer connection errors and faster failure.** A new socket that cannot finish the TCP + TLS handshake in 20 s fails with `could not connect to www.perplexity.ai` and is retried; a request on a reused keep-alive socket that the network dropped is retried at once; idle keep-alive sockets close after 30 s; the header timeout now says `no response from www.perplexity.ai within 60 s. Check your network, VPN or proxy.`
+
 ## [4.0.1] - 2026-11-27
 
 Documentation-only release so the Marketplace and Open VSX pages show the 4.0 README. No code or behaviour changes.
