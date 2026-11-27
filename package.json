@@ -2,7 +2,7 @@
   "name": "perplexicode-kilo",
   "displayName": "PerplexiCode Kilo",
   "description": "Kilo Code-style autonomous coding agent (Code / Architect / Ask / Debug / Orchestrator / Review modes, tools, diffs, checkpoints, auto-approve) powered by your Perplexity Pro/Max subscription and its latest models.",
-  "version": "3.6.0",
+  "version": "3.7.0",
   "publisher": "MRX7999",
   "engines": {
     "vscode": "^1.85.0"
@@ -659,6 +659,18 @@
           "minimum": 1,
           "maximum": 20,
           "description": "Number of latest dialogue steps kept untouched when auto-compaction runs."
+        },
+        "perplexicodeKilo.agent.worktreeEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run new tasks in an isolated git worktree created from HEAD, confining all file tools and shell commands (including symlinks and git -C) to that worktree."
+        },
+        "perplexicodeKilo.agent.maxParallelSubtasks": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 16,
+          "description": "Maximum concurrent subtasks executed in parallel by Orchestrator (read-only modes in main tree, writing modes in isolated git worktrees)."
         },
         "perplexicodeKilo.rotation.maxRequestsPerMinute": {
           "type": "number",

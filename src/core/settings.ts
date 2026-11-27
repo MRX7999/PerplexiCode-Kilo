@@ -29,9 +29,28 @@ export interface HookMatcher {
   hooks: HookCommand[];
 }
 
-export type HookEvent = 'PreToolUse' | 'PostToolUse' | 'UserPromptSubmit' | 'Stop' | 'SubagentStop' | 'SessionStart' | 'SessionEnd';
+export type HookEvent =
+  | 'PreToolUse'
+  | 'PostToolUse'
+  | 'UserPromptSubmit'
+  | 'Stop'
+  | 'SubagentStop'
+  | 'SessionStart'
+  | 'SessionEnd'
+  | 'WorktreeCreate'
+  | 'WorktreeRemove';
 
-export const HOOK_EVENTS: HookEvent[] = ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'SubagentStop', 'SessionStart', 'SessionEnd'];
+export const HOOK_EVENTS: HookEvent[] = [
+  'PreToolUse',
+  'PostToolUse',
+  'UserPromptSubmit',
+  'Stop',
+  'SubagentStop',
+  'SessionStart',
+  'SessionEnd',
+  'WorktreeCreate',
+  'WorktreeRemove',
+];
 
 export interface CoreSettings {
   permissions: {
@@ -61,6 +80,8 @@ export interface CoreSettings {
   autoCompactKeepSteps?: number;
   /** 3.6 (F15): conservative per-account requests-per-minute ceiling. */
   maxRequestsPerMinute?: number;
+  /** 3.7 (F18): maximum concurrent subtasks run in parallel by Orchestrator (default 3). */
+  maxParallelSubtasks?: number;
   env: Record<string, string>;
   /** Execute up to N read-only tool calls from one model answer. 1 disables batching. */
   readBatchSize: number;
@@ -200,6 +221,9 @@ export function mergeLayer(target: CoreSettings, raw: Record<string, unknown>, a
   }
   if (typeof raw.maxRequestsPerMinute === 'number' && Number.isFinite(raw.maxRequestsPerMinute)) {
     target.maxRequestsPerMinute = Math.max(1, Math.min(120, Math.floor(raw.maxRequestsPerMinute)));
+  }
+  if (typeof raw.maxParallelSubtasks === 'number' && Number.isFinite(raw.maxParallelSubtasks)) {
+    target.maxParallelSubtasks = Math.max(1, Math.min(8, Math.floor(raw.maxParallelSubtasks)));
   }
   if (typeof raw.readBatchSize === 'number') {
     target.readBatchSize = Math.max(1, Math.min(10, Math.floor(raw.readBatchSize)));

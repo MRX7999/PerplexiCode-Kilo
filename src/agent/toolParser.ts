@@ -59,6 +59,8 @@ export interface ParsedAssistantMessage {
   ignoredToolCount: number;
   /** Complete read-only tool calls that directly follow a read-only first tool (3.0 batching). */
   readBatch?: ParsedToolUse[];
+  /** 3.7 (F18): Consecutive `new_task` tool calls emitted together for parallel Orchestrator execution. */
+  subtaskBatch?: ParsedToolUse[];
   /** The text the offsets refer to (differs from the raw answer when entities were decoded). */
   source?: string;
 }
@@ -108,12 +110,34 @@ export function parseAssistantMessage(raw: string, options: { partial?: boolean 
     }
   }
 
+  const subtaskBatch: ParsedToolUse[] = [];
+  if (!tool.partial && tool.name === 'new_task') {
+    let cursor = tool.end;
+    while (subtaskBatch.length < 7) {
+      const next = findFirstTool(source.slice(cursor));
+      if (!next || next.name !== 'new_task') {
+        break;
+      }
+      const gap = source.slice(cursor, cursor + next.index);
+      if (gap.trim().length > 300) {
+        break;
+      }
+      const extra = extractTool(source, next.name, cursor + next.index);
+      if (extra.partial) {
+        break;
+      }
+      subtaskBatch.push(extra);
+      cursor = extra.end;
+    }
+  }
+
   return {
     text: cleanupProse(text),
     reasoning,
     tool,
-    ignoredToolCount,
+    ignoredToolCount: Math.max(0, ignoredToolCount - readBatch.length - subtaskBatch.length),
     readBatch,
+    ...(subtaskBatch.length > 0 ? { subtaskBatch } : {}),
     source,
   };
 }

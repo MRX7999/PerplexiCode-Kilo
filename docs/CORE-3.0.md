@@ -34,7 +34,8 @@ The config files follow the Claude Code formats: `settings.json` permissions and
 | `src/core/agents.ts` | Subagents, skills, `CLAUDE.md` memory with `@imports` |
 | `src/core/journal.ts` | Append-only JSONL journal + atomic snapshots, resume, interrupted-work detection |
 | `src/core/verification.ts` | `verified / needs_review / failed / blocked / no_changes` |
-| `src/core/compaction.ts` | `/compact` |
+| `src/core/worktree.ts` | Isolated git worktrees (`--worktree`), symlink & `git -C` confinement, Result Card Apply/Discard, parallel Orchestrator helpers (3.7) |
+| `src/core/compaction.ts` | `/compact` and threshold-based structured auto-compaction |
 | `src/core/runner.ts` | `CoreSession`: tasks, subagents, journal, resume, compact |
 | `src/core/openaiProvider.ts` | OpenAI-compatible transport (Ollama, LM Studio, vLLM, OpenRouter …) |
 | `src/core/perplexity.ts` | Perplexity web-session transport for the CLI (accounts in `~/.perplexicode`) |
@@ -376,10 +377,32 @@ Flags: `-p/--print`, `--output-format text|json|stream-json`, `--permission-mode
 `--dangerously-skip-permissions`, `--allowedTools`, `--disallowedTools`, `--max-turns N` (`0` = no
 limit), `-m/--model`, `--thinking`, `--mode`, `-c/--continue`, `-r/--resume [id]`, `--cwd`,
 `--provider perplexity|openai`, `--web/--no-web`, `--trust-project`, `--no-journal`, `-v/--verbose`,
-`--compute <mode>`, `--mcp-config <file|json>` (repeatable), `--strict-mcp-config`, `--no-mcp` (3.3).
+`--compute <mode>`, `--mcp-config <file|json>` (repeatable), `--strict-mcp-config`, `--no-mcp` (3.3),
+`--stop-on-fallback` (3.5), `--repo-map/--no-repo-map`, `--repo-map-chars N`, `--max-rpm N` (3.6),
+`-w/--worktree [name]`, `--max-parallel-subtasks N` (3.7).
 
-REPL commands: `/help`, `/mode`, `/permissions`, `/model`, `/compute`, `/mcp`, `/compact`, `/clear`,
-`/agents`, `/skills`, `/status`, `/todos`, `/resume`, `/exit`. Ctrl+C stops the running task.
+REPL commands: `/help`, `/mode`, `/permissions`, `/model`, `/compute`, `/mcp`, `/worktree`, `/context`,
+`/compact`, `/clear`, `/agents`, `/skills`, `/status`, `/todos`, `/resume`, `/exit`. Ctrl+C stops the running task.
+
+### `pcode -p` Exit Codes for CI (3.7 — F20)
+
+| Exit Code | Constant | Meaning |
+| --- | --- | --- |
+| `0` | `OK` | Task completed (`attempt_completion`) and `verify.command` did not fail or block. |
+| `1` | `RUNTIME_ERROR` | Unclassified runtime/API error or task ended without completion. |
+| `2` | `VERIFY_FAILED` | `verify.command` ran and exited non-zero (`verification.status === "failed"`). |
+| `3` | `POLICY_BLOCKED` | Blocked by permissions, hook (`exit 2`), `stopOnFallback`, or `verification.status === "blocked"`. |
+| `4` | `MAX_TURNS_EXCEEDED` | Stopped on `--max-turns` (`maxRequests` ceiling) before completion. |
+| `5` | `AUTH_REQUIRED` | No configured Perplexity account or expired/unauthorized session (`401` / `403`). |
+| `6` | `WORKTREE_CONFLICT` | `pcode worktree apply <name>` or result card encountered conflicting files in the main checkout. |
+| `64` | `USAGE_ERROR` | Invalid CLI flag, unknown preset/model, missing `--cwd`, or empty `-p` prompt. |
+| `130` | `INTERRUPTED` | Aborted by `SIGINT` (`Ctrl+C`). |
+
+### Worktree Isolation & Hooks (3.7 — F16–F19)
+
+- `pcode --worktree [name]` creates `<gitCommonDir>/perplexicode-worktrees/<name>` detached at `HEAD`, emits an explicit warning if the main checkout has uncommitted edits, and confines all file tools and shell commands to the worktree root (blocking `..`, external symlinks, `git -C`, `git --git-dir`/`--work-tree`, `GIT_WORK_TREE`, `git push`, and `cd` outside).
+- `pcode worktree list`, `pcode worktree apply <name>`, and `pcode worktree discard <name>` inspect, non-mergingly apply (stopping with exit code `6` and the conflicting file list on collision), or remove isolated worktrees.
+- Hooks `WorktreeCreate` and `WorktreeRemove` receive `{ session_id, cwd, hook_event_name, worktree_name, worktree_path, base_commit, reason? }` on stdin; `WorktreeCreate` can block with exit `2` or override `{ "worktreePath": "..." }`.
 
 Prompts in the REPL:
 

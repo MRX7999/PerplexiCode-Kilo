@@ -64,6 +64,13 @@ const suites = [
     prebuild: true,
     options: { external: ['vscode', 'puppeteer-core', 'sql.js'] },
   },
+  {
+    // 3.7 git worktree isolation, result card Apply/Discard/Conflict, parallel Orchestrator subagents, WorktreeCreate/WorktreeRemove hooks, and pcode -p CI exit codes.
+    entry: 'release-3.7.test.ts',
+    outfile: 'release-3.7.test.cjs',
+    prebuild: true,
+    options: { external: ['vscode', 'puppeteer-core', 'sql.js'] },
+  },
 ];
 
 const only = process.argv[2];

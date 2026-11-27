@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { loadSubagents, SubagentDefinition } from '../core/agents';
 import { CoreGate } from '../core/gate';
+import { HookEngine } from '../core/hooks';
 import { detectInterruptedWork, resumeNote, sessionsDir, SessionJournal } from '../core/journal';
 import { loadSettings } from '../core/settings';
 import { CoreEvent, PERMISSION_MODES, PermissionMode, TimedCoreEvent } from '../core/types';
@@ -45,8 +46,23 @@ export class CoreBridge {
     return this.subagents(cwd).find((agent) => agent.name === name);
   }
 
+  createHooksEngine(cwd: string): HookEngine {
+    const trusted = vscode.workspace.isTrusted;
+    const settings = loadSettings(cwd, { trustProjectHooks: trusted });
+    if (!readSetting<boolean>('perplexicodeKilo.agent.hooks.enabled', true)) {
+      settings.hooks = {};
+    }
+    return new HookEngine(settings.hooks, cwd, settings.env, undefined, this.log);
+  }
+
   /** Builds the gate for one task. Must be called before the task exists; `register` binds it. */
-  createGate(options: { cwd: string; host: AgentHost; parentId?: string; agent?: SubagentDefinition }): CoreGate {
+  createGate(options: {
+    cwd: string;
+    host: AgentHost;
+    parentId?: string;
+    agent?: SubagentDefinition;
+    worktreeIsolation?: { worktreeRoot: string; mainRepoRoot?: string };
+  }): CoreGate {
     const trusted = vscode.workspace.isTrusted;
     const settings = loadSettings(options.cwd, { trustProjectHooks: trusted });
     if (!readSetting<boolean>('perplexicodeKilo.agent.hooks.enabled', true)) {
@@ -77,6 +93,7 @@ export class CoreBridge {
         if (owner) this.onEvent(owner, event);
       },
       log: this.log,
+      worktreeIsolation: options.worktreeIsolation,
     });
   }
 

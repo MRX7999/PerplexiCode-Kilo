@@ -5,6 +5,7 @@ import { formatSessionContext } from './agents';
 import { HookEngine, HookInputBase, HookRunner, toClaudeToolInput } from './hooks';
 import { evaluatePermission, pathMatches } from './permissions';
 import { CoreSettings, HookEvent } from './settings';
+import { enforceWorktreeToolCall } from './worktree';
 import {
   claudeToolName,
   CoreEvent,
@@ -40,6 +41,11 @@ export interface CoreGateOptions {
   onEvent?: (taskId: string, event: CoreEvent) => void;
   log?: (line: string) => void;
   home?: string;
+  /** 3.7 (F16): Confines all file tools and shell commands to an isolated git worktree. */
+  worktreeIsolation?: {
+    worktreeRoot: string;
+    mainRepoRoot?: string;
+  };
 }
 
 /**
@@ -70,6 +76,16 @@ export class CoreGate implements ToolGate {
   }
 
   async preToolUse(ctx: GateContext, tool: GateToolCall): Promise<GateVerdict> {
+    if (this.options.worktreeIsolation) {
+      const iso = enforceWorktreeToolCall(tool, this.options.worktreeIsolation);
+      if (!iso.ok) {
+        return {
+          decision: 'deny',
+          reason: iso.reason || 'Blocked by git worktree isolation.',
+          source: 'worktree.isolation',
+        };
+      }
+    }
     const { settings } = this.options;
     const verdict = evaluatePermission({
       allow: [...settings.permissions.allow, ...(this.options.extraAllow || []), ...this.knowledgeReadRules()],

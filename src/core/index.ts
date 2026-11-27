@@ -9,6 +9,7 @@ export * from './verification';
 export * from './compaction';
 export * from './contextInspector';
 export * from './repoMapBench';
+export * from './worktree';
 export * from './gate';
 export * from './runner';
 export * from './nodeHost';

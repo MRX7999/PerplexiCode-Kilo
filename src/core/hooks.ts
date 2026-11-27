@@ -46,6 +46,8 @@ export interface HookDecision {
   /** JSON "continue": false stops the whole task. */
   stopTask?: boolean;
   stopReason?: string;
+  /** 3.7 (F19): Optional custom worktree path returned by a WorktreeCreate hook. */
+  worktreePath?: string;
   results: HookRunResult[];
 }
 
@@ -209,12 +211,14 @@ export class HookEngine {
       return decision;
     }
     const payload = JSON.stringify(input);
-    const env = {
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
       ...this.env,
       CLAUDE_PROJECT_DIR: this.projectDir,
       PERPLEXICODE_PROJECT_DIR: this.projectDir,
       PERPLEXICODE_HOOK_EVENT: event,
+      ...(typeof input.worktree_path === 'string' ? { PERPLEXICODE_WORKTREE_PATH: input.worktree_path } : {}),
+      ...(typeof input.worktree_name === 'string' ? { PERPLEXICODE_WORKTREE_NAME: input.worktree_name } : {}),
     };
     const contexts: string[] = [];
     const reasons: string[] = [];
@@ -237,8 +241,17 @@ export class HookEngine {
         reasons.push(reason);
         if (event === 'PreToolUse') {
           decision.permission = 'deny';
-        } else if (event === 'Stop' || event === 'SubagentStop' || event === 'PostToolUse' || event === 'UserPromptSubmit') {
+        } else if (
+          event === 'Stop'
+          || event === 'SubagentStop'
+          || event === 'PostToolUse'
+          || event === 'UserPromptSubmit'
+          || event === 'WorktreeCreate'
+        ) {
           decision.block = true;
+          if (event === 'WorktreeCreate') {
+            decision.permission = 'deny';
+          }
         }
         continue;
       }
@@ -251,8 +264,16 @@ export class HookEngine {
       if (!json) {
         if (stdout && (event === 'UserPromptSubmit' || event === 'SessionStart')) {
           contexts.push(stdout);
+        } else if (stdout && event === 'WorktreeCreate' && !stdout.includes('\n')) {
+          decision.worktreePath = stdout;
         }
         continue;
+      }
+      if (event === 'WorktreeCreate') {
+        const customWt = (json.worktreePath ?? json.worktree_path ?? (json.hookSpecificOutput as Record<string, unknown> | undefined)?.worktreePath) as unknown;
+        if (typeof customWt === 'string' && customWt.trim()) {
+          decision.worktreePath = customWt.trim();
+        }
       }
       if (json.continue === false) {
         decision.stopTask = true;
