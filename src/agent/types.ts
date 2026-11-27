@@ -129,6 +129,10 @@ export interface AgentSettings {
   crossModelReview?: boolean;
   /** F24: Optional preferred reviewer model ID (must belong to another family, else auto-selected). */
   crossModelReviewModel?: string;
+  /** 4.1 Auto Skill: offer find_skill / install_skill so the agent can pull skills from public sources. Default false. */
+  autoSkills?: boolean;
+  /** 4.1 Auto Skill: registries find_skill searches (clawhub, skills-sh). Default both. */
+  skillRegistries?: Array<'clawhub' | 'skills-sh'>;
 }
 
 export interface WorktreeChangedFile {

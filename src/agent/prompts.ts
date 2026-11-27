@@ -231,6 +231,25 @@ Usage:
 <url>https://nodejs.org/api/fs.html</url>
 <prompt>How does fs.promises.cp handle symlinks?</prompt>
 </web_fetch>`,
+  find_skill: `## find_skill
+Search public Agent Skill registries (ClawHub, skills.sh) for a skill that covers the current task. Use it only when no installed skill in the SKILLS section fits and a reusable playbook would clearly help (a file format, framework, cloud service or workflow you are unsure about). Returns names, descriptions and the source to pass to install_skill.
+Parameters:
+- query: (required) 2-6 words describing the capability, e.g. "pdf form filling" or "react native performance"
+Usage:
+<find_skill>
+<query>pdf form filling</query>
+</find_skill>`,
+  install_skill: `## install_skill
+Install a skill found with find_skill (or a source the user gave) into the skills folder. The user always sees the source, files and the security scan and must approve; high-risk skills are refused. After installing, read the new SKILL.md with read_file and follow it.
+Parameters:
+- source: (required) clawhub:owner/slug, skills-sh:owner/repo/slug, git:owner/repo[/path][@ref] or an https://…/SKILL.md URL
+- scope: (optional) project (default) or user
+- name: (optional) folder name to install under
+Usage:
+<install_skill>
+<source>skills-sh:anthropics/skills/pdf</source>
+<scope>project</scope>
+</install_skill>`,
   use_mcp_tool: `## use_mcp_tool
 Call a tool provided by a connected MCP (Model Context Protocol) server. The servers, their tools and the parameters are listed in the MCP SERVERS section. You may also call the tool directly with its Claude Code name as the tag: <mcp__server__tool><param>value</param></mcp__server__tool>.
 Parameters:
@@ -313,6 +332,12 @@ export async function loadWorkspaceRules(cwd: string, modeSlug: string): Promise
   return sections.join('\n\n');
 }
 
+/** 4.1 Auto Skill tools available in a mode: find_skill everywhere, install_skill only where files may be edited. */
+export function skillToolsForMode(mode: ModeConfig, autoSkills: boolean): string[] {
+  if (!autoSkills) return [];
+  return mode.groups.some((entry) => (Array.isArray(entry) ? entry[0] : entry) === 'edit') ? ['find_skill', 'install_skill'] : ['find_skill'];
+}
+
 export function buildSystemPrompt(options: {
   mode: ModeConfig;
   cwd: string;
@@ -321,10 +346,15 @@ export function buildSystemPrompt(options: {
   webSearch: boolean;
   /** Connected MCP servers (from McpRegistry.formatSystemPromptSection). Empty = MCP tools are hidden. */
   mcpSection?: string;
+  /** 4.1 Auto Skill: add find_skill (and install_skill in modes that can edit). */
+  autoSkills?: boolean;
 }): string {
   const { mode, cwd, settings } = options;
   const mcpSection = (options.mcpSection || '').trim();
-  const tools = getToolsForMode(mode).filter((tool) => mcpSection || !TOOL_GROUPS.mcp.includes(tool));
+  const tools = [
+    ...getToolsForMode(mode).filter((tool) => mcpSection || !TOOL_GROUPS.mcp.includes(tool)),
+    ...skillToolsForMode(mode, Boolean(options.autoSkills)),
+  ];
   const editRestriction = mode.groups.find((entry) => Array.isArray(entry) && entry[0] === 'edit');
   const toolDocs = tools.map((tool) => TOOL_DOCS[tool]).filter(Boolean).join('\n\n');
 
@@ -377,7 +407,7 @@ ${toolDocs}
 
 CAPABILITIES
 
-- You can list, search, read and edit files in the workspace${tools.includes('execute_command') ? ', and run shell commands on the user\'s computer' : ''}${tools.includes('web_fetch') ? ', and fetch public web pages with web_fetch' : ''}${mcpSection ? ', and use the tools and resources of the connected MCP servers' : ''}.
+- You can list, search, read and edit files in the workspace${tools.includes('execute_command') ? ', and run shell commands on the user\'s computer' : ''}${tools.includes('web_fetch') ? ', and fetch public web pages with web_fetch' : ''}${mcpSection ? ', and use the tools and resources of the connected MCP servers' : ''}${tools.includes('find_skill') ? `, and find${tools.includes('install_skill') ? ' and install' : ''} Agent Skills from public registries (find_skill${tools.includes('install_skill') ? ' / install_skill' : ''}) when no installed skill covers the task` : ''}.
 - environment_details at the end of each user message lists the current state (open tabs, time, mode, todo list). It is generated automatically; use it as context, the user did not write it.
 - ${options.webSearch ? 'Web search is enabled for this request: you may use up-to-date information from the web for documentation and APIs.' : 'Web search is disabled: rely on the workspace and your own knowledge.'}
 

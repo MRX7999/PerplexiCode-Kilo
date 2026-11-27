@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="700" viewBox="0 0 1600 700" fill="none" role="img" aria-labelledby="as-title as-desc">
+  <title id="as-title">PerplexiCode Kilo Auto Skill flow</title>
+  <desc id="as-desc">The agent or the Library searches ClawHub and skills.sh. The chosen skill is pinned to a commit or archive and downloaded into memory with size limits. A static scan rates it clean, review or blocked. Installing always asks for approval and shows the source, files and findings. Approved skills are written to .perplexicode/skills with a skills-lock.json entry; declined installs write nothing; blocked skills are not installed and no approval is offered.</desc>
+  <defs>
+    <pattern id="as-grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" stroke="#26344d" stroke-opacity=".26"/>
+    </pattern>
+    <marker id="as-arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="m1 1 5 3-5 3" stroke="#5de2e7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <marker id="as-arrow2" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="m1 1 5 3-5 3" stroke="#a4a6ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <marker id="as-arrow3" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="m1 1 5 3-5 3" stroke="#f5b971" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; }
+      .overline { font-size:24px; font-weight:600; letter-spacing:3px; fill:#9baac0; }
+      .title { font-size:44px; font-weight:650; letter-spacing:-1px; fill:#f3f7fc; }
+      .heading { font-size:28px; font-weight:600; fill:#f3f7fc; }
+      .body { font-size:24px; fill:#9baac0; }
+      .small { font-size:21px; fill:#9baac0; }
+      .mono { font-family: "SFMono-Regular", Menlo, Consolas, "DejaVu Sans Mono", monospace; font-size:21px; fill:#5de2e7; }
+      .pill { font-size:20px; font-weight:650; letter-spacing:1px; }
+    </style>
+  </defs>
+  <rect width="1600" height="700" rx="24" fill="#0b1020"/>
+  <rect x="1" y="1" width="1598" height="698" rx="23" stroke="#27344a"/>
+  <rect x="1" y="1" width="1598" height="698" rx="23" fill="url(#as-grid)"/>
+  <path d="M1030 1v134c0 29 23 52 52 52h518M1102 1v94c0 29 23 52 52 52h446" stroke="#26344d" stroke-opacity=".55"/>
+  <text x="56" y="62" class="overline">WORKFLOW / AUTO SKILL · 4.1</text>
+  <text x="56" y="120" class="title">A skill from the internet, checked before it lands.</text>
+  <path d="M56 152h1488" stroke="#27344a"/>
+  <rect x="56" y="206" width="330" height="190" rx="14" fill="#0e172b" stroke="#34465d"/>
+  <circle cx="100" cy="254" r="18" fill="#16243a" stroke="#5de2e7" stroke-opacity=".7"/>
+  <text x="100" y="262" text-anchor="middle" class="pill" fill="#5de2e7">1</text>
+  <text x="134" y="264" class="heading">Find</text>
+  <text x="82" y="318" class="mono">find_skill</text>
+  <text x="82" y="358" class="small">ClawHub · skills.sh search</text>
+  <path d="M386 301h52" stroke="#5de2e7" stroke-width="2" marker-end="url(#as-arrow)"/>
+  <rect x="442" y="206" width="330" height="190" rx="14" fill="#0e172b" stroke="#5de2e7" stroke-opacity=".65" stroke-width="1.5"/>
+  <path d="M460 206h294" stroke="#5de2e7" stroke-width="3"/>
+  <circle cx="486" cy="254" r="18" fill="#16243a" stroke="#5de2e7" stroke-opacity=".7"/>
+  <text x="486" y="262" text-anchor="middle" class="pill" fill="#5de2e7">2</text>
+  <text x="520" y="264" class="heading">Pin</text>
+  <text x="468" y="318" class="mono">commit SHA / archive</text>
+  <text x="468" y="358" class="small">200 files · 8 MB · no zip-slip</text>
+  <path d="M772 301h52" stroke="#5de2e7" stroke-width="2" marker-end="url(#as-arrow)"/>
+  <rect x="828" y="206" width="330" height="190" rx="14" fill="#0e172b" stroke="#34465d"/>
+  <circle cx="872" cy="254" r="18" fill="#16243a" stroke="#5de2e7" stroke-opacity=".7"/>
+  <text x="872" y="262" text-anchor="middle" class="pill" fill="#5de2e7">3</text>
+  <text x="906" y="264" class="heading">Scan</text>
+  <text x="854" y="318" class="mono">static rules</text>
+  <text x="854" y="358" class="small">clean · review · blocked</text>
+  <path d="M1158 301h52" stroke="#5de2e7" stroke-width="2" marker-end="url(#as-arrow)"/>
+  <rect x="1214" y="206" width="330" height="190" rx="14" fill="#0e172b" stroke="#34465d"/>
+  <circle cx="1258" cy="254" r="18" fill="#16243a" stroke="#5de2e7" stroke-opacity=".7"/>
+  <text x="1258" y="262" text-anchor="middle" class="pill" fill="#5de2e7">4</text>
+  <text x="1292" y="264" class="heading">Approve</text>
+  <text x="1240" y="318" class="mono">always asks</text>
+  <text x="1240" y="358" class="small">source · files · findings</text>
+  <path d="M1379.0 396v60" stroke="#5de2e7" stroke-opacity=".7" stroke-width="1.5"/>
+  <path d="M294.66666666666663 456H1379.0" stroke="#5de2e7" stroke-opacity=".7" stroke-width="1.5"/>
+  <path d="M294.66666666666663 456v16" stroke="#5de2e7" stroke-opacity=".8" stroke-width="1.5" marker-end="url(#as-arrow)"/>
+  <rect x="56.0" y="476" width="477.3333333333333" height="168" rx="14" fill="#103a40" stroke="#5de2e7" stroke-opacity=".55"/>
+  <text x="84.0" y="526" class="heading" style="fill:#5de2e7">Installed</text>
+  <text x="84.0" y="568" class="mono" style="fill:#d5deea">.perplexicode/skills/&lt;name&gt;</text>
+  <text x="84.0" y="606" class="small">+ skills-lock.json · commit + SHA-256</text>
+  <path d="M799.9999999999999 456v16" stroke="#a4a6ff" stroke-opacity=".8" stroke-width="1.5" marker-end="url(#as-arrow2)"/>
+  <rect x="561.3333333333333" y="476" width="477.3333333333333" height="168" rx="14" fill="#1c2240" stroke="#a4a6ff" stroke-opacity=".55"/>
+  <text x="589.3333333333333" y="526" class="heading" style="fill:#a4a6ff">Declined</text>
+  <text x="589.3333333333333" y="568" class="body" style="fill:#d5deea">Nothing is written</text>
+  <text x="589.3333333333333" y="606" class="small">the agent continues without it</text>
+  <path d="M1305.3333333333333 456v16" stroke="#f5b971" stroke-opacity=".8" stroke-width="1.5" marker-end="url(#as-arrow3)"/>
+  <rect x="1066.6666666666665" y="476" width="477.3333333333333" height="168" rx="14" fill="#2a1d14" stroke="#f5b971" stroke-opacity=".55"/>
+  <text x="1094.6666666666665" y="526" class="heading" style="fill:#f5b971">Blocked</text>
+  <text x="1094.6666666666665" y="568" class="body" style="fill:#d5deea">High-risk patterns found</text>
+  <text x="1094.6666666666665" y="606" class="small">not installed · no approval prompt</text>
+</svg>

@@ -477,6 +477,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     controller.refreshLibrary();
     controller.showView('library');
   });
+  register('perplexicodeKilo.installSkillFromSource', async (source?: unknown) => {
+    const value = typeof source === 'string' && source.trim() ? source.trim() : await vscode.window.showInputBox({
+      title: 'Install skill from source',
+      prompt: 'ClawHub, skills.sh, GitHub or a SKILL.md URL. The files and a security scan are shown before anything is written.',
+      placeHolder: 'clawhub:owner/slug · skills-sh:owner/repo/skill · git:owner/repo/path@ref · https://…/SKILL.md',
+      ignoreFocusOut: true,
+    });
+    if (!value) return;
+    const scope = vscode.workspace.workspaceFolders?.length
+      ? (await vscode.window.showQuickPick([{ label: 'Project', description: '.perplexicode/skills', scope: 'project' as const }, { label: 'Global', description: '~/.perplexicode/skills', scope: 'user' as const }], { title: 'Install to' }))?.scope
+      : 'user';
+    if (!scope) return;
+    await controller.installSkillFromSource(value, scope);
+  });
   register('perplexicodeKilo.runPreset', async () => {
     const presets = controller.taskPresets();
     const picked = await vscode.window.showQuickPick(

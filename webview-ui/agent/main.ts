@@ -105,7 +105,7 @@ type LibraryScope = 'project' | 'user';
 interface LibraryState {
   workspace: string | null;
   agents: Array<{ name: string; description: string; mode?: string; file: string; scope: LibraryScope; tools: string[] | null; preset: boolean }>;
-  skills: Array<{ name: string; description: string; file: string; scope: LibraryScope; preset: boolean }>;
+  skills: Array<{ name: string; description: string; file: string; scope: LibraryScope; preset: boolean; origin?: string }>;
   agentPresets: Array<{ id: string; description: string; mode: string; tools: string[] | null; tags: string[]; installed: LibraryScope | null }>;
   skillPresets: Array<{ id: string; description: string; tags: string[]; installed: LibraryScope | null }>;
   taskPresets: Array<{ id: string; title: string; description: string; mode: string; prompt: string; agent?: string; icon?: string; inputRequired?: boolean; source: 'builtin' | 'user' | 'project'; missing: { agents: string[]; skills: string[] } }>;
@@ -176,6 +176,9 @@ let view: ViewName = 'chat';
 type LibraryTab = 'presets' | 'agents' | 'skills' | 'mcp';
 let libraryTab: LibraryTab = 'presets';
 let libraryQuery = '';
+/** 4.1 Auto Skill: last online registry search (ClawHub / skills.sh). */
+interface OnlineSkill { registry: string; name: string; install: string; description?: string; owner?: string; installs?: number; suspicious?: boolean; url: string }
+let onlineSkills: { query: string; loading: boolean; results: OnlineSkill[]; errors: Array<{ registry: string; message: string }> } | undefined;
 let mcpCatalogCategory: 'all' | McpCatalogCategory = 'all';
 let libraryForm: undefined | 'agent' | 'skill' | 'preset' | 'mcp';
 let libraryKey = '';
@@ -305,6 +308,12 @@ window.addEventListener('message', (event) => {
         messages = messages.filter((entry) => entry.id !== message.id);
         messageElements.get(message.id)?.remove();
         messageElements.delete(message.id);
+      }
+      break;
+    case 'skillSearchResults':
+      if (onlineSkills && onlineSkills.query === message.query) {
+        onlineSkills = { query: message.query, loading: false, results: message.results || [], errors: message.errors || [] };
+        if (libraryTab === 'skills') renderLibrary();
       }
       break;
     case 'mentionResults':
@@ -1593,19 +1602,47 @@ function skillsTabHtml(library: LibraryState): string {
       ${libraryForm === 'skill' ? '' : `<button class="btn primary small" data-lib-form="skill">${icons.plus} Create</button>`}</div>
     ${form}
     <div class="section-title">Installed <span class="muted">(${library.skills.length})</span></div>
-    ${installed.length === 0 ? '<div class="empty-inline muted">No skills yet. Install one from the catalog below.</div>' : installed.map((skill) => `
+    ${installed.length === 0 ? `<div class="empty-inline muted">${library.skills.length ? 'No installed skill matches the filter.' : 'No skills yet. Install one from the catalog or online below.'}</div>` : installed.map((skill) => `
       <div class="lib-card">
-        <div class="lib-card-top"><div class="lib-title">${icons.skill}<b>${escapeHtml(skill.name)}</b><span class="badge">${SCOPE_LABEL[skill.scope]}</span></div><div class="lib-actions">
+        <div class="lib-card-top"><div class="lib-title">${icons.skill}<b>${escapeHtml(skill.name)}</b><span class="badge">${SCOPE_LABEL[skill.scope]}</span>${skill.origin ? `<span class="chip" title="${escapeHtml(skill.origin)}">${escapeHtml(skillOriginLabel(skill.origin))}</span>` : ''}</div><div class="lib-actions">
           <button class="icon-btn" data-lib-open="${escapeHtml(skill.file)}" title="Open SKILL.md">${icons.edit}</button>
           <button class="icon-btn" data-lib-remove="skill" data-file="${escapeHtml(skill.file)}" data-name="${escapeHtml(skill.name)}" title="Delete">${icons.trash}</button></div></div>
         <div class="muted small">${escapeHtml(skill.description)}</div>
       </div>`).join('')}
+    ${onlineSkillsHtml(library)}
     <div class="section-title">Catalog <span class="muted">(${library.skillPresets.length})</span><span class="spacer"></span>
       ${notInstalled > 0 ? `<button class="btn ghost small" data-action="install-all-skills">Install all ${library.workspace ? 'to project' : 'globally'}</button>` : ''}</div>
     ${catalog.map((preset) => `
       <div class="lib-card">
         <div class="lib-card-top"><div class="lib-title">${icons.skill}<b>${escapeHtml(preset.id)}</b>${preset.tags.map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`).join('')}</div><div class="lib-actions">${installButtons('skill', preset.id, preset.installed)}</div></div>
         <div class="muted small">${escapeHtml(preset.description)}</div>
+      </div>`).join('')}`;
+}
+
+function skillOriginLabel(origin: string): string {
+  if (origin.startsWith('clawhub:')) return 'ClawHub';
+  if (origin.startsWith('skills-sh:')) return 'skills.sh';
+  if (origin.startsWith('git:') || origin.startsWith('github:')) return 'GitHub';
+  return 'URL';
+}
+
+function onlineSkillsHtml(library: LibraryState): string {
+  const query = libraryQuery.trim();
+  const scope = library.workspace ? 'project' : 'user';
+  const header = `<div class="section-title">Online<span class="spacer"></span>
+      <button class="btn ghost small" data-action="skill-install-source" title="Install from clawhub:, skills-sh:, git: or a SKILL.md URL">From source…</button>
+      <button class="btn primary small" data-action="skill-search-online" ${query ? '' : 'disabled'} title="${query ? `Search registries for “${escapeHtml(query)}”` : 'Type in the filter above first'}">Search online</button></div>`;
+  if (!onlineSkills) {
+    return `${header}<div class="empty-inline muted">Search ClawHub and skills.sh for the text in the filter, or install from a GitHub folder or SKILL.md URL. Every install shows the files and a security scan first.</div>`;
+  }
+  if (onlineSkills.loading) return `${header}<div class="empty-inline muted">Searching for “${escapeHtml(onlineSkills.query)}”…</div>`;
+  const errors = onlineSkills.errors.map((error) => `<div class="notice warn small">${escapeHtml(error.registry)}: ${escapeHtml(error.message)}</div>`).join('');
+  if (!onlineSkills.results.length) return `${header}${errors}<div class="empty-inline muted">Nothing found for “${escapeHtml(onlineSkills.query)}”.</div>`;
+  return `${header}${errors}${onlineSkills.results.map((item) => `
+      <div class="lib-card">
+        <div class="lib-card-top"><div class="lib-title">${icons.skill}<b>${escapeHtml(item.name)}</b><span class="chip">${item.registry === 'clawhub' ? 'ClawHub' : 'skills.sh'}</span>${item.installs !== undefined ? `<span class="muted small">${item.installs.toLocaleString('en-US')} installs</span>` : ''}${item.suspicious ? '<span class="badge warn">flagged</span>' : ''}</div><div class="lib-actions">
+          <button class="btn ghost small" data-skill-install="${escapeHtml(item.install)}" data-scope="${scope}" title="${escapeHtml(item.install)}">Install</button></div></div>
+        <div class="muted small">${escapeHtml(item.description || item.install)}</div>
       </div>`).join('')}`;
 }
 
@@ -1767,7 +1804,7 @@ function setView(next: ViewName): void {
 
 document.addEventListener('click', (event) => {
   const target = event.target as HTMLElement;
-  const el = target.closest('[data-action],[data-ctx-toggle],[data-mode],[data-model],[data-toggle],[data-toggle-tool],[data-copy],[data-insert],[data-url],[data-file],[data-restore],[data-suggest],[data-ask-primary],[data-ask-secondary],[data-open-task],[data-delete-task],[data-export-task],[data-tab],[data-slash],[data-mention],[data-remove-account],[data-toggle-account],[data-run],[data-preset],[data-preset-delete],[data-install],[data-install-bundle],[data-lib-open],[data-lib-remove],[data-lib-tab],[data-lib-form],[data-agent-pick],[data-clear-chip],#more-models,#mode-btn,#model-btn,#compute-btn,[data-compute],[data-mcp-connect],[data-mcp-oauth-login],[data-mcp-oauth-logout],[data-mcp-remove],[data-mcp-file],[data-mcp-category],[data-mcp-catalog-install],#web-btn,#enhance-btn,#send-btn,#task-title-toggle,#task-export,#task-close,#todos-toggle,#aa-toggle') as HTMLElement | null;
+  const el = target.closest('[data-action],[data-ctx-toggle],[data-mode],[data-model],[data-toggle],[data-toggle-tool],[data-copy],[data-insert],[data-url],[data-file],[data-restore],[data-suggest],[data-ask-primary],[data-ask-secondary],[data-open-task],[data-delete-task],[data-export-task],[data-tab],[data-slash],[data-mention],[data-remove-account],[data-toggle-account],[data-run],[data-preset],[data-preset-delete],[data-install],[data-install-bundle],[data-skill-install],[data-lib-open],[data-lib-remove],[data-lib-tab],[data-lib-form],[data-agent-pick],[data-clear-chip],#more-models,#mode-btn,#model-btn,#compute-btn,[data-compute],[data-mcp-connect],[data-mcp-oauth-login],[data-mcp-oauth-logout],[data-mcp-remove],[data-mcp-file],[data-mcp-category],[data-mcp-catalog-install],#web-btn,#enhance-btn,#send-btn,#task-title-toggle,#task-export,#task-close,#todos-toggle,#aa-toggle') as HTMLElement | null;
 
   if (!target.closest('#model-menu') && !target.closest('#model-btn') && modelMenuOpen) {
     modelMenuOpen = false;
@@ -1904,6 +1941,7 @@ document.addEventListener('click', (event) => {
     if (preset) post({ type: 'installPresetBundle', agents: preset.missing.agents, skills: preset.missing.skills, scope: state?.library?.workspace ? 'project' : 'user' });
     return;
   }
+  if (data.skillInstall) { post({ type: 'skillInstall', source: data.skillInstall, scope: data.scope }); return; }
   if (data.libOpen) { post({ type: 'openLibraryFile', file: data.libOpen }); return; }
   if (data.libRemove) { post({ type: 'removeLibraryItem', kind: data.libRemove, file: data.file, name: data.name }); return; }
   if (data.libTab) { libraryTab = data.libTab as LibraryTab; libraryForm = undefined; renderLibrary(); return; }
@@ -2001,6 +2039,17 @@ document.addEventListener('click', (event) => {
       break;
     case 'install-all-agents':
       post({ type: 'installPresetBundle', agents: (state?.library?.agentPresets || []).filter((entry) => !entry.installed).map((entry) => entry.id), skills: [], scope: state?.library?.workspace ? 'project' : 'user' });
+      break;
+    case 'skill-search-online': {
+      const query = libraryQuery.trim();
+      if (!query) break;
+      onlineSkills = { query, loading: true, results: [], errors: [] };
+      renderLibrary();
+      post({ type: 'skillSearch', query });
+      break;
+    }
+    case 'skill-install-source':
+      post({ type: 'skillInstall', source: '', scope: state?.library?.workspace ? 'project' : 'user' });
       break;
     case 'install-all-skills':
       post({ type: 'installPresetBundle', agents: [], skills: (state?.library?.skillPresets || []).filter((entry) => !entry.installed).map((entry) => entry.id), scope: state?.library?.workspace ? 'project' : 'user' });

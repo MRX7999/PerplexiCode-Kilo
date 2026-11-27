@@ -926,7 +926,7 @@ test('F31: `QuickEditStreamAssembler` & `runInlineQuickEdit` stream live diffs a
 
   // Verify package.json 4.0.0, Cmd/Ctrl+I keybinding, preserved settings, and README Migration section
   const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'));
-  assert.match(pkg.version, /^4\.0\.\d+$/);
+  assert.match(pkg.version, /^4\.\d+\.\d+$/);
   const quickEditCmd = pkg.contributes.commands.find((c: any) => c.command === 'perplexicodeKilo.quickEditSelection');
   assert.ok(quickEditCmd, 'perplexicodeKilo.quickEditSelection command must be registered');
   const quickEditKey = pkg.contributes.keybindings.find((k: any) => k.command === 'perplexicodeKilo.quickEditSelection');

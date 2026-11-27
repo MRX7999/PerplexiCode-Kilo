@@ -30,6 +30,7 @@ import { CoreBridge } from './coreBridge';
 import { compactMessages } from '../core/compaction';
 import { buildDiagnosticBundle, serializeDiagnosticBundle } from '../core/diagnostics';
 import { loadSettings } from '../core/settings';
+import { describeResolvedSkill, installedSkillOrigins, installResolvedSkill, ResolvedSkill, resolveSkillSource, scanResolvedSkill, searchSkills } from '../core/skillSources';
 import {
   applyWorktreeChanges,
   buildWorktreeResultCard,
@@ -841,6 +842,8 @@ export class AgentController implements vscode.Disposable {
       maxParallelSubtasks: clamp(config.get<number>('maxParallelSubtasks', 3), 1, 16),
       crossModelReview: config.get<boolean>('crossModelReview', false),
       crossModelReviewModel: config.get<string>('crossModelReviewModel', '').trim() || undefined,
+      autoSkills: config.get<boolean>('autoSkills', false),
+      skillRegistries: config.get<Array<'clawhub' | 'skills-sh'>>('skillRegistries', ['clawhub', 'skills-sh']),
     };
   }
 
@@ -1458,6 +1461,16 @@ export class AgentController implements vscode.Disposable {
       case 'refreshLibrary':
         this.refreshLibrary();
         break;
+      case 'skillSearch':
+        await this.searchOnlineSkills(String(message.query || ''));
+        break;
+      case 'skillInstall':
+        if (!String(message.source || '').trim()) {
+          await vscode.commands.executeCommand('perplexicodeKilo.installSkillFromSource');
+        } else {
+          await this.installSkillFromSource(String(message.source), message.scope === 'user' ? 'user' : 'project');
+        }
+        break;
       case 'installPreset':
         await this.installPreset(message.kind === 'skill' ? 'skill' : 'agent', String(message.id), message.scope === 'user' ? 'user' : 'project');
         break;
@@ -2063,7 +2076,14 @@ export class AgentController implements vscode.Disposable {
 
   private computeLibrary(): LibrarySnapshot {
     try {
-      return librarySnapshot(this.libraryPaths(), readSetting<unknown[]>('perplexicodeKilo.taskPresets', []) || []);
+      const snapshot = librarySnapshot(this.libraryPaths(), readSetting<unknown[]>('perplexicodeKilo.taskPresets', []) || []);
+      let origins: ReturnType<typeof installedSkillOrigins> = {};
+      try { origins = installedSkillOrigins(this.libraryPaths()); } catch { /* unreadable lock file: no badges */ }
+      for (const skill of snapshot.skills) {
+        const origin = origins[`${skill.scope}:${skill.name}`];
+        if (origin && path.dirname(skill.file).split(path.sep).includes('.perplexicode')) skill.origin = origin.source;
+      }
+      return snapshot;
     } catch (error) {
       this.output.appendLine(`[library] ${(error as Error).message}`);
       return { workspace: this.workspaceRoot() || null, agents: [], skills: [], agentPresets: [], skillPresets: [], taskPresets: [] };
@@ -2121,6 +2141,67 @@ export class AgentController implements vscode.Disposable {
       this.post({ type: 'toast', text: `${kind === 'agent' ? 'Subagent' : 'Skill'} "${id}" installed (${scope === 'project' ? 'project' : 'global'})` });
     }
     this.refreshLibrary();
+  }
+
+  /** 4.1 Auto Skill: search ClawHub / skills.sh for the Library tab. */
+  async searchOnlineSkills(query: string): Promise<void> {
+    const trimmed = query.trim().slice(0, 200);
+    if (!trimmed) {
+      this.post({ type: 'skillSearchResults', query: trimmed, results: [], errors: [] });
+      return;
+    }
+    const config = vscode.workspace.getConfiguration('perplexicodeKilo.agent');
+    try {
+      const found = await searchSkills(trimmed, { registries: config.get<Array<'clawhub' | 'skills-sh'>>('skillRegistries', ['clawhub', 'skills-sh']), limit: 12 });
+      this.post({ type: 'skillSearchResults', query: trimmed, results: found.results, errors: found.errors });
+    } catch (error) {
+      this.post({ type: 'skillSearchResults', query: trimmed, results: [], errors: [{ registry: 'all', message: (error as Error).message }] });
+    }
+  }
+
+  /**
+   * 4.1 Auto Skill: download, scan and install a skill from ClawHub, skills.sh, GitHub or a URL.
+   * Always shows a modal with the pinned source, files and scan before writing anything.
+   */
+  async installSkillFromSource(source: string, requestedScope: LibraryScope): Promise<boolean> {
+    const spec = source.trim();
+    if (!spec) return false;
+    const scope = this.workspaceRoot() ? requestedScope : 'user';
+    const paths = this.libraryPaths();
+    let skill: ResolvedSkill;
+    try {
+      skill = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `PerplexiCode: downloading skill ${spec}…` }, () => resolveSkillSource(spec, { cwd: paths.cwd }));
+    } catch (error) {
+      void vscode.window.showErrorMessage(`PerplexiCode: could not download ${spec}: ${(error as Error).message}`);
+      return false;
+    }
+    const scan = scanResolvedSkill(skill);
+    const detail = describeResolvedSkill(skill, scan);
+    const target = `${scope === 'user' ? '~/.perplexicode' : '.perplexicode'}/skills/${skill.name}`;
+    let allowRisky = false;
+    if (scan.verdict === 'blocked') {
+      const answer = await vscode.window.showErrorMessage(`PerplexiCode: the security scan blocked skill "${skill.name}". Install anyway only if you have read the files and trust the publisher.`, { modal: true, detail }, 'Install anyway');
+      if (answer !== 'Install anyway') return false;
+      allowRisky = true;
+    } else {
+      const answer = await vscode.window.showWarningMessage(`PerplexiCode: install skill "${skill.name}" to ${target}?`, { modal: true, detail }, 'Install');
+      if (answer !== 'Install') return false;
+    }
+    try {
+      const result = await this.writeWithConfirm(`Skill "${skill.name}"`, (overwrite) => {
+        const installed = installResolvedSkill(skill, { scope, paths, overwrite, allowRisky, scan });
+        return { file: installed.file, created: !installed.replaced };
+      });
+      if (!result) return false;
+      this.output.appendLine(`[library] installed skill ${skill.name} from ${skill.source} (${skill.resolved}) → ${result.file}`);
+      this.post({ type: 'toast', text: `Skill "${skill.name}" installed (${scope === 'project' ? 'project' : 'global'})` });
+      return true;
+    } catch (error) {
+      void vscode.window.showErrorMessage(`PerplexiCode: ${(error as Error).message}`);
+      return false;
+    } finally {
+      this.refreshLibrary();
+    }
   }
 
   private async installBundle(agents: string[], skills: string[], requestedScope: LibraryScope): Promise<void> {

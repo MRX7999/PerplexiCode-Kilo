@@ -86,6 +86,10 @@ export interface CoreSettings {
   crossModelReview?: boolean;
   /** 3.8 (F24): optional preferred reviewer model ID (must differ in family from author, else auto-selected). */
   crossModelReviewModel?: string;
+  /** 4.1 Auto Skill: offer find_skill / install_skill to the agent (default false). */
+  autoSkills?: boolean;
+  /** 4.1 Auto Skill: registries searched by find_skill. */
+  skillRegistries?: Array<'clawhub' | 'skills-sh'>;
   env: Record<string, string>;
   /** Execute up to N read-only tool calls from one model answer. 1 disables batching. */
   readBatchSize: number;
@@ -235,6 +239,12 @@ export function mergeLayer(target: CoreSettings, raw: Record<string, unknown>, a
   }
   if (typeof raw.crossModelReviewModel === 'string' && raw.crossModelReviewModel.trim()) {
     target.crossModelReviewModel = raw.crossModelReviewModel.trim();
+  }
+  if (typeof raw.autoSkills === 'boolean') {
+    target.autoSkills = raw.autoSkills;
+  }
+  if (Array.isArray(raw.skillRegistries)) {
+    target.skillRegistries = raw.skillRegistries.filter((entry: unknown): entry is 'clawhub' | 'skills-sh' => entry === 'clawhub' || entry === 'skills-sh');
   }
   if (typeof raw.readBatchSize === 'number') {
     target.readBatchSize = Math.max(1, Math.min(10, Math.floor(raw.readBatchSize)));

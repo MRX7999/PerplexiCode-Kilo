@@ -613,7 +613,7 @@ export function applyPresetPrompt(preset: Pick<TaskPreset, 'prompt'>, input: str
 export interface LibrarySnapshot {
   workspace: string | null;
   agents: Array<Pick<SubagentDefinition, 'name' | 'description' | 'mode' | 'file' | 'scope'> & { tools: string[] | null; preset: boolean }>;
-  skills: Array<Pick<SkillDefinition, 'name' | 'description' | 'file' | 'scope'> & { preset: boolean }>;
+  skills: Array<Pick<SkillDefinition, 'name' | 'description' | 'file' | 'scope'> & { preset: boolean; origin?: string }>;
   agentPresets: Array<{ id: string; description: string; mode: string; tools: string[] | null; tags: string[]; installed: LibraryScope | null }>;
   skillPresets: Array<{ id: string; description: string; tags: string[]; installed: LibraryScope | null }>;
   taskPresets: Array<TaskPreset & { missing: { agents: string[]; skills: string[] } }>;
