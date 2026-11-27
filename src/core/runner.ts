@@ -1,7 +1,8 @@
 import { MODES } from '../agent/modes';
 import { AgentTask, AskResponse, CompletionProvider, McpToolProvider } from '../agent/task';
 import type { TodoItem } from '../agent/toolParser';
-import type { AgentHost } from '../agent/tools';
+import type { AgentHost, CommandResult } from '../agent/tools';
+import { toPosixRelative } from '../agent/tools';
 import type { AgentSettings, ModelSelection, PersistedTask, UiMessage, WorktreeResultCard } from '../agent/types';
 import type { ContextInspectionReport } from './contextInspector';
 import { loadSubagents, SubagentDefinition } from './agents';
@@ -104,7 +105,7 @@ export class CoreSession {
     this.settings = options.settings || loadSettings(options.cwd, { home: options.home, trustProjectHooks: options.trustProjectHooks });
     this.permissionMode = options.permissionMode || this.settings.permissions.defaultMode;
     this.selection = { ...options.selection };
-    this.host = options.host || new NodeAgentHost(options.cwd, this.settings.env);
+    this.host = options.host || new NodeAgentHost(options.cwd, this.settings.env, options.home, options.trustProjectHooks);
     this.agents = loadSubagents(options.cwd, options.home);
     this.tracker = new VerificationTracker(this.settings.verify.command ? [this.settings.verify.command] : []);
     this.hooksEngine = new HookEngine(
@@ -147,7 +148,7 @@ export class CoreSession {
     const agent = options.agent;
     const activeWorktree = options.worktree || (!options.parentId ? this.rootWorktree : undefined);
     const taskHost = options.customHost
-      || (activeWorktree ? new NodeAgentHost(activeWorktree.worktreePath, this.settings.env) : this.host);
+      || (activeWorktree ? new NodeAgentHost(activeWorktree.worktreePath, this.settings.env, this.options.home) : this.host);
     const effectiveCwd = activeWorktree ? activeWorktree.worktreePath : taskHost.cwd;
     const worktreeIsolation = activeWorktree
       ? {
@@ -384,7 +385,7 @@ export class CoreSession {
     }
     const task = this.root || this.createTask({ mode: rootAgent ? rootAgent.mode : this.options.mode || 'code', agent: rootAgent });
     this.root = task;
-    if (task.uiMessages.length === 0) {
+    if (!task.hasStarted) {
       await task.start(prompt);
     } else {
       await task.submitUserMessage(prompt);
@@ -448,6 +449,77 @@ export class CoreSession {
     }
     this.root.setContextItemExcluded(id, excluded);
     return true;
+  }
+
+  /**
+   * 4.0 (F28): Executes a user-initiated `!command` locally on the session host and injects its
+   * exit code + output into the session context so subsequent model turns see it automatically.
+   */
+  async runLocalBangCommand(
+    command: string,
+    options: { signal?: AbortSignal; timeoutMs?: number; onOutput?: (chunk: string) => void } = {}
+  ): Promise<CommandResult> {
+    await this.ensureRootWorktree();
+    const rootAgent = this.options.agent ? this.agents.find((entry) => entry.name === this.options.agent) : undefined;
+    const task =
+      this.root || this.createTask({ mode: rootAgent ? rootAgent.mode : this.options.mode || 'code', agent: rootAgent });
+    this.root = task;
+    const effectiveCwd = this.rootWorktree ? this.rootWorktree.worktreePath : this.host.cwd;
+    const controller = new AbortController();
+    const onAbort = () => controller.abort();
+    options.signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      const res = await this.host.runCommand(command, effectiveCwd, {
+        signal: controller.signal,
+        timeoutMs: options.timeoutMs ?? Math.max(5_000, this.options.agentSettings.commandTimeoutSec * 1000),
+        onOutput: options.onOutput,
+      });
+      task.injectLocalCommand(command, res);
+      this.snapshot(task);
+      return res;
+    } finally {
+      options.signal?.removeEventListener('abort', onAbort);
+    }
+  }
+
+  /**
+   * 4.0 (F28): Lists checkpoints recorded on the current root task.
+   */
+  listCheckpoints(): Array<{ seq: number; path: string; created: boolean; ts: number }> {
+    const task = this.root;
+    if (!task) {
+      return [];
+    }
+    const baseCwd = this.rootWorktree ? this.rootWorktree.worktreePath : this.host.cwd;
+    return task.checkpoints.map((cp) => ({
+      seq: cp.seq,
+      path: toPosixRelative(baseCwd, cp.path),
+      created: cp.before === null,
+      ts: cp.ts,
+    }));
+  }
+
+  /**
+   * 4.0 (F28): Rewinds BOTH workspace files and the session state (`apiMessages`, `uiMessages`,
+   * `checkpoints`, verification tracker, and on-disk journal snapshot) to checkpoint `#seq`.
+   */
+  async rewind(seq?: number): Promise<{
+    seq: number;
+    restoredFiles: number;
+    apiMessagesBefore: number;
+    apiMessagesAfter: number;
+  }> {
+    const task = this.root;
+    if (!task) {
+      throw new Error('No active session to rewind.');
+    }
+    const res = await task.rewindToCheckpoint(seq);
+    const baseCwd = this.rootWorktree ? this.rootWorktree.worktreePath : this.host.cwd;
+    const remainingPaths = task.checkpoints.map((cp) => toPosixRelative(baseCwd, cp.path));
+    this.tracker.reconcileEditedFiles(remainingPaths);
+    this.editsByTask.set(task.id, remainingPaths.length);
+    this.snapshot(task);
+    return res;
   }
 
   verification(): VerificationReport {
@@ -544,6 +616,13 @@ export class CoreSession {
     for (const task of this.tasks.values()) {
       if (task.isBusy || task.status.state === 'waiting') task.abort();
     }
+  }
+
+  async close(): Promise<void> {
+    this.abort();
+    await this.host.dispose?.();
+    const mcp = this.options.mcp as { closeAll?: () => Promise<void> } | undefined;
+    await mcp?.closeAll?.().catch(() => undefined);
   }
 
   static isKnownMode(slug: string): boolean {

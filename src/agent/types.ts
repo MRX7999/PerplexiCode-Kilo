@@ -73,6 +73,10 @@ export interface CheckpointRecord {
   /** null means the file did not exist before the edit. */
   before: string | null;
   ts: number;
+  /** F28: Session `apiMessages` length prior to this checkpoint for `/rewind` session rollback. */
+  apiMessageCount?: number;
+  /** F28: Session `uiMessages` length prior to this checkpoint for `/rewind` session rollback. */
+  uiMessageCount?: number;
 }
 
 export interface AutoApproveSettings {

@@ -61,6 +61,18 @@ export class VerificationTracker {
     }
   }
 
+  /** F28: Reconciles tracked edited files after `/rewind` reverts checkpoints. */
+  reconcileEditedFiles(remainingFiles: Iterable<string>): void {
+    this.edited.clear();
+    for (const f of remainingFiles) {
+      this.edited.add(f);
+    }
+    if (this.edited.size === 0) {
+      this.lastEditOrder = -1;
+      this.completed = false;
+    }
+  }
+
   report(): VerificationReport {
     const editedFiles = [...this.edited];
     const checks = this.checks.map((check) => ({ command: check.command, exitCode: check.exitCode, afterLastEdit: check.order > this.lastEditOrder }));

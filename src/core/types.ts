@@ -82,6 +82,7 @@ export type CoreEvent =
   | { type: 'command_unconfirmed'; command: string; status: 'результат не подтверждён' }
   | { type: 'banner'; phase: 'waiting_approval' | 'retrying' | 'verifying' | 'needs_attention'; label: string; reason: string; rule: string }
   | { type: 'file_edit'; path: string; created: boolean; added: number; removed: number; checkpoint: number }
+  | { type: 'rewind'; checkpoint: number; restoredFiles: number; apiMessagesAfter: number }
   | { type: 'mode'; mode: string }
   | { type: 'compacted'; before: number; after: number }
   | { type: 'completion'; result: string }
@@ -93,7 +94,7 @@ export type VerificationStatus = 'verified' | 'needs_review' | 'failed' | 'block
 export type TimedCoreEvent = CoreEvent & { ts: number; seq: number; taskId: string };
 
 /** Tool categories used by permissions and hooks. */
-export const READ_TOOLS = new Set(['read_file', 'list_files', 'search_files', 'list_code_definition_names', 'glob_files']);
+export const READ_TOOLS = new Set(['read_file', 'list_files', 'search_files', 'list_code_definition_names', 'glob_files', 'lsp']);
 export const EDIT_TOOLS = new Set(['write_to_file', 'apply_diff', 'insert_content', 'search_and_replace']);
 export const META_TOOLS = new Set(['ask_followup_question', 'attempt_completion', 'update_todo_list', 'switch_mode']);
 /** Model Context Protocol tools (3.3). */
@@ -108,6 +109,7 @@ export const CLAUDE_TOOL_NAMES: Record<string, string> = {
   search_files: 'Grep',
   list_code_definition_names: 'Glob',
   glob_files: 'Glob',
+  lsp: 'LSP',
   write_to_file: 'Write',
   apply_diff: 'Edit',
   insert_content: 'Edit',

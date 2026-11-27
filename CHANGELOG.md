@@ -2,6 +2,22 @@
 
 All notable changes to PerplexiCode Kilo. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [4.0.0] - 2026-11-27
+
+### Added
+- **Remote core daemon `pcode serve` & IDE client without copying Perplexity sessions (F26):** `pcode serve [--socket <path> | --ws --host <host> --port <port>]` runs the headless core over a `0600` Unix domain socket or RFC 6455 WebSocket protected by constant-time (`timingSafeEqual`) SHA-256 bearer token authentication (read from `PCODE_SERVE_TOKEN`, interactive prompt, or generated `0600` `~/.perplexicode/serve.token`; passing `--token` on argv is rejected with exit code `64`). In VS Code / Antigravity, `PerplexiCode: Remote Core: Connect to pcode serve…` (`perplexicodeKilo.remote.url`) executes file tools, commands, and LSP on the remote daemon while reverse-proxying `llm/complete` to the local IDE `PerplexityTransport` and enforcing `assertNoSessionSecretsOnWire` so Perplexity cookies and CSRF tokens never leave the IDE machine.
+- **`lsp` tool in CLI (`.lsp.json`) and IDE (VS Code providers) (F27):** New `lsp` tool (`definition`, `references`, `hover`, `diagnostics`) backed by built-in `vscode.executeDefinitionProvider` / `vscode.executeReferenceProvider` / `vscode.executeHoverProvider` / `vscode.languages.getDiagnostics` in the IDE and by stdio JSON-RPC Language Servers configured via `<workspace>/.lsp.json` or `~/.perplexicode/lsp.json` in `pcode` CLI (gated on workspace trust for project servers).
+- **Interactive REPL UX: `!<cmd>`, full `/rewind`, and live command timer (F28):** Prefixing any REPL line with `!<command>` runs the local shell command immediately and injects its command, exit code, and output into the active session context; `/rewind [seq|list]` rolls back both workspace files (restoring pre-checkpoint snapshots and deleting newly created files) and the session transcript/journal to the selected checkpoint; `LongCommandTimer` renders a live elapsed timer (`⏱ Выполняется … (Ns)`) on long-running commands.
+- **Nightly Perplexity SSE canary workflow (F29):** `.github/workflows/canary.yml` and `scripts/canary-check.mjs` run nightly (`03:17 UTC`) and via `workflow_dispatch`. When `PPLX_CANARY_COOKIE` is absent, the job skips cleanly (`exit 0`) instead of failing; when configured, it sends one minimal probe and opens or updates a “Nightly Perplexity SSE Canary Alert” GitHub Issue with secret-redacted diagnostics if the SSE schema drifts.
+- **Out-of-band SHA-256 verified model catalog updates (F30):** `pcode models update` and `PerplexiCode: Update Model Catalog from Repository` fetch `bundledModelsConfig.json` and `bundledModelsConfig.json.sha256` (`perplexicodeKilo.models.remoteCatalogUrl` / `remoteCatalogSha256Url`), verify the SHA-256 digest before activating or caching the catalog, and fall back cleanly to the built-in snapshot on hash mismatch, malformed JSON, or network error.
+- **Inline selection quick-edit (`Cmd/Ctrl+I`) with streaming diff & Migration to 4.0 guide (F31):** `PerplexiCode: Quick Edit Selection (Cmd/Ctrl+I)` (`perplexicodeKilo.quickEditSelection`) streams live replacements into a side-by-side `vscode.diff` preview (`QuickEditStreamAssembler`) with **Применить правку** / **Отменить** confirmation, alongside the comprehensive `Миграция на 4.0` section in `README.md`.
+
+### Changed
+- **Model catalog snapshot 2026-11-27 (133 models):** GPT-6.2 Sol / Astra, Gemini 4 Carbon / Neon and Claude Fable 5.2 added; compute presets now route Light → Claude Sonnet 5.5, High → GPT-6.2 Astra, Ultra → Claude Fable 5.2 (high effort).
+
+### Documentation
+- README rewritten for 4.0: "What's new" sections for 3.5 – 4.0 with fresh screenshots, CLI exit codes, new commands and settings (`permissionMode`, `hooks.enabled`, `journal.enabled`, `readBatchSize`, `taskPresets`), troubleshooting for `serve`, `lsp` and catalog updates, and the «Миграция на 4.0» section.
+
 ## [3.8.0] - 2026-11-27
 
 ### Added

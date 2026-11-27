@@ -1,0 +1,61 @@
+name: Nightly Perplexity SSE Canary
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check test account secret availability
+        id: secret_gate
+        env:
+          HAS_CANARY_SECRET: ${{ secrets.PPLX_CANARY_COOKIE != '' }}
+        run: |
+          if [ "$HAS_CANARY_SECRET" != "true" ]; then
+            echo "PPLX_CANARY_COOKIE is not configured — skipping nightly canary cleanly without failing."
+            echo "run_canary=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_canary=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout repository
+        if: steps.secret_gate.outputs.run_canary == 'true'
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        if: steps.secret_gate.outputs.run_canary == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Execute minimal Perplexity SSE canary check
+        if: steps.secret_gate.outputs.run_canary == 'true'
+        id: probe
+        env:
+          PPLX_CANARY_COOKIE: ${{ secrets.PPLX_CANARY_COOKIE }}
+          PCODE_CANARY_DEFER_EXIT: '1'
+        run: node scripts/canary-check.mjs
+
+      - name: Open or update GitHub Issue on SSE format drift
+        if: steps.secret_gate.outputs.run_canary == 'true' && steps.probe.outputs.drift == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_FILE: ${{ steps.probe.outputs.issue_file }}
+        run: |
+          EXISTING_NUMBER="$(gh issue list --state open --search "Nightly Perplexity SSE Canary Alert in:title" --json number --jq '.[0].number // empty')"
+          if [ -n "$EXISTING_NUMBER" ]; then
+            gh issue comment "$EXISTING_NUMBER" --body-file "$ISSUE_FILE"
+          else
+            gh issue create \
+              --title "Nightly Perplexity SSE Canary Alert: response format drift" \
+              --body-file "$ISSUE_FILE"
+          fi
+          rm -f "$ISSUE_FILE"
+          exit 1

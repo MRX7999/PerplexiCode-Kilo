@@ -107,7 +107,7 @@ export function ruleCoversTool(ruleTool: string, nativeName: string, tool?: Gate
   const lowered = ruleTool.toLowerCase();
   switch (category) {
     case 'read':
-      return ['read', 'grep', 'glob', 'ls'].includes(lowered) && (lowered === 'read' || CLAUDE_TOOL_NAMES[nativeName]?.toLowerCase() === lowered);
+      return ['read', 'grep', 'glob', 'ls', 'lsp'].includes(lowered) && (lowered === 'read' || CLAUDE_TOOL_NAMES[nativeName]?.toLowerCase() === lowered);
     case 'edit':
       return ['edit', 'write', 'multiedit'].includes(lowered);
     case 'bash':

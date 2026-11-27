@@ -6,6 +6,8 @@ import {
   CommandResult,
   diffPostEditDiagnostics,
   IdeDiagnosticEntry,
+  LspQueryRequest,
+  resolveWorkspacePath,
   spawnShellCommand,
   toPosixRelative,
 } from './tools';
@@ -101,6 +103,91 @@ export class VsCodeAgentHost implements AgentHost {
     return spawnShellCommand(command, cwd, options);
   }
 
+  async lspQuery(request: LspQueryRequest): Promise<string> {
+    if (request.operation === 'diagnostics') {
+      if (!request.path || request.path.trim() === '' || request.path.trim() === '.') {
+        return this.getWorkspaceProblems();
+      }
+      const absPath = resolveWorkspacePath(this.cwd, request.path);
+      const uri = vscode.Uri.file(absPath);
+      try {
+        await vscode.workspace.openTextDocument(uri);
+      } catch {
+        // ignore if virtual/missing
+      }
+      const rel = toPosixRelative(this.cwd, absPath);
+      const diagnostics = vscode.languages
+        .getDiagnostics(uri)
+        .filter((d) => d.severity <= vscode.DiagnosticSeverity.Warning);
+      if (diagnostics.length === 0) {
+        return `No errors or warnings detected in ${rel}.`;
+      }
+      return [
+        rel,
+        ...diagnostics.slice(0, 50).map(
+          (d) =>
+            `- [${d.severity === vscode.DiagnosticSeverity.Error ? 'Error' : 'Warning'}] Line ${d.range.start.line + 1}:${d.range.start.character + 1}: ${d.message}`
+        ),
+      ].join('\n');
+    }
+
+    if (!request.path || !request.path.trim()) {
+      throw new Error(`LSP '${request.operation}' requires a file path.`);
+    }
+    const absPath = resolveWorkspacePath(this.cwd, request.path);
+    const uri = vscode.Uri.file(absPath);
+    const doc = await vscode.workspace.openTextDocument(uri);
+    const line0 = Math.max(0, (request.line || 1) - 1);
+    const char0 = Math.max(0, (request.character || 1) - 1);
+    const pos = new vscode.Position(line0, char0);
+
+    if (request.operation === 'definition') {
+      const results = await vscode.commands.executeCommand<Array<vscode.Location | vscode.LocationLink>>(
+        'vscode.executeDefinitionProvider',
+        doc.uri,
+        pos
+      );
+      return formatVsCodeLocations(this.cwd, 'Definition', results || []);
+    }
+
+    if (request.operation === 'references') {
+      const results = await vscode.commands.executeCommand<vscode.Location[]>(
+        'vscode.executeReferenceProvider',
+        doc.uri,
+        pos
+      );
+      return formatVsCodeLocations(this.cwd, 'References', results || []);
+    }
+
+    if (request.operation === 'hover') {
+      const hovers = await vscode.commands.executeCommand<vscode.Hover[]>(
+        'vscode.executeHoverProvider',
+        doc.uri,
+        pos
+      );
+      if (!hovers || hovers.length === 0) {
+        return 'No hover information available at this position.';
+      }
+      const chunks: string[] = [];
+      for (const h of hovers) {
+        for (const item of h.contents) {
+          if (typeof item === 'string') {
+            if (item.trim()) chunks.push(item.trim());
+          } else if ('value' in item && typeof item.value === 'string' && item.value.trim()) {
+            chunks.push(
+              'language' in item && item.language
+                ? `\`\`\`${item.language}\n${item.value.trim()}\n\`\`\``
+                : item.value.trim()
+            );
+          }
+        }
+      }
+      return chunks.length > 0 ? chunks.join('\n\n') : 'No hover information available at this position.';
+    }
+
+    throw new Error(`Unsupported LSP operation '${String(request.operation)}'.`);
+  }
+
   ripgrepPath(): string | undefined {
     const binary = process.platform === 'win32' ? 'rg.exe' : 'rg';
     const candidates = [
@@ -159,5 +246,25 @@ function toIdeDiagnostics(diagnostics: readonly vscode.Diagnostic[]): IdeDiagnos
       code: rawCode,
     };
   });
+}
+
+function formatVsCodeLocations(
+  cwd: string,
+  heading: string,
+  items: ReadonlyArray<vscode.Location | vscode.LocationLink>
+): string {
+  if (items.length === 0) {
+    return `${heading}: no locations found.`;
+  }
+  const lines = items.slice(0, 100).map((item) => {
+    if ('targetUri' in item) {
+      const rel = toPosixRelative(cwd, item.targetUri.fsPath);
+      const r = item.targetSelectionRange || item.targetRange;
+      return `${rel}:${r.start.line + 1}:${r.start.character + 1}`;
+    }
+    const rel = toPosixRelative(cwd, item.uri.fsPath);
+    return `${rel}:${item.range.start.line + 1}:${item.range.start.character + 1}`;
+  });
+  return `${heading} (${items.length}):\n${lines.join('\n')}`;
 }
 

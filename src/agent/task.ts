@@ -24,12 +24,14 @@ import {
 } from './toolParser';
 import {
   AgentHost,
+  CommandResult,
   globFilesTool,
   insertContent,
   isCommandAutoApproved,
   isInsideWorkspace,
   listCodeDefinitionsTool,
   listFilesTool,
+  LspOperation,
   matchesCommandPrefix,
   readFileTool,
   resolveWorkspacePath,
@@ -48,6 +50,7 @@ import { computeBackoffWithJitterMs } from '../api/rotationEngine';
 import { checkAutoCompactThreshold, structuredAutoCompact } from '../core/compaction';
 import { assembleAndInspectPrompt, ContextInspectionReport } from '../core/contextInspector';
 import { collectWorkspaceReviewDiff, runCrossModelReview } from '../core/crossReview';
+import { scrubSecretsFromText } from '../core/diagnostics';
 import { evaluatePermission } from '../core/permissions';
 import { loadSettings } from '../core/settings';
 import { enforceWorktreeToolCall, runWithConcurrencyLimit } from '../core/worktree';
@@ -204,6 +207,13 @@ export class AgentTask {
   private editGeneration = 0;
   private crossReviewedGeneration = 0;
   private lastCommandSummary = '';
+  /** F28: Session transcript indices captured before user turns and model steps for `/rewind`. */
+  private turnBoundaryApiLen = 0;
+  private turnBoundaryUiLen = 0;
+  private turnHadCheckpoint = false;
+  private stepBoundaryApiLen = 0;
+  private stepBoundaryUiLen = 0;
+  private started = false;
 
   constructor(private readonly options: TaskOptions) {
     const restore = options.restore;
@@ -212,6 +222,7 @@ export class AgentTask {
     this.createdAt = restore?.createdAt || Date.now();
     this.mode = restore?.mode || options.mode;
     if (restore) {
+      this.started = (restore.apiMessages?.length || 0) > 0;
       this.title = restore.title;
       this.apiMessages = restore.apiMessages || [];
       this.uiMessages = (restore.uiMessages || []).map((message) => ({ ...message, partial: false }));
@@ -272,6 +283,10 @@ export class AgentTask {
     return this.looping;
   }
 
+  get hasStarted(): boolean {
+    return this.started;
+  }
+
   /** Resolves when the task finishes with attempt_completion (used by parent tasks). */
   waitForCompletion(): Promise<string> {
     if (this.status.state === 'completed' && this.completionResult !== undefined) {
@@ -291,6 +306,10 @@ export class AgentTask {
   }
 
   async start(text: string, images: string[] = []): Promise<void> {
+    this.started = true;
+    this.turnBoundaryApiLen = this.apiMessages.length;
+    this.turnBoundaryUiLen = this.uiMessages.length;
+    this.turnHadCheckpoint = false;
     this.title = this.title || text.replace(/\s+/g, ' ').trim().slice(0, 140);
     this.emitEvent({ type: 'session_start', mode: this.mode, cwd: this.options.host.cwd, resumed: false });
     if (this.options.worktreeIsolation?.warningMessage) {
@@ -316,6 +335,9 @@ export class AgentTask {
     if (this.looping) {
       return;
     }
+    this.turnBoundaryApiLen = this.apiMessages.length;
+    this.turnBoundaryUiLen = this.uiMessages.length;
+    this.turnHadCheckpoint = false;
     this.say({ type: 'user', text, images });
     if (this.status.state === 'aborted' || this.status.state === 'error' || this.status.state === 'completed') {
       this.abortController = new AbortController();
@@ -483,6 +505,111 @@ export class AgentTask {
     this.say({ type: 'info', text: `Restored ${restored} file change(s) to checkpoint #${seq}.` });
     this.options.callbacks.persist?.(this);
     return restored;
+  }
+
+  /**
+   * F28: Rewinds BOTH workspace files and the session transcript (`apiMessages`, `uiMessages`,
+   * `checkpoints`, and persisted journal snapshot) back to checkpoint `#seq` (defaults to latest).
+   */
+  async rewindToCheckpoint(seq?: number): Promise<{
+    seq: number;
+    restoredFiles: number;
+    apiMessagesBefore: number;
+    apiMessagesAfter: number;
+  }> {
+    if (this.looping) {
+      throw new Error('Cannot rewind while the task is running; stop the active turn first.');
+    }
+    if (this.checkpoints.length === 0) {
+      throw new Error('No checkpoints available to rewind.');
+    }
+    const targetSeq = seq !== undefined ? seq : this.checkpoints[this.checkpoints.length - 1].seq;
+    const records = this.checkpoints.filter((record) => record.seq >= targetSeq).sort((a, b) => b.seq - a.seq);
+    if (records.length === 0) {
+      throw new Error(`Checkpoint #${targetSeq} not found (available: ${this.checkpoints.map((c) => `#${c.seq}`).join(', ')}).`);
+    }
+
+    let restoredFiles = 0;
+    for (const record of records) {
+      if (record.before === null) {
+        if (this.options.host.deleteFile) {
+          await this.options.host.deleteFile(record.path);
+        } else {
+          await fs.promises.rm(record.path, { force: true });
+        }
+      } else {
+        await this.options.host.writeFile(record.path, record.before);
+      }
+      restoredFiles += 1;
+    }
+
+    const earliest = records[records.length - 1];
+    const apiMessagesBefore = this.apiMessages.length;
+    if (earliest.apiMessageCount !== undefined && earliest.apiMessageCount >= 0) {
+      this.apiMessages = this.apiMessages.slice(0, earliest.apiMessageCount);
+    }
+    if (earliest.uiMessageCount !== undefined && earliest.uiMessageCount >= 0) {
+      this.uiMessages = this.uiMessages.slice(0, earliest.uiMessageCount);
+    }
+
+    this.checkpoints = this.checkpoints.filter((record) => record.seq < targetSeq);
+    this.editedFilesSet.clear();
+    for (const remaining of this.checkpoints) {
+      this.editedFilesSet.add(toPosixRelative(this.options.host.cwd, remaining.path));
+    }
+    this.didEditFile = this.checkpoints.length > 0;
+    this.started = this.apiMessages.length > 0;
+    this.thread = undefined;
+    this.completionResult = undefined;
+    this.clearBanner();
+    this.setState('idle');
+    this.emitEvent({
+      type: 'rewind',
+      checkpoint: targetSeq,
+      restoredFiles,
+      apiMessagesAfter: this.apiMessages.length,
+    });
+    this.options.callbacks.persist?.(this);
+    return {
+      seq: targetSeq,
+      restoredFiles,
+      apiMessagesBefore,
+      apiMessagesAfter: this.apiMessages.length,
+    };
+  }
+
+  /**
+   * F28: Injects output from a user-initiated `!command` REPL execution into the session context
+   * so subsequent model requests see the exact command, exit code, and redacted output.
+   */
+  injectLocalCommand(command: string, result: CommandResult): void {
+    const cleanOut = scrubSecretsFromText(truncateOutput(result.output || '', 200));
+    const exitLabel = result.timedOut ? 'timed_out' : String(result.exitCode ?? 'null');
+    const block = [
+      `<local_command command=${JSON.stringify(command)} exit_code=${JSON.stringify(exitLabel)}>`,
+      cleanOut || '(no output)',
+      '</local_command>',
+    ].join('\n');
+
+    this.say({
+      type: 'command',
+      command: {
+        command,
+        cwd: this.options.host.cwd,
+        output: cleanOut,
+        exitCode: result.exitCode,
+        running: false,
+      },
+      status: result.exitCode === 0 && !result.timedOut ? 'done' : 'error',
+    });
+    this.apiMessages.push({ role: 'user', content: block, ts: Date.now() });
+    this.apiMessages.push({
+      role: 'assistant',
+      content: 'Recorded local shell command output in session context.',
+      ts: Date.now(),
+    });
+    this.thread = undefined;
+    this.options.callbacks.persist?.(this);
   }
 
   setMode(mode: string): void {
@@ -752,6 +879,8 @@ export class AgentTask {
         : undefined;
 
       const startedAt = Date.now();
+      this.stepBoundaryApiLen = this.apiMessages.length;
+      this.stepBoundaryUiLen = this.uiMessages.length;
       const reqMessage = this.say({
         type: 'api_req',
         text: this.options.getModelLabel(selection.baseModelId, selection.thinking),
@@ -992,7 +1121,7 @@ export class AgentTask {
     }
     const ignored = parsed.ignoredToolCount - batch.length;
     if (ignored > 0) {
-      this.appendToLastUser(`\n\n[Note: only ${batch.length > 0 ? `the first ${batch.length + 1} read-only tool calls` : 'the first tool call'} of your message ${batch.length > 0 ? 'were' : 'was'} executed. ${ignored} additional tool call(s) were ignored. Batch only read-only tools (read_file, list_files, search_files, list_code_definition_names, glob_files); use one tool per message otherwise.]`);
+      this.appendToLastUser(`\n\n[Note: only ${batch.length > 0 ? `the first ${batch.length + 1} read-only tool calls` : 'the first tool call'} of your message ${batch.length > 0 ? 'were' : 'was'} executed. ${ignored} additional tool call(s) were ignored. Batch only read-only tools (read_file, list_files, search_files, list_code_definition_names, glob_files, lsp); use one tool per message otherwise.]`);
     }
     if (this.consecutiveMistakes >= MAX_CONSECUTIVE_MISTAKES) {
       if (settings.autoApprove.enabled && settings.autoApprove.retry && !this.didAutoMistakeRecovery) {
@@ -1032,7 +1161,7 @@ export class AgentTask {
       /(?:^|[^\p{L}\p{N}_])(let me|i will|i'll|i am going to|i'm going to|next,? i|now i|сейчас|теперь|далее|давайте|приступим|перейдем|перейдём|проверю|проверим|исправлю|исправим|обновлю|обновим|создам|создадим|запущу|запустим|добавлю|добавим|выполню|выполним|прочитаю|прочитаем|посмотрю|посмотрим)(?=$|[^\p{L}\p{N}_])/iu.test(tail)
       || /[:…]\s*$/.test(tail.trim())
       || /\.\.\.\s*$/.test(tail.trim())
-      || /<(read_file|write_to_file|apply_diff|insert_content|search_and_replace|execute_command|list_files|search_files|list_code_definition_names|glob_files|web_fetch|use_mcp_tool|access_mcp_resource|list_mcp_resources|mcp__[a-z0-9_-]+|update_todo_list|switch_mode|new_task|attempt_completion)\b/i.test(text);
+      || /<(read_file|write_to_file|apply_diff|insert_content|search_and_replace|execute_command|list_files|search_files|list_code_definition_names|glob_files|lsp|web_fetch|use_mcp_tool|access_mcp_resource|list_mcp_resources|mcp__[a-z0-9_-]+|update_todo_list|switch_mode|new_task|attempt_completion)\b/i.test(text);
     const hasIncompleteTodos = this.todos.some((todo) => todo.status !== 'completed');
     if (midTask && (looksUnfinished || hasIncompleteTodos) && this.consecutiveNoTool < 2) {
       this.consecutiveNoTool += 1;
@@ -1276,6 +1405,8 @@ export class AgentTask {
       case 'list_code_definition_names':
       case 'glob_files':
         return this.runReadTool(tool, settings, missing);
+      case 'lsp':
+        return this.runLspTool(tool, settings, missing);
       case 'write_to_file':
       case 'apply_diff':
       case 'insert_content':
@@ -1587,6 +1718,93 @@ export class AgentTask {
     return 'continue';
   }
 
+  private async runLspTool(tool: ParsedToolUse, settings: AgentSettings, missing: (name: string) => 'continue'): Promise<'continue' | 'stop'> {
+    const params = tool.params;
+    const host = this.options.host;
+    const opRaw = (params.operation || '').trim().toLowerCase();
+    if (!opRaw) {
+      return missing('operation');
+    }
+    const validOps = new Set<LspOperation>(['definition', 'references', 'hover', 'diagnostics']);
+    if (!validOps.has(opRaw as LspOperation)) {
+      this.consecutiveMistakes += 1;
+      this.pushToolResult(
+        tool.name,
+        opRaw,
+        `[ERROR] Invalid LSP operation '${opRaw}'. Expected one of: definition, references, hover, diagnostics.`
+      );
+      return 'continue';
+    }
+    const operation = opRaw as LspOperation;
+    const relPath = (params.path || '').trim();
+    if (operation !== 'diagnostics' && !relPath) {
+      return missing('path');
+    }
+    if (operation !== 'diagnostics' && !(params.line || '').trim()) {
+      return missing('line');
+    }
+
+    const line = params.line ? Number(params.line) : undefined;
+    const character = params.character ? Number(params.character) : 1;
+    if (operation !== 'diagnostics' && (!Number.isFinite(line) || (line ?? 0) < 1)) {
+      this.consecutiveMistakes += 1;
+      this.pushToolResult(tool.name, relPath, `[ERROR] Parameter 'line' must be a positive 1-based integer.`);
+      return 'continue';
+    }
+
+    const absPath = relPath ? resolveWorkspacePath(host.cwd, relPath) : host.cwd;
+    const outside = relPath ? !isInsideWorkspace(host.cwd, absPath) : false;
+    const displayPath = relPath ? (outside ? absPath : toPosixRelative(host.cwd, absPath)) : '.';
+    const posSuffix = line ? `:${line}:${Number.isFinite(character) && (character ?? 1) >= 1 ? character : 1}` : '';
+    const info: ToolInfo = {
+      name: tool.name,
+      path: displayPath,
+      outsideWorkspace: outside,
+      title: `LSP ${operation} ${displayPath}${posSuffix}`,
+    };
+
+    const autoApproved = settings.autoApprove.read && (!outside || settings.autoApprove.readOutsideWorkspace);
+    const approved = await this.approve('tool', autoApproved, info);
+    if (approved.response === 'no' || this.abortController.signal.aborted) {
+      return this.denied(tool.name, displayPath, approved.text);
+    }
+    const message = approved.message;
+
+    if (!host.lspQuery) {
+      message.status = 'error';
+      const errMsg = 'LSP tool is not supported by the current host.';
+      message.tool = { ...message.tool!, content: errMsg };
+      this.emit(message);
+      this.pushToolResult(tool.name, displayPath, `[ERROR] ${errMsg}`);
+      return 'continue';
+    }
+
+    try {
+      const output = await host.lspQuery({
+        operation,
+        path: relPath || undefined,
+        line,
+        character: Number.isFinite(character) && (character ?? 1) >= 1 ? character : 1,
+      });
+      this.consecutiveMistakes = 0;
+      message.status = 'done';
+      message.tool = { ...message.tool!, content: truncateMiddle(output, 4000) };
+      this.emit(message);
+      this.pushToolResult(
+        tool.name,
+        displayPath,
+        `${truncateMiddle(output, Math.max(20_000, Math.floor(settings.maxPromptChars * 0.5)))}${approved.text ? `\n\n<feedback>\n${approved.text}\n</feedback>` : ''}`
+      );
+    } catch (error) {
+      this.consecutiveMistakes += 1;
+      message.status = 'error';
+      message.tool = { ...message.tool!, content: (error as Error).message };
+      this.emit(message);
+      this.pushToolResult(tool.name, displayPath, `[ERROR] ${(error as Error).message}`);
+    }
+    return 'continue';
+  }
+
   private async runEditTool(tool: ParsedToolUse, settings: AgentSettings, missing: (name: string) => 'continue'): Promise<'continue' | 'stop'> {
     const params = tool.params;
     const host = this.options.host;
@@ -1732,7 +1950,17 @@ export class AgentTask {
 
     try {
       const seq = ++this.checkpointSeq;
-      this.checkpoints.push({ seq, path: absPath, before: original, ts: Date.now() });
+      const rollbackApiLen = this.turnHadCheckpoint ? this.stepBoundaryApiLen : this.turnBoundaryApiLen;
+      const rollbackUiLen = this.turnHadCheckpoint ? this.stepBoundaryUiLen : this.turnBoundaryUiLen;
+      this.turnHadCheckpoint = true;
+      this.checkpoints.push({
+        seq,
+        path: absPath,
+        before: original,
+        ts: Date.now(),
+        apiMessageCount: rollbackApiLen,
+        uiMessageCount: rollbackUiLen,
+      });
       await fs.promises.mkdir(path.dirname(absPath), { recursive: true });
       await host.writeFile(absPath, next);
       this.didEditFile = true;
@@ -2409,6 +2637,7 @@ export function toolActivityLabel(name: string): string {
     case 'new_task': return 'Creating subtask';
     case 'update_todo_list': return 'Updating todo list';
     case 'glob_files': return 'Finding files';
+    case 'lsp': return 'Querying LSP';
     case 'search_and_replace': return 'Preparing replacement';
     case 'web_fetch': return 'Fetching URL';
     case 'use_mcp_tool': return 'Calling MCP tool';

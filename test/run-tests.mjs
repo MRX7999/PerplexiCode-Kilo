@@ -78,6 +78,13 @@ const suites = [
     prebuild: true,
     options: { external: ['vscode', 'puppeteer-core', 'sql.js'] },
   },
+  {
+    // 4.0 pcode serve (Unix socket + WebSocket + local sessions), lsp tool (.lsp.json + IDE), REPL (!cmd, /rewind, timer), canary workflow, SHA-256 catalog updater, Cmd/Ctrl+I quick-edit.
+    entry: 'release-4.0.test.ts',
+    outfile: 'release-4.0.test.cjs',
+    prebuild: true,
+    options: { external: ['vscode', 'puppeteer-core', 'sql.js'] },
+  },
 ];
 
 const only = process.argv[2];

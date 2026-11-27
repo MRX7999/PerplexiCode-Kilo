@@ -2,7 +2,7 @@
   "name": "perplexicode-kilo",
   "displayName": "PerplexiCode Kilo",
   "description": "Kilo Code-style autonomous coding agent (Code / Architect / Ask / Debug / Orchestrator / Review modes, tools, diffs, checkpoints, auto-approve) powered by your Perplexity Pro/Max subscription and its latest models.",
-  "version": "3.8.0",
+  "version": "4.0.0",
   "publisher": "MRX7999",
   "engines": {
     "vscode": "^1.85.0"
@@ -236,9 +236,39 @@
         "title": "Inspect Task Context…",
         "category": "PerplexiCode",
         "icon": "$(eye)"
+      },
+      {
+        "command": "perplexicodeKilo.quickEditSelection",
+        "title": "Quick Edit Selection (Cmd/Ctrl+I)",
+        "category": "PerplexiCode",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "perplexicodeKilo.remote.connect",
+        "title": "Remote Core: Connect to pcode serve…",
+        "category": "PerplexiCode",
+        "icon": "$(remote)"
+      },
+      {
+        "command": "perplexicodeKilo.remote.disconnect",
+        "title": "Remote Core: Disconnect",
+        "category": "PerplexiCode",
+        "icon": "$(debug-disconnect)"
+      },
+      {
+        "command": "perplexicodeKilo.models.updateCatalog",
+        "title": "Update Model Catalog from Repository",
+        "category": "PerplexiCode",
+        "icon": "$(cloud-download)"
       }
     ],
     "keybindings": [
+      {
+        "command": "perplexicodeKilo.quickEditSelection",
+        "key": "ctrl+i",
+        "mac": "cmd+i",
+        "when": "editorTextFocus && !editorReadonly && editorHasSelection"
+      },
       {
         "command": "perplexicodeKilo.askAboutSelection",
         "key": "ctrl+shift+i",
@@ -303,6 +333,11 @@
         }
       ],
       "perplexicodeKilo.editorMenu": [
+        {
+          "command": "perplexicodeKilo.quickEditSelection",
+          "when": "editorHasSelection && !editorReadonly",
+          "group": "1@0"
+        },
         {
           "command": "perplexicodeKilo.addToContext",
           "group": "1@1"
@@ -756,6 +791,21 @@
           },
           "default": [],
           "description": "Extra MCP config files (paths relative to the workspace or absolute) or inline JSON strings, like `pcode --mcp-config`."
+        },
+        "perplexicodeKilo.remote.url": {
+          "type": "string",
+          "default": "",
+          "description": "Remote core endpoint (`pcode serve`): Unix domain socket (`unix:///path/to/serve.sock`) or WebSocket URL (`ws://127.0.0.1:4190`). Bearer token is stored in OS SecretStorage; Perplexity sessions stay strictly on the local IDE machine."
+        },
+        "perplexicodeKilo.models.remoteCatalogUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Repository URL for out-of-band model catalog updates (`bundledModelsConfig.json`). Verified against its `.sha256` digest; falls back to the built-in snapshot on failure."
+        },
+        "perplexicodeKilo.models.remoteCatalogSha256Url": {
+          "type": "string",
+          "default": "",
+          "description": "Repository URL for the SHA-256 digest corresponding to `perplexicodeKilo.models.remoteCatalogUrl`."
         }
       }
     },

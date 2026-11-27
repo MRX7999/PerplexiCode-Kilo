@@ -21,7 +21,9 @@ import { loadMcpServers, McpRegistry, McpServerState, parseMcpPromptArgs, remove
 import { buildMcpCatalogConfig, findMcpCatalogEntry, installMcpCatalogEntry, MCP_CATALOG } from '../core/mcpCatalog';
 import { McpCredentialCache } from '../core/mcpCredentials';
 import { createMcpOAuthRuntimeProvider, performMcpOAuthLogin, SecretStorageMcpOAuthStore } from '../core/mcpOAuth';
+import { RemoteCoreClient } from '../core/remoteCore';
 import { AccountManager } from '../storage/accountManager';
+import { runInlineQuickEdit } from './inlineQuickEdit';
 import { DEFAULT_MODE_SLUG, getModeBySlug, MODES } from './modes';
 import { AgentTask, AskResponse } from './task';
 import { CoreBridge } from './coreBridge';
@@ -179,10 +181,188 @@ export class AgentController implements vscode.Disposable {
     this.stateEmitter.dispose();
     this.disposables.forEach((disposable) => disposable.dispose());
     this.stack.forEach((task) => task.abort());
+    this.remoteClient?.close();
+    this.remoteClient = undefined;
     for (const registry of this.mcpRegistries.values()) {
       void registry.closeAll().catch(() => undefined);
     }
     this.mcpRegistries.clear();
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // 4.0 Remote Core (`pcode serve`, F26) & Inline Quick Edit (`Cmd/Ctrl+I`, F31)
+  // ---------------------------------------------------------------------------------------------
+
+  private remoteClient?: RemoteCoreClient;
+  private quickEditDocs = new Map<string, string>();
+  private quickEditEmitter?: vscode.EventEmitter<vscode.Uri>;
+
+  get isRemoteConnected(): boolean {
+    return Boolean(this.remoteClient?.connected);
+  }
+
+  async connectRemoteCore(): Promise<void> {
+    const configuredUrl = readSetting<string>('perplexicodeKilo.remote.url', '').trim();
+    const endpoint =
+      configuredUrl
+      || (
+        await vscode.window.showInputBox({
+          title: 'Connect to Remote Core (pcode serve)',
+          prompt: 'Enter Unix socket (unix:///path/to/serve.sock) or WebSocket URL (ws://127.0.0.1:4190)',
+          placeHolder: 'unix:///Users/you/.perplexicode/serve.sock or ws://127.0.0.1:4190',
+        })
+      )?.trim();
+    if (!endpoint) {
+      return;
+    }
+
+    const secretKey = 'perplexicode.remote.token';
+    let token = (await this.context.secrets.get(secretKey))?.trim() || '';
+    if (!token) {
+      const entered = await vscode.window.showInputBox({
+        title: 'Remote Core Bearer Token',
+        prompt: 'Paste the bearer token for pcode serve (stored in OS SecretStorage; Perplexity cookies stay local)',
+        password: true,
+      });
+      if (!entered || !entered.trim()) {
+        return;
+      }
+      token = entered.trim();
+      await this.context.secrets.store(secretKey, token);
+    }
+
+    this.remoteClient?.close();
+    const client = new RemoteCoreClient({
+      endpoint,
+      token,
+      localCompletionProvider: this.transport,
+    });
+    await client.connect();
+    this.remoteClient = client;
+    if (configuredUrl !== endpoint) {
+      await writeSetting('perplexicodeKilo.remote.url', endpoint);
+    }
+    this.output.appendLine(`[remote] Connected to pcode serve at ${endpoint} (remote cwd: ${client.cwd}); Perplexity sessions stay local.`);
+    void vscode.window.showInformationMessage(`PerplexiCode: Connected to remote core (${client.cwd}). Perplexity sessions remain local.`);
+    this.postState();
+  }
+
+  async disconnectRemoteCore(clearSavedToken = false): Promise<void> {
+    this.remoteClient?.close();
+    this.remoteClient = undefined;
+    if (clearSavedToken) {
+      await this.context.secrets.delete('perplexicode.remote.token');
+    }
+    this.output.appendLine('[remote] Disconnected from remote core.');
+    void vscode.window.showInformationMessage('PerplexiCode: Disconnected from remote core.');
+    this.postState();
+  }
+
+  private ensureQuickEditProvider(): vscode.EventEmitter<vscode.Uri> {
+    if (!this.quickEditEmitter) {
+      this.quickEditEmitter = new vscode.EventEmitter<vscode.Uri>();
+      const provider = vscode.workspace.registerTextDocumentContentProvider('perplexicode-quickedit', {
+        onDidChange: this.quickEditEmitter.event,
+        provideTextDocumentContent: (uri) => this.quickEditDocs.get(uri.toString()) ?? '',
+      });
+      this.disposables.push(this.quickEditEmitter, provider);
+    }
+    return this.quickEditEmitter;
+  }
+
+  async quickEditSelection(editorArg?: vscode.TextEditor): Promise<void> {
+    const editor = editorArg || vscode.window.activeTextEditor;
+    if (!editor || editor.selection.isEmpty) {
+      void vscode.window.showInformationMessage('PerplexiCode: Выделите фрагмент кода в редакторе для быстрой правки (Cmd/Ctrl+I).');
+      return;
+    }
+
+    const instruction = await vscode.window.showInputBox({
+      title: 'PerplexiCode: Быстрая правка выделения (Cmd/Ctrl+I)',
+      prompt: 'Опишите, как изменить выделенный фрагмент кода',
+      placeHolder: 'Например: перепиши на async/await и добавь обработку ошибок',
+    });
+    if (!instruction || !instruction.trim()) {
+      return;
+    }
+
+    const doc = editor.document;
+    const selectionRange = new vscode.Range(editor.selection.start, editor.selection.end);
+    const fullText = doc.getText();
+    const startOffset = doc.offsetAt(selectionRange.start);
+    const endOffset = doc.offsetAt(selectionRange.end);
+    const relPath = vscode.workspace.asRelativePath(doc.uri, false);
+
+    const emitter = this.ensureQuickEditProvider();
+    const sessionKey = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const beforeUri = vscode.Uri.parse(`perplexicode-quickedit:/before/${sessionKey}/${encodeURIComponent(path.basename(doc.fileName))}`);
+    const afterUri = vscode.Uri.parse(`perplexicode-quickedit:/after/${sessionKey}/${encodeURIComponent(path.basename(doc.fileName))}`);
+    this.quickEditDocs.set(beforeUri.toString(), fullText);
+    this.quickEditDocs.set(afterUri.toString(), fullText);
+
+    await vscode.commands.executeCommand(
+      'vscode.diff',
+      beforeUri,
+      afterUri,
+      `PerplexiCode Quick Edit: ${path.basename(doc.fileName)} (streaming diff)`,
+      { preview: true, preserveFocus: true, viewColumn: vscode.ViewColumn.Beside }
+    );
+
+    const selection = this.getSelection();
+    let finalReplacement: string | undefined;
+    let diffStatsLabel = '';
+
+    try {
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `PerplexiCode: Правка ${relPath}…`,
+          cancellable: true,
+        },
+        async (progress, token) => {
+          const abort = new AbortController();
+          token.onCancellationRequested(() => abort.abort());
+          const snapshot = await runInlineQuickEdit({
+            provider: this.transport,
+            baseModelId: selection.baseModelId,
+            filePath: relPath,
+            languageId: doc.languageId,
+            fullDocumentText: fullText,
+            selectionStartOffset: startOffset,
+            selectionEndOffset: endOffset,
+            instruction,
+            signal: abort.signal,
+            onStreamSnapshot: (snap) => {
+              this.quickEditDocs.set(afterUri.toString(), snap.previewFullDocument);
+              emitter.fire(afterUri);
+              progress.report({ message: `+${snap.added} / -${snap.removed} строк` });
+            },
+          });
+          if (!abort.signal.aborted) {
+            finalReplacement = snapshot.replacementCode;
+            diffStatsLabel = `+${snapshot.added} / -${snapshot.removed}`;
+          }
+        }
+      );
+
+      if (finalReplacement === undefined) {
+        return;
+      }
+
+      const choice = await vscode.window.showInformationMessage(
+        `PerplexiCode: Применить быструю правку к ${relPath} (${diffStatsLabel})?`,
+        'Применить правку',
+        'Отменить'
+      );
+      if (choice === 'Применить правку') {
+        const wsEdit = new vscode.WorkspaceEdit();
+        wsEdit.replace(doc.uri, selectionRange, finalReplacement);
+        await vscode.workspace.applyEdit(wsEdit);
+      }
+    } finally {
+      this.quickEditDocs.delete(beforeUri.toString());
+      this.quickEditDocs.delete(afterUri.toString());
+    }
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -806,10 +986,18 @@ export class AgentController implements vscode.Disposable {
     agent?: string;
     worktree?: IsolatedWorktreeHandle;
   }): AgentTask {
-    const baseCwd = options.restore?.workspace || options.cwd || this.workspaceRoot() || os.homedir();
+    const baseCwd =
+      options.restore?.workspace
+      || options.cwd
+      || (this.remoteClient?.connected ? this.remoteClient.cwd : undefined)
+      || this.workspaceRoot()
+      || os.homedir();
     const activeWorktree = options.worktree;
     const effectiveCwd = activeWorktree ? activeWorktree.worktreePath : baseCwd;
-    const host = new VsCodeAgentHost(effectiveCwd, () => readSetting<boolean>('perplexicodeKilo.agent.revealEditedFiles', true));
+    const host =
+      this.remoteClient?.connected && !activeWorktree
+        ? this.remoteClient.createAgentHost()
+        : new VsCodeAgentHost(effectiveCwd, () => readSetting<boolean>('perplexicodeKilo.agent.revealEditedFiles', true));
     const agent = options.agent ? this.core.findSubagent(effectiveCwd, options.agent) : undefined;
     const worktreeIsolation = activeWorktree
       ? {
