@@ -745,20 +745,25 @@ test('tools: glob_files, search_and_replace (literal $ handling, regex, ranges),
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
   const { port } = server.address() as { port: number };
-  const base = `http://127.0.0.1:${port}`;
+  const base = `http://example.com:${port}`;
+  const mockPublicNet = {
+    lookup: async () => [{ address: '93.184.216.34', family: 4 as const }],
+    _testSocketAddress: '127.0.0.1',
+  };
   try {
-    const fetched = await webFetchTool(`${base}/start`);
+    await assert.rejects(webFetchTool(`http://127.0.0.1:${port}/start`), /SSRF protection blocked loopback/);
+    const fetched = await webFetchTool(`${base}/start`, mockPublicNet);
     assert.match(fetched, /# Fetched\s+ok/, 'redirects are followed and HTML is converted');
-    assert.strictEqual(await webFetchTool(`${base}/data.json`), '{\n  "a": 1,\n  "b": [\n    1,\n    2\n  ]\n}');
-    await assert.rejects(webFetchTool(`${base}/missing`), /HTTP 404/);
-    await assert.rejects(webFetchTool(`${base}/loop`), /Too many redirects/);
+    assert.strictEqual(await webFetchTool(`${base}/data.json`, mockPublicNet), '{\n  "a": 1,\n  "b": [\n    1,\n    2\n  ]\n}');
+    await assert.rejects(webFetchTool(`${base}/missing`, mockPublicNet), /HTTP 404/);
+    await assert.rejects(webFetchTool(`${base}/loop`, mockPublicNet), /Too many redirects/);
     await assert.rejects(webFetchTool('ftp://example.com/x'), /requires an http/);
-    const truncated = await webFetchTool(`${base}/big`, { maxChars: 100 });
+    const truncated = await webFetchTool(`${base}/big`, { ...mockPublicNet, maxChars: 100 });
     assert.ok(truncated.startsWith('x'.repeat(100)));
     assert.match(truncated, /\[Content truncated at 100 chars/);
     const controller = new AbortController();
     controller.abort();
-    await assert.rejects(webFetchTool(`${base}/page`, { signal: controller.signal }), /Aborted|aborted/);
+    await assert.rejects(webFetchTool(`${base}/page`, { ...mockPublicNet, signal: controller.signal }), /Aborted|aborted/);
   } finally {
     server.close();
   }

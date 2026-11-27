@@ -2,6 +2,19 @@
 
 All notable changes to PerplexiCode Kilo. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.5.0] - 2026-11-27
+
+### Added
+- **SSE replay & stream interruption test suite (F01):** Deterministic SSE replay harness (`consumeSseStream` + `PerplexityTransport`) covering duplicate final chunks, stream cut-off mid-`apply_diff`, and reconnect after an already-applied edit, asserting exact single file modification and single command execution.
+- **Safe resume without blind command re-execution (F02):** Commands started before a stream/process drop without a recorded exit status are logged as `command_unconfirmed` (`результат не подтверждён`) in `SessionJournal`. On resume (`pcode -c` / `-r` and IDE task reopen), `AgentTask` blocks blind re-execution of the unconfirmed command until the agent inspects workspace state (`read_file` / `list_files` / `search_files`).
+- **Transparent task state banner in IDE & CLI (F03):** Live status card in the webview and `[статус] … (правило: …)` line in `pcode` showing `жду подтверждения`, `повторяю запрос`, `проверяю результат`, and `нужно вмешательство` with the exact reason and policy/setting rule that triggered it.
+- **Explicit route visibility & `stopOnFallback` (F04):** Every request records `запрошенный режим → фактический, причина` (reporting `не сообщена` when the upstream response omits the actual model). New setting `perplexicodeKilo.agent.stopOnFallback` / `.perplexicode/settings.json` `stopOnFallback` / CLI `--stop-on-fallback` stops the task with `нужно вмешательство` instead of silently falling back to another compute mode, model, or account.
+- **SSRF protection in `web_fetch` (F05):** Blocks loopback (`127.0.0.0/8`, `::1`), RFC1918 private networks, link-local and cloud metadata (`169.254.0.0/16` including `169.254.169.254`, `fe80::/10`), CGNAT, ULA, multicast, IPv4-mapped IPv6 addresses, and `.localhost`/`.internal` hosts, re-validating DNS and IP addresses on every HTTP redirect hop and pinning the validated IP on connection.
+- **Segment-level shell parser for allow/deny (F06):** Splits shell commands across `;`, `&&`, `||`, `|`, `&`, and newlines, unwraps `env VAR=…` and common command wrappers, recursively inspects `sh -c` / `bash -c` / `zsh -c` scripts, evaluates every segment independently against allow/deny rules, and forces confirmation on command substitutions, `eval`, redirections, or unparseable syntax.
+- **Installer SHA-256 verification (F07):** `scripts/install.sh` and `scripts/install.ps1` verify downloaded VSIX archives against release `SHA256SUMS.txt` and abort immediately on checksum mismatch.
+- **Redacted diagnostics bundle with preview (F08):** `pcode doctor --bundle [-o file] [-y]` and **Скопировать диагностику** (`PerplexiCode: Copy Diagnostics Bundle…`) export versions, stage timings, tool categories, and rule decisions — strictly without cookies, headers, prompts, code, or terminal output — after showing a full preview.
+- **Threat model & protected agent configs (F09):** Added `SECURITY.md` and enforced mandatory confirmation when editing or touching `.perplexicode/settings*.json`, `hooks`, `.mcp.json`, and `.claude/` even when `autoApprove.write`, `acceptEdits`, or `bypassPermissions` is enabled.
+
 ## [3.4.0] - 2026-11-07
 
 ### Added

@@ -2,7 +2,7 @@
   "name": "perplexicode-kilo",
   "displayName": "PerplexiCode Kilo",
   "description": "Kilo Code-style autonomous coding agent (Code / Architect / Ask / Debug / Orchestrator / Review modes, tools, diffs, checkpoints, auto-approve) powered by your Perplexity Pro/Max subscription and its latest models.",
-  "version": "3.4.0",
+  "version": "3.5.0",
   "publisher": "MRX7999",
   "engines": {
     "vscode": "^1.85.0"
@@ -212,6 +212,12 @@
         "command": "perplexicodeKilo.setPermissionMode",
         "title": "Set Permission Mode",
         "category": "PerplexiCode"
+      },
+      {
+        "command": "perplexicodeKilo.copyDiagnostics",
+        "title": "Copy Diagnostics Bundle…",
+        "category": "PerplexiCode",
+        "icon": "$(output)"
       }
     ],
     "keybindings": [
@@ -616,6 +622,11 @@
           "minimum": 0,
           "maximum": 9,
           "description": "Max read-only tool calls executed from one model answer (0 = use settings.json readBatchSize, default 5; 1 disables batching)."
+        },
+        "perplexicodeKilo.agent.stopOnFallback": {
+          "type": "boolean",
+          "default": false,
+          "description": "Stop the task instead of silently falling back to search/turbo or another account when the requested compute mode or model cannot be used."
         },
         "perplexicodeKilo.taskPresets": {
           "type": "array",

@@ -7,31 +7,36 @@
 #   --ide antigravity|code|cursor|windsurf|all   target editor (default: antigravity)
 #   --version vX.Y.Z                             install a specific release (default: latest)
 #   --vsix /path/to/file.vsix                    install a local VSIX instead of downloading
+#   --sha256sums /path/to/SHA256SUMS.txt         verify a local VSIX against a checksum file
 #   -h, --help                                   show this help
 set -euo pipefail
 
 REPO="MRX7999/PerplexiCode-Kilo"
 ASSET="perplexicode-kilo.vsix"
+SUMS_ASSET="SHA256SUMS.txt"
 EXTENSION_ID="MRX7999.perplexicode-kilo"
 IDE="antigravity"
 VERSION="latest"
 VSIX=""
+SHA256SUMS_FILE=""
 
 log()  { printf '\033[1;36m[perplexicode]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[perplexicode]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[perplexicode]\033[0m %s\n' "$*" >&2; exit 1; }
 
-usage() { sed -n '2,11p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,12p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --ide)      IDE="${2:-}"; shift 2 ;;
-    --ide=*)    IDE="${1#*=}"; shift ;;
-    --version)  VERSION="${2:-}"; shift 2 ;;
-    --version=*) VERSION="${1#*=}"; shift ;;
-    --vsix)     VSIX="${2:-}"; shift 2 ;;
-    --vsix=*)   VSIX="${1#*=}"; shift ;;
-    -h|--help)  usage; exit 0 ;;
+    --ide)          IDE="${2:-}"; shift 2 ;;
+    --ide=*)        IDE="${1#*=}"; shift ;;
+    --version)      VERSION="${2:-}"; shift 2 ;;
+    --version=*)    VERSION="${1#*=}"; shift ;;
+    --vsix)         VSIX="${2:-}"; shift 2 ;;
+    --vsix=*)       VSIX="${1#*=}"; shift ;;
+    --sha256sums)   SHA256SUMS_FILE="${2:-}"; shift 2 ;;
+    --sha256sums=*) SHA256SUMS_FILE="${1#*=}"; shift ;;
+    -h|--help)      usage; exit 0 ;;
     *) die "Unknown option: $1 (use --help)" ;;
   esac
 done
@@ -96,22 +101,72 @@ esac
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/perplexicode.XXXXXX")"
 trap 'rm -rf "$WORKDIR"' EXIT
 
+compute_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print tolower($1)}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print tolower($1)}'
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$1" | awk '{print tolower($NF)}'
+  else
+    die "Neither sha256sum, shasum nor openssl is available to verify SHA256."
+  fi
+}
+
+verify_sha256() {
+  local target_file="$1"
+  local sums_file="$2"
+  local asset_name="$3"
+  [ -f "$sums_file" ] || die "SHA256SUMS file not found: $sums_file"
+  local expected
+  expected="$(awk -v name="$asset_name" '
+    NF >= 2 {
+      h = tolower($1)
+      f = $2
+      sub(/^\*/, "", f)
+      sub(/^\.\//, "", f)
+      if (f == name && h ~ /^[0-9a-f]{64}$/) {
+        print h
+        exit
+      }
+    }
+  ' "$sums_file")"
+  [ -n "$expected" ] || die "Entry for $asset_name not found in $sums_file"
+  local actual
+  actual="$(compute_sha256 "$target_file")"
+  if [ "$actual" != "$expected" ]; then
+    die "SHA256 mismatch for $asset_name: expected $expected, got $actual"
+  fi
+  log "SHA256 verified: $actual"
+}
+
 if [ -n "$VSIX" ]; then
   [ -f "$VSIX" ] || die "VSIX not found: $VSIX"
   FILE="$(cd "$(dirname "$VSIX")" && pwd)/$(basename "$VSIX")"
+  if [ -n "$SHA256SUMS_FILE" ]; then
+    verify_sha256 "$FILE" "$SHA256SUMS_FILE" "$(basename "$FILE")"
+  fi
 else
   command -v curl >/dev/null 2>&1 || die "curl is required"
-  if [ "$VERSION" = "latest" ]; then
-    URL="https://github.com/$REPO/releases/latest/download/$ASSET"
+  if [ -n "${PERPLEXICODE_RELEASE_BASE_URL:-}" ]; then
+    BASE_URL="${PERPLEXICODE_RELEASE_BASE_URL%/}"
+  elif [ "$VERSION" = "latest" ]; then
+    BASE_URL="https://github.com/$REPO/releases/latest/download"
   else
     case "$VERSION" in v*) ;; *) VERSION="v$VERSION" ;; esac
-    URL="https://github.com/$REPO/releases/download/$VERSION/$ASSET"
+    BASE_URL="https://github.com/$REPO/releases/download/$VERSION"
   fi
+  URL="$BASE_URL/$ASSET"
+  SUMS_URL="$BASE_URL/$SUMS_ASSET"
   FILE="$WORKDIR/$ASSET"
+  SUMS="$WORKDIR/$SUMS_ASSET"
   log "Downloading $URL"
   if [ -t 2 ]; then progress="--progress-bar"; else progress="--silent --show-error"; fi
   # shellcheck disable=SC2086
   curl -fL --retry 3 $progress -o "$FILE" "$URL" || die "Download failed: $URL"
+  # shellcheck disable=SC2086
+  curl -fL --retry 3 --silent --show-error -o "$SUMS" "$SUMS_URL" || die "SHA256SUMS download failed: $SUMS_URL"
+  verify_sha256 "$FILE" "$SUMS" "$ASSET"
 fi
 
 # A VSIX is a zip that starts with "PK"; catches HTML error pages early.

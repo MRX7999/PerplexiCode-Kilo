@@ -24,6 +24,8 @@ import { DEFAULT_MODE_SLUG, getModeBySlug, MODES } from './modes';
 import { AgentTask, AskResponse } from './task';
 import { CoreBridge } from './coreBridge';
 import { compactMessages } from '../core/compaction';
+import { buildDiagnosticBundle, serializeDiagnosticBundle } from '../core/diagnostics';
+import { loadSettings } from '../core/settings';
 import {
   applyPresetPrompt,
   createCustomAgent,
@@ -504,6 +506,7 @@ export class AgentController implements vscode.Disposable {
       modeInstructions: config.get<Record<string, string>>('modeInstructions', {}),
       diffEnabled: config.get<boolean>('diffEnabled', true),
       includeFileListOnStart: config.get<boolean>('includeFileListOnStart', true),
+      stopOnFallback: config.get<boolean>('stopOnFallback', false),
     };
   }
 
@@ -773,7 +776,11 @@ export class AgentController implements vscode.Disposable {
     await this.clearTask();
     await this.restoreMcpCredentials(persisted.workspace || this.workspaceRoot() || os.homedir());
     const existing = this.tasks.get(id);
-    const task = existing && !existing.isBusy ? existing : this.buildTask({ mode: persisted.mode, restore: persisted });
+    const isFreshRestore = !(existing && !existing.isBusy);
+    const task = !isFreshRestore && existing ? existing : this.buildTask({ mode: persisted.mode, restore: persisted });
+    if (isFreshRestore) {
+      this.core.resumeCheck(task);
+    }
     this.selection.mode = task.mode;
     this.stack = [task];
     this.post({ type: 'view', view: 'chat' });
@@ -1171,6 +1178,15 @@ export class AgentController implements vscode.Disposable {
       case 'copy':
         await vscode.env.clipboard.writeText(String(message.text || ''));
         break;
+      case 'requestDiagnosticsPreview':
+        this.post(
+          {
+            type: 'diagnosticsPreview',
+            json: this.buildDiagnosticsJson(typeof message.taskId === 'string' && message.taskId ? message.taskId : undefined),
+          },
+          webview
+        );
+        break;
       case 'insertCode': {
         const editor = vscode.window.activeTextEditor;
         if (editor) {
@@ -1203,6 +1219,60 @@ export class AgentController implements vscode.Disposable {
       default:
         break;
     }
+  }
+
+  /** F08: Builds a redacted diagnostic bundle JSON (no cookies, headers, prompts, code, or terminal output). */
+  buildDiagnosticsJson(taskId?: string): string {
+    const targetId = taskId || this.currentTask?.id;
+    const task = targetId ? this.tasks.get(targetId) : this.currentTask;
+    const events = targetId ? this.core.journalEvents(targetId) : [];
+    const accounts = this.accountManager.getAccounts();
+    const mcpServers = this.mcpStates();
+    const coreSettings = loadSettings(this.workspaceRoot() || process.cwd());
+    const uiSettings = this.getSettings();
+    const bundle = buildDiagnosticBundle({
+      version: String(this.context.extension.packageJSON.version || '3.5.0'),
+      client: 'vscode',
+      ideVersion: vscode.version,
+      permissionMode: this.core.permissionMode,
+      protectSecrets: coreSettings.permissions.protectSecrets,
+      stopOnFallback: Boolean(uiSettings.stopOnFallback),
+      computeMode: String(this.selection.computeMode || 'search'),
+      contextStrategy: uiSettings.contextStrategy,
+      maxPromptChars: uiSettings.maxPromptChars,
+      hasVerifyCommand: Boolean(coreSettings.verify.command),
+      ruleCounts: {
+        allow: coreSettings.permissions.allow.length,
+        ask: coreSettings.permissions.ask.length,
+        deny: coreSettings.permissions.deny.length,
+      },
+      hookEventCount: Object.keys(coreSettings.hooks || {}).length,
+      accountPlans: accounts
+        .filter((entry) => entry.status === 'active')
+        .map((entry) => String(entry.capabilities?.plan || 'unknown')),
+      mcpServers: mcpServers.map((entry) => ({
+        type: entry.config.type,
+        scope: entry.config.scope,
+        status: entry.status,
+      })),
+      task: task
+        ? {
+            id: task.id,
+            mode: task.mode,
+            state: task.status.state,
+            requestCount: task.status.requestCount,
+            routeLine: task.status.routeLine,
+            banner: task.status.banner,
+          }
+        : undefined,
+      events,
+    });
+    return serializeDiagnosticBundle(bundle);
+  }
+
+  async openDiagnosticsPreview(): Promise<void> {
+    await vscode.commands.executeCommand('perplexicodeKilo.chatView.focus');
+    this.post({ type: 'diagnosticsPreview', json: this.buildDiagnosticsJson() });
   }
 
   private async exportTask(id: string): Promise<void> {

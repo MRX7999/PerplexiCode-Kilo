@@ -216,6 +216,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   });
 
+  register('perplexicodeKilo.copyDiagnostics', async () => {
+    await controller.openDiagnosticsPreview();
+  });
+
   register('perplexicodeKilo.manageAccounts', async () => {
     const accounts = accountManager.getAccounts();
     if (accounts.length === 0) {

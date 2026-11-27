@@ -6,19 +6,22 @@
 #   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/MRX7999/PerplexiCode-Kilo/master/scripts/install.ps1))) -Ide code
 #
 # Parameters:
-#   -Ide      antigravity | code | cursor | windsurf | all   (default: antigravity)
-#   -Version  vX.Y.Z or latest                               (default: latest)
-#   -Vsix     path to a local VSIX instead of downloading
+#   -Ide         antigravity | code | cursor | windsurf | all   (default: antigravity)
+#   -Version     vX.Y.Z or latest                               (default: latest)
+#   -Vsix        path to a local VSIX instead of downloading
+#   -Sha256Sums  path to SHA256SUMS.txt when verifying a local VSIX
 param(
   [ValidateSet('antigravity', 'code', 'cursor', 'windsurf', 'all')]
   [string]$Ide = 'antigravity',
   [string]$Version = 'latest',
-  [string]$Vsix = ''
+  [string]$Vsix = '',
+  [string]$Sha256Sums = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $Repo = 'MRX7999/PerplexiCode-Kilo'
 $Asset = 'perplexicode-kilo.vsix'
+$SumsAsset = 'SHA256SUMS.txt'
 $ExtensionId = 'MRX7999.perplexicode-kilo'
 
 function Write-Info([string]$Message) { Write-Host "[perplexicode] $Message" -ForegroundColor Cyan }
@@ -69,21 +72,54 @@ $Targets = if ($Ide -eq 'all') { @($Editors.Keys) } else { @($Ide) }
 $WorkDir = Join-Path ([System.IO.Path]::GetTempPath()) ("perplexicode-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $WorkDir | Out-Null
 
+function Assert-VsixSha256([string]$TargetFile, [string]$SumsPath, [string]$AssetName) {
+  if (-not (Test-Path $SumsPath)) { throw "SHA256SUMS file not found: $SumsPath" }
+  $Expected = $null
+  foreach ($line in (Get-Content -Path $SumsPath)) {
+    $trimmed = $line.Trim()
+    if (-not $trimmed) { continue }
+    $parts = $trimmed -split '\s+', 2
+    if ($parts.Count -lt 2) { continue }
+    $hashCandidate = $parts[0].ToLowerInvariant()
+    $nameCandidate = ($parts[1] -replace '^[\*\.\/]+', '')
+    if ($nameCandidate -eq $AssetName -and $hashCandidate -match '^[0-9a-f]{64}$') {
+      $Expected = $hashCandidate
+      break
+    }
+  }
+  if (-not $Expected) { throw "Entry for $AssetName not found in $SumsPath" }
+  $Actual = (Get-FileHash -Path $TargetFile -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($Actual -ne $Expected) {
+    throw "SHA256 mismatch for ${AssetName}: expected $Expected, got $Actual"
+  }
+  Write-Info "SHA256 verified: $Actual"
+}
+
 try {
   if ($Vsix) {
     if (-not (Test-Path $Vsix)) { throw "VSIX not found: $Vsix" }
     $File = (Resolve-Path $Vsix).Path
+    if ($Sha256Sums) {
+      Assert-VsixSha256 -TargetFile $File -SumsPath $Sha256Sums -AssetName ([System.IO.Path]::GetFileName($File))
+    }
   } else {
-    if ($Version -eq 'latest') {
-      $Url = "https://github.com/$Repo/releases/latest/download/$Asset"
+    if ($env:PERPLEXICODE_RELEASE_BASE_URL) {
+      $BaseUrl = $env:PERPLEXICODE_RELEASE_BASE_URL.TrimEnd('/')
+    } elseif ($Version -eq 'latest') {
+      $BaseUrl = "https://github.com/$Repo/releases/latest/download"
     } else {
       if (-not $Version.StartsWith('v')) { $Version = "v$Version" }
-      $Url = "https://github.com/$Repo/releases/download/$Version/$Asset"
+      $BaseUrl = "https://github.com/$Repo/releases/download/$Version"
     }
+    $Url = "$BaseUrl/$Asset"
+    $SumsUrl = "$BaseUrl/$SumsAsset"
     $File = Join-Path $WorkDir $Asset
+    $SumsFile = Join-Path $WorkDir $SumsAsset
     Write-Info "Downloading $Url"
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     Invoke-WebRequest -Uri $Url -OutFile $File -UseBasicParsing
+    Invoke-WebRequest -Uri $SumsUrl -OutFile $SumsFile -UseBasicParsing
+    Assert-VsixSha256 -TargetFile $File -SumsPath $SumsFile -AssetName $Asset
   }
 
   $header = [System.IO.File]::ReadAllBytes($File)[0..1]

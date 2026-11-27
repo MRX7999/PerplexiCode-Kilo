@@ -404,3 +404,86 @@ a:hover { text-decoration: underline; }
 .mcp-catalog-actions .btn { min-height: 28px; }
 .mcp-card { overflow-wrap: anywhere; min-width: 0; }
 .mcp-tools .chip { max-width: 100%; }
+
+/* 3.5: task state card, route line, diagnostics preview modal */
+.task-route-line {
+  margin-top: 6px;
+  font-size: 0.84em;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.35;
+}
+.task-state-card {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.task-state-card.phase-waiting_approval { border-color: color-mix(in srgb, var(--warn) 55%, var(--border)); }
+.task-state-card.phase-retrying { border-color: color-mix(in srgb, var(--info) 55%, var(--border)); }
+.task-state-card.phase-verifying { border-color: color-mix(in srgb, var(--success) 55%, var(--border)); }
+.task-state-card.phase-needs_attention { border-color: color-mix(in srgb, var(--error) 55%, var(--border)); }
+.task-state-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+.task-state-head b { font-size: 0.92em; }
+.task-state-head .badge { text-transform: none; letter-spacing: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-state-reason {
+  font-size: 0.86em;
+  color: var(--muted);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.api-req-wrap { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.api-route { padding-left: 20px; overflow-wrap: anywhere; word-break: break-word; line-height: 1.3; }
+.about-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 8px; }
+.diag-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+}
+.diag-dialog {
+  width: 100%;
+  max-width: 560px;
+  max-height: 85vh;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+}
+.diag-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.diag-preview {
+  margin: 0;
+  padding: 8px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: auto;
+  flex: 1;
+  min-height: 140px;
+  font-size: 0.84em;
+  line-height: 1.4;
+}
+.diag-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+

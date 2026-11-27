@@ -124,7 +124,10 @@ export class CoreSession {
     const task = new AgentTask({
       host: this.host,
       provider: this.options.provider,
-      getSettings: () => this.options.agentSettings,
+      getSettings: () => ({
+        ...this.options.agentSettings,
+        stopOnFallback: this.options.agentSettings.stopOnFallback ?? this.settings.stopOnFallback,
+      }),
       getSelection: selection,
       getModelLabel: this.options.getModelLabel || ((modelId) => modelId),
       mode: options.mode,
@@ -226,9 +229,15 @@ export class CoreSession {
     this.root = task;
     const work = detectInterruptedWork(SessionJournal.events(found.id, dir));
     task.markResumed();
+    if (work.unknownCommands.length > 0) {
+      this.journals.get(task.id)?.recordUnconfirmedCommands(work.unknownCommands);
+      task.markUnconfirmedCommands(work.unknownCommands);
+    }
     if (work.unknownCommands.length > 0 || work.unfinishedTools.length > 0) {
-      task.addNote(resumeNote(work));
-      this.options.log?.(resumeNote(work));
+      const note = resumeNote(work);
+      task.addNote(note);
+      this.options.log?.(note);
+      this.snapshot(task);
     }
     await task.submitUserMessage(prompt || 'Continue the task from where it stopped. If it was already complete, say so briefly.');
     return this.finish(task);

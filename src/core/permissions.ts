@@ -1,6 +1,12 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import {
+  analyzeShellCommand,
+  commandTouchesProtectedConfig,
+  hasFileOutputRedirection,
+  isProtectedAgentConfigPath,
+} from '../agent/shellParser';
 import { resolveWorkspacePath, splitCommandChain, stripHeredocBodies, stripLeadingCommandWrappers } from '../agent/tools';
 import { CLAUDE_TOOL_NAMES, claudeToolName, EDIT_TOOLS, GateToolCall, GateVerdict, MCP_TOOLS, META_TOOLS, PermissionMode, READ_TOOLS, WEB_TOOLS } from './types';
 
@@ -41,6 +47,8 @@ export interface PermissionConfig {
   additionalDirectories?: string[];
   /** Tool allow-list of a subagent (Claude names or native names). undefined = all tools. */
   toolAllowList?: string[];
+  /** Optional home directory override for protected config checks. */
+  home?: string;
 }
 
 /** Built-in secret patterns, denied for Read and Edit unless `protectSecrets: false`. */
@@ -391,11 +399,18 @@ export function evaluatePermission(config: PermissionConfig, tool: GateToolCall,
     return {};
   }
 
-  const segments = target.category === 'bash' ? splitCommandChain(target.command || '') : [undefined];
+  const shellAnalysis = target.category === 'bash' ? analyzeShellCommand(target.command || '') : undefined;
+  const rawSegments = target.category === 'bash' ? splitCommandChain(target.command || '') : [];
+  const denyCheckSegments = target.category === 'bash'
+    ? Array.from(new Set([...(shellAnalysis?.segments || []), ...rawSegments, target.command || ''].filter(Boolean)))
+    : [undefined];
+  const segments = target.category === 'bash'
+    ? (shellAnalysis?.segments || [])
+    : [undefined];
 
-  // 1. Deny rules win.
+  // 1. Deny rules win (check both raw and unwrapped/recursively extracted shell segments).
   for (const rule of deny) {
-    if (segments.some((segment) => ruleMatches(rule, tool, target, cwd, segment))) {
+    if (denyCheckSegments.some((segment) => ruleMatches(rule, tool, target, cwd, segment))) {
       return { decision: 'deny', reason: `Blocked by permission rule ${rule.raw}.`, source: `permissions.deny: ${rule.raw}` };
     }
   }
@@ -417,9 +432,41 @@ export function evaluatePermission(config: PermissionConfig, tool: GateToolCall,
     return { decision: 'deny', reason: `Plan mode: MCP tool ${claudeToolName(tool)} is not allowed unless a permission rule allows it explicitly. Read MCP resources or present the plan instead.`, source: 'mode: plan' };
   }
 
+  // 2b. Protected agent/MCP/hooks config files ALWAYS require interactive confirmation (F09),
+  // even when allow rules, acceptEdits, bypassPermissions, or autoApprove.write are active.
+  if (target.category === 'edit' && target.absPath) {
+    const protectedHit = isProtectedAgentConfigPath(target.absPath, cwd, config.home)
+      || (target.realPath ? isProtectedAgentConfigPath(target.realPath, cwd, config.home) : undefined);
+    if (protectedHit) {
+      return {
+        decision: 'ask',
+        reason: `Защищённый конфиг (${protectedHit}) всегда требует явного подтверждения.`,
+        source: `protected-config: ${protectedHit}`,
+      };
+    }
+  }
+  if (target.category === 'bash') {
+    const protectedCmdHit = commandTouchesProtectedConfig(target.command || '');
+    if (protectedCmdHit) {
+      return {
+        decision: 'ask',
+        reason: `Команда затрагивает защищённый конфиг (${protectedCmdHit}) и требует явного подтверждения.`,
+        source: `protected-config: ${protectedCmdHit}`,
+      };
+    }
+    // 2c. Unparseable or dynamic shell syntax ALWAYS requires interactive confirmation (F06).
+    if (!shellAnalysis || !shellAnalysis.valid) {
+      return {
+        decision: 'ask',
+        reason: shellAnalysis?.reason || 'Неразборчивый синтаксис shell-команды требует ручного подтверждения.',
+        source: 'shell.unparseable',
+      };
+    }
+  }
+
   // 3. Ask rules.
   for (const rule of ask) {
-    if (segments.some((segment) => ruleMatches(rule, tool, target, cwd, segment))) {
+    if (denyCheckSegments.some((segment) => ruleMatches(rule, tool, target, cwd, segment))) {
       return { decision: 'ask', reason: `Permission rule ${rule.raw} requires approval.`, source: `permissions.ask: ${rule.raw}` };
     }
   }
@@ -427,14 +474,20 @@ export function evaluatePermission(config: PermissionConfig, tool: GateToolCall,
   // Secrets mentioned in shell commands are never auto-approved.
   if (config.protectSecrets && target.category === 'bash') {
     const secret = commandTouchesSecret(target.command || '');
-    if (secret && !allow.some((rule) => rule.specifier !== undefined && segments.every((segment) => ruleMatches(rule, tool, target, cwd, segment)))) {
+    if (secret && !allow.some((rule) => rule.specifier !== undefined && segments.length > 0 && segments.every((segment) => ruleMatches(rule, tool, target, cwd, segment)))) {
       return { decision: 'ask', reason: `The command references '${secret}', which looks like a secret.`, source: 'secrets: command' };
     }
   }
 
-  // 4. Allow rules: every shell segment must be covered.
+  // 4. Allow rules: every shell segment must be covered, and file output redirections (`> file`)
+  // are only auto-allowed when wildcard Bash (`Bash` / `Bash(*)`) or `bypassPermissions` is active.
+  const wildcardBashAllowed = allow.some(
+    (rule) => rule.tool === 'Bash' && (!rule.specifier || rule.specifier.trim() === '*')
+  );
+  const redirectionBlocked =
+    target.category === 'bash' && !wildcardBashAllowed && hasFileOutputRedirection(target.command || '');
   const allowed = target.category === 'bash'
-    ? segments.length > 0 && segments.every((segment) => allow.some((rule) => ruleMatches(rule, tool, target, cwd, segment)))
+    ? !redirectionBlocked && segments.length > 0 && segments.every((segment) => allow.some((rule) => ruleMatches(rule, tool, target, cwd, segment)))
     : allow.some((rule) => ruleMatches(rule, tool, target, cwd));
   if (allowed) {
     const rule = allow.find((entry) => ruleMatches(entry, tool, target, cwd, segments[0]));

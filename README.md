@@ -5,7 +5,7 @@
 <img src="docs/visuals/hero.png" alt="PerplexiCode Kilo: one agent core for the IDE and pcode CLI, with MCP integrations and configurable approvals" width="100%" />
 
 [![Release](https://img.shields.io/github/v/release/MRX7999/PerplexiCode-Kilo?label=release&color=20b8cd)](https://github.com/MRX7999/PerplexiCode-Kilo/releases/latest)
-[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-3.4.0-007acc)](https://marketplace.visualstudio.com/items?itemName=MRX7999.perplexicode-kilo)
+[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-3.5.0-007acc)](https://marketplace.visualstudio.com/items?itemName=MRX7999.perplexicode-kilo)
 [![Open VSX](https://img.shields.io/open-vsx/v/MRX7999/perplexicode-kilo?label=Open%20VSX&color=a60ee5)](https://open-vsx.org/extension/MRX7999/perplexicode-kilo)
 [![Open VSX downloads](https://img.shields.io/open-vsx/dt/MRX7999/perplexicode-kilo?label=installs&color=5eead4)](https://open-vsx.org/extension/MRX7999/perplexicode-kilo)
 [![CI](https://img.shields.io/github/actions/workflow/status/MRX7999/PerplexiCode-Kilo/ci.yml?branch=master&label=CI)](https://github.com/MRX7999/PerplexiCode-Kilo/actions/workflows/ci.yml)
@@ -16,7 +16,7 @@
 
 [Overview](#features) · [Install](#install) · [Interface & agents](#31-agents-skills--presets) · [MCP catalog](#34-mcp-catalog-security-and-parrot-os) · [MCP & compute](#33-mcp-servers-and-compute-modes) · [CLI](#30-headless-core--pcode-cli) · [Models](#models) · [Commands](#commands-and-shortcuts) · [Settings](#settings) · [Build](#build-from-source) · [Help](#troubleshooting)
 
-[Core reference](docs/CORE-3.0.md) · [Security & Parrot OS guide](docs/MCP-SECURITY-PARROT.md)
+[Core reference](docs/CORE-3.0.md) · [Security policy & threat model](SECURITY.md) · [Security & Parrot OS guide](docs/MCP-SECURITY-PARROT.md)
 
 </div>
 
@@ -48,6 +48,7 @@ Plan, write, run and debug code with GPT-6.1 Sol, Claude Opus 5.5, Gemini 4 Argo
 | **History** | Searchable task history; reopen, delete or export past tasks. |
 | **Commit messages** | Generates a commit message from staged changes in the Source Control view. |
 | **Multi-account** | Several Perplexity accounts with quota display and automatic failover. |
+| **Reliability & hardening** (3.5) | Safe resume without re-running unconfirmed commands, live task state cards (`жду подтверждения` / `повторяю запрос` / `проверяю результат` / `нужно вмешательство`), route line + `stopOnFallback`, SSRF-hardened `web_fetch`, segment-level shell allow/deny parser, SHA-256 verified installers, redacted `pcode doctor --bundle` diagnostics with preview, and protected `.perplexicode`/`.claude`/`.mcp.json` configs ([SECURITY.md](SECURITY.md)). |
 | **MCP servers** (3.3) | Connect Claude Code style MCP servers (stdio, HTTP, SSE) from `.mcp.json`, `~/.claude.json` and settings. Their tools, resources and prompts are available to the agent with `mcp__server__tool` permission rules. See [3.3](#33-mcp-servers-and-compute-modes). |
 | **Compute modes** (3.3) | Pick how Perplexity runs the request: Search, Computer harness (Light / Standard / High / Ultra), Deep Research or Labs, with automatic fallback when your plan does not include a mode. |
 | **Agents, Skills & Presets** (3.1) | One-click subagents and skills from a built-in catalog, and task presets that set the mode, subagent and prompt for common jobs. See [below](#31-agents-skills--presets). |

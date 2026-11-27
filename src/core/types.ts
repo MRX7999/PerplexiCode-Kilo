@@ -72,13 +72,15 @@ export type CoreEvent =
   | { type: 'session_start'; mode: string; cwd: string; resumed: boolean }
   | { type: 'user'; text: string }
   | { type: 'request_start'; model: string }
-  | { type: 'request_end'; model: string; account?: string; promptChars: number; durationMs: number; followUp: boolean; ok: boolean; error?: string }
+  | { type: 'request_end'; model: string; account?: string; promptChars: number; durationMs: number; followUp: boolean; ok: boolean; error?: string; routeLine?: string }
   | { type: 'assistant'; text: string; tools: string[] }
   | { type: 'tool_start'; tool: string; params: Record<string, string> }
   | { type: 'tool_end'; tool: string; ok: boolean; summary: string }
   | { type: 'denied'; tool: string; reason: string; source: string }
   | { type: 'command_start'; command: string; cwd: string }
   | { type: 'command_end'; command: string; exitCode: number | null; timedOut: boolean; outputTail: string }
+  | { type: 'command_unconfirmed'; command: string; status: 'результат не подтверждён' }
+  | { type: 'banner'; phase: 'waiting_approval' | 'retrying' | 'verifying' | 'needs_attention'; label: string; reason: string; rule: string }
   | { type: 'file_edit'; path: string; created: boolean; added: number; removed: number; checkpoint: number }
   | { type: 'mode'; mode: string }
   | { type: 'compacted'; before: number; after: number }

@@ -6,11 +6,12 @@ import { spawnSync } from 'child_process';
 import { MODES } from '../agent/modes';
 import type { AgentTask, AskResponse, CompletionProvider } from '../agent/task';
 import type { AgentSettings, UiMessage } from '../agent/types';
-import { COMPUTE_MODES, getComputeModeOption, getModelById, getModelCatalog, getModelLabel, isValidComputeModeInput, normalizeComputeMode, resolveComputeRoute } from '../api/modelCatalog';
+import { getBundledSnapshotDate, COMPUTE_MODES, getComputeModeOption, getModelById, getModelCatalog, getModelLabel, isValidComputeModeInput, normalizeComputeMode, resolveComputeRoute } from '../api/modelCatalog';
 import type { ComputeMode } from '../api/types';
 import { loadSkills, loadSubagents } from '../core/agents';
+import { buildDiagnosticBundle, serializeDiagnosticBundle } from '../core/diagnostics';
 import { applyPresetPrompt, installAgentPreset, installSkillPreset, librarySnapshot, loadTaskPresets } from '../core/library';
-import { listSessions, perplexicodeHome, sessionsDir } from '../core/journal';
+import { listSessions, perplexicodeHome, SessionJournal, sessionsDir } from '../core/journal';
 import { loadMcpServers, McpRegistry, McpServerState, McpTransportType, projectDefinesStdioMcpServers, removeMcpServerConfig, saveMcpServerConfig } from '../core/mcp';
 import { findMcpCatalogEntry, installMcpCatalogEntry, MCP_CATALOG } from '../core/mcpCatalog';
 import { cliStores, parseCookieInput } from '../core/nodeStores';
@@ -78,6 +79,12 @@ export interface CliOptions {
   mcpScope?: 'user' | 'project' | 'local';
   /** Non-secret catalog parameters. Tokens must come from the environment, never argv. */
   mcpSet: string[];
+  /** F04: stop instead of silently falling back to another mode/model/account. */
+  stopOnFallback?: boolean;
+  /** F08: `pcode doctor --bundle [--output <file>] [--yes]`. */
+  bundle: boolean;
+  bundleOutput?: string;
+  yes: boolean;
 }
 
 const SUBCOMMANDS = new Set(['login', 'logout', 'accounts', 'sessions', 'models', 'agents', 'skills', 'presets', 'mcp', 'doctor', 'help', 'version']);
@@ -126,6 +133,8 @@ export function parseArgs(argv: string[]): CliOptions {
     strictMcpConfig: false,
     mcpEnv: [],
     mcpHeaders: [],
+    bundle: false,
+    yes: false,
   };
   const positional: string[] = [];
   for (let i = 0; i < argv.length; i++) {
@@ -225,6 +234,10 @@ export function parseArgs(argv: string[]): CliOptions {
       case '--no-journal': options.journal = false; break;
       case '--alias': options.alias = value(); break;
       case '--browser': options.browser = true; break;
+      case '--stop-on-fallback': options.stopOnFallback = true; break;
+      case '--bundle': options.bundle = true; break;
+      case '-o': case '--output': options.bundleOutput = path.resolve(value()); break;
+      case '-y': case '--yes': options.yes = true; break;
       case '-h': case '--help': options.help = true; break;
       case '--version': options.version = true; break;
       default:
@@ -262,6 +275,7 @@ Options:
   --compute <mode>            Perplexity compute mode: search (default) | light | standard | high | ultra
                               (Computer / ASI harness) | research | labs — falls back to Search when
                               your plan does not include it
+  --stop-on-fallback          stop instead of falling back when the requested compute mode/model is unavailable
   --mode <slug>               code | architect | ask | debug | orchestrator | review
   --preset <id>               task preset (pcode presets): sets mode, subagent and prompt template
   --agent <name>              run the task as an installed subagent
@@ -293,6 +307,7 @@ Commands:
   pcode mcp get <name>                     show one server, connect and list its tools
   pcode mcp test [name]                    connect to the servers and report tools/resources
   pcode doctor                             environment and configuration check
+  pcode doctor --bundle [-o file] [-y]     preview and export redacted diagnostics bundle (no secrets/code/prompts)
 
 Settings: ~/.claude/settings.json, ~/.perplexicode/settings.json, .claude/settings.json,
 .perplexicode/settings.json and *.local.json (permissions, hooks, verify, env, computeMode, mcpServers).
@@ -415,6 +430,7 @@ function agentSettings(options: CliOptions): AgentSettings {
     modeInstructions: {},
     diffEnabled: true,
     includeFileListOnStart: true,
+    stopOnFallback: options.stopOnFallback,
   };
 }
 
@@ -587,7 +603,9 @@ class Printer {
         }
         break;
       case 'command':
-        if (message.command && message.command.exitCode !== undefined && !message.command.running) {
+        if (message.command && message.command.unconfirmed && !message.command.running) {
+          line(`${yellow('!')} ${bold('$')} ${message.command.command} ${yellow('(результат не подтверждён)')}`);
+        } else if (message.command && message.command.exitCode !== undefined && !message.command.running) {
           const code = message.command.exitCode;
           line(`${code === 0 ? green('●') : red('●')} ${bold('$')} ${message.command.command} ${dim(`(exit ${code ?? '?'})`)}`);
           const tail = (message.command.output || '').trimEnd().split('\n').slice(-(this.verbose ? 40 : 8)).join('\n');
@@ -610,6 +628,9 @@ class Printer {
         if (first) line(cyan(`⤷ ${message.text || 'subtask'}`));
         break;
       case 'api_req':
+        if (message.meta?.routeLine && first === false && message.meta?.durationMs) {
+          line(dim(`[маршрут] ${message.meta.routeLine}`));
+        }
         if (this.verbose && message.meta?.durationMs) {
           line(dim(`↳ ${message.meta.model || ''}${message.meta.account ? ` · ${message.meta.account}` : ''} · ${(message.meta.durationMs / 1000).toFixed(1)}s`));
         }
@@ -645,6 +666,10 @@ export function headlessAnswer(message: UiMessage, maxTurns?: number): AskRespon
   }
 }
 
+export function formatCliStatusLine(event: Extract<CoreEvent, { type: 'banner' }>): string {
+  return `[статус] ${event.label}: ${event.reason} (правило: ${event.rule})`;
+}
+
 function headlessUi(options: CliOptions): SessionUi {
   const printer = new Printer(() => options.verbose && options.outputFormat !== 'stream-json', options.verbose);
   return {
@@ -659,6 +684,10 @@ function headlessUi(options: CliOptions): SessionUi {
     event: (task, event) => {
       if (options.outputFormat === 'stream-json') {
         process.stdout.write(`${JSON.stringify({ ...event, task_id: task.id, parent_id: task.parentId })}\n`);
+        return;
+      }
+      if (options.verbose && event.type === 'banner') {
+        out(cyan(formatCliStatusLine(event)));
       }
     },
     log: (line) => {
@@ -693,8 +722,12 @@ class InteractiveUi implements SessionUi {
     this.printer.print(task, message);
   }
 
-  event(): void {
-    return;
+  event(_task: AgentTask, event: CoreEvent): void {
+    if (event.type === 'banner') {
+      out(cyan(formatCliStatusLine(event)));
+    } else if (event.type === 'request_end' && event.routeLine) {
+      out(dim(`[маршрут] ${event.routeLine}`));
+    }
   }
 
   async ask(task: AgentTask, message: UiMessage, extraAllow: string[]): Promise<AskResponse> {
@@ -1354,6 +1387,81 @@ function cmdSkills(options: CliOptions): number {
 }
 
 async function cmdDoctor(options: CliOptions): Promise<number> {
+  if (options.bundle) {
+    const { state, secrets } = cliStores();
+    const { AccountManager } = await import('../storage/accountManager');
+    const manager = new AccountManager(state as never, secrets as never);
+    await manager.initialize();
+    const accounts = manager.getAccounts();
+    const trusted = isTrusted(options.cwd);
+    const settings = loadSettings(options.cwd, { trustProjectHooks: trusted });
+    const mcpServers = loadMcpServers(options.cwd, { extraConfigs: options.mcpConfigs });
+    const latest = listSessions({ workspace: options.cwd })[0];
+    const events = latest ? SessionJournal.events(latest.id) : [];
+    const snapshot = latest ? SessionJournal.loadSnapshot(latest.id) : undefined;
+    const routeEvent = [...events].reverse().find((ev) => ev.type === 'request_end' && ev.routeLine);
+    const bundle = buildDiagnosticBundle({
+      version: VERSION,
+      client: 'cli',
+      permissionMode: options.permissionMode || settings.permissions.defaultMode,
+      protectSecrets: settings.permissions.protectSecrets,
+      stopOnFallback: Boolean(options.stopOnFallback ?? settings.stopOnFallback),
+      computeMode: options.computeMode || settings.computeMode || 'search',
+      hasVerifyCommand: Boolean(settings.verify.command),
+      ruleCounts: {
+        allow: settings.permissions.allow.length,
+        ask: settings.permissions.ask.length,
+        deny: settings.permissions.deny.length,
+      },
+      hookEventCount: Object.keys(settings.hooks || {}).length,
+      accountPlans: accounts
+        .filter((entry) => entry.status === 'active')
+        .map((entry) => String(entry.capabilities?.plan || 'unknown')),
+      mcpServers: mcpServers.map((server) => ({
+        type: server.type,
+        scope: server.scope,
+        status: server.disabled ? 'disabled' : 'configured',
+      })),
+      task: latest
+        ? {
+            id: latest.id,
+            mode: snapshot?.mode || latest.mode,
+            state: snapshot?.status || latest.status,
+            requestCount: snapshot?.requestCount ?? latest.requestCount,
+            routeLine: routeEvent && routeEvent.type === 'request_end' ? routeEvent.routeLine : undefined,
+          }
+        : undefined,
+      events,
+    });
+    const json = serializeDiagnosticBundle(bundle);
+    out(cyan('--- Предпросмотр пакета диагностики (без cookie, заголовков, промптов, кода и вывода терминала) ---'));
+    out(dim(json));
+    out(cyan('--- Конец предпросмотра ---'));
+    if (process.stdin.isTTY && !options.yes) {
+      const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+      const answer = await new Promise<string>((resolve) => {
+        rl.question(
+          `Экспортировать пакет диагностики${options.bundleOutput ? ` в ${options.bundleOutput}` : ' в stdout'}? [y/N] `,
+          (ans) => {
+            rl.close();
+            resolve(ans.trim().toLowerCase());
+          }
+        );
+      });
+      if (answer !== 'y' && answer !== 'yes' && answer !== 'д' && answer !== 'да') {
+        out(yellow('Экспорт диагностики отменён.'));
+        return 0;
+      }
+    }
+    if (options.bundleOutput) {
+      fs.mkdirSync(path.dirname(options.bundleOutput), { recursive: true });
+      fs.writeFileSync(options.bundleOutput, `${json}\n`, { mode: 0o600 });
+      out(green(`Пакет диагностики сохранён: ${options.bundleOutput}`));
+    } else {
+      process.stdout.write(`${json}\n`);
+    }
+    return 0;
+  }
   const ok = (cond: boolean, text: string) => out(`${cond ? green('✔') : yellow('!')} ${text}`);
   const has = (bin: string) => spawnSync(process.platform === 'win32' ? 'where' : 'which', [bin], { stdio: 'ignore' }).status === 0;
   ok(Number(process.versions.node.split('.')[0]) >= 18, `node ${process.versions.node}`);

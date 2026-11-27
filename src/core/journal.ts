@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type { PersistedTask } from '../agent/types';
+import { scrubSecretsFromText } from './diagnostics';
 import { CoreEvent, TimedCoreEvent } from './types';
 
 /**
@@ -48,17 +49,31 @@ export class SessionJournal {
     return timed;
   }
 
-  /** Atomic snapshot: write to a temp file, fsync, rename. */
+  /** Atomic snapshot: write to a temp file, fsync, rename (scrubbing accidental auth tokens). */
   snapshot(task: PersistedTask): void {
     const tmp = `${this.snapshotFile}.${process.pid}.${crypto.randomBytes(3).toString('hex')}.tmp`;
     const fd = fs.openSync(tmp, 'w', 0o600);
     try {
-      fs.writeSync(fd, JSON.stringify(task));
+      fs.writeSync(fd, scrubSecretsFromText(JSON.stringify(task)));
       fs.fsyncSync(fd);
     } finally {
       fs.closeSync(fd);
     }
     fs.renameSync(tmp, this.snapshotFile);
+  }
+
+  /**
+   * F02: Marks any interrupted commands without a `command_end` in the journal as
+   * `результат не подтверждён` before the resumed session begins.
+   */
+  recordUnconfirmedCommands(commands: string[]): void {
+    for (const command of commands) {
+      this.append({
+        type: 'command_unconfirmed',
+        command,
+        status: 'результат не подтверждён',
+      });
+    }
   }
 
   static events(taskId: string, dir = sessionsDir()): TimedCoreEvent[] {
@@ -167,6 +182,12 @@ export function detectInterruptedWork(events: TimedCoreEvent[]): InterruptedWork
         if (index >= 0) openCommands.splice(index, 1);
         break;
       }
+      case 'command_unconfirmed': {
+        if (!openCommands.includes(event.command)) {
+          openCommands.push(event.command);
+        }
+        break;
+      }
       case 'tool_start':
         openTools.push(event.tool);
         break;
@@ -202,7 +223,7 @@ export function detectInterruptedWork(events: TimedCoreEvent[]): InterruptedWork
 export function resumeNote(work: InterruptedWork): string {
   const lines = ['[Session resumed after an interruption (crash, closed terminal or lost connection).'];
   if (work.unknownCommands.length > 0) {
-    lines.push(`These commands were started but their outcome is UNKNOWN: ${work.unknownCommands.map((command) => `\`${command}\``).join(', ')}. They may have partially or fully run. Do NOT re-run them blindly; first inspect the real state (files, git status, service status, database) and only then decide.`);
+    lines.push(`Команды запущены до обрыва, но их результат не подтверждён: ${work.unknownCommands.map((command) => `\`${command}\``).join(', ')}. They may have partially or fully run. Do NOT re-run them blindly; first inspect the actual state (read_file, list_files, search_files) and only then decide.`);
   }
   if (work.unfinishedTools.length > 0) {
     lines.push(`Tool calls without a recorded result: ${work.unfinishedTools.join(', ')}. Re-read affected files before editing them.`);
@@ -213,13 +234,40 @@ export function resumeNote(work: InterruptedWork): string {
 
 const SECRET_KEYS = /session[-_]?token|csrf|cookie|authorization|api[-_]?key|password|secret/i;
 
-function redactEvent(event: TimedCoreEvent): TimedCoreEvent {
-  if (event.type !== 'tool_start') return event;
-  const params: Record<string, string> = {};
-  for (const [key, value] of Object.entries(event.params)) {
-    params[key] = SECRET_KEYS.test(key) ? '[redacted]' : value.length > 4000 ? `${value.slice(0, 4000)}… [${value.length} chars]` : value;
+function scrubDeep(value: unknown, keyName?: string): unknown {
+  if (keyName && SECRET_KEYS.test(keyName)) {
+    return '[redacted]';
   }
-  return { ...event, params };
+  if (typeof value === 'string') {
+    return scrubSecretsFromText(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => scrubDeep(item));
+  }
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = scrubDeep(v, k);
+    }
+    return out;
+  }
+  return value;
+}
+
+function redactEvent(event: TimedCoreEvent): TimedCoreEvent {
+  if (event.type === 'tool_start') {
+    const params: Record<string, string> = {};
+    for (const [key, value] of Object.entries(event.params)) {
+      if (SECRET_KEYS.test(key)) {
+        params[key] = '[redacted]';
+      } else {
+        const clean = scrubSecretsFromText(value);
+        params[key] = clean.length > 4000 ? `${clean.slice(0, 4000)}… [${clean.length} chars]` : clean;
+      }
+    }
+    return { ...(scrubDeep(event) as Extract<TimedCoreEvent, { type: 'tool_start' }>), params };
+  }
+  return scrubDeep(event) as TimedCoreEvent;
 }
 
 function safeId(id: string): string {

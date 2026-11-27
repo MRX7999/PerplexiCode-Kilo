@@ -79,6 +79,7 @@ export class CoreGate implements ToolGate {
       protectSecrets: settings.permissions.protectSecrets,
       additionalDirectories: settings.permissions.additionalDirectories,
       toolAllowList: this.options.toolAllowList,
+      home: this.options.home,
     }, tool, ctx.cwd);
     if (verdict.decision === 'deny') {
       return verdict;
@@ -96,7 +97,13 @@ export class CoreGate implements ToolGate {
     if (result.stopTask) {
       return { decision: 'deny', reason: result.stopReason, source: 'hook: continue=false', stopTask: true };
     }
+    const mandatoryAsk = verdict.decision === 'ask' && Boolean(
+      verdict.source?.startsWith('protected-config:') || verdict.source === 'shell.unparseable'
+    );
     if (result.permission) {
+      if (mandatoryAsk && result.permission === 'allow') {
+        return verdict;
+      }
       return { decision: result.permission, reason: result.reason || verdict.reason, source: 'hook: PreToolUse' };
     }
     return verdict;

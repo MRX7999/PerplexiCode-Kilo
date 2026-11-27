@@ -30,6 +30,7 @@ import {
   isInsideWorkspace,
   listCodeDefinitionsTool,
   listFilesTool,
+  matchesCommandPrefix,
   readFileTool,
   resolveWorkspacePath,
   searchAndReplaceContent,
@@ -39,7 +40,9 @@ import {
   truncateOutput,
   webFetchTool,
 } from './tools';
-import type { CompletionRequest, CompletionResult, ThreadState } from './transport';
+import { analyzeShellCommand, commandTouchesProtectedConfig, isProtectedAgentConfigPath } from './shellParser';
+import { buildRouteSummary, CompletionRequest, CompletionResult, ThreadState } from './transport';
+import { getComputeModeOption } from '../api/modelCatalog';
 import type { CoreEvent, GateContext, GateVerdict, ToolGate } from '../core/types';
 import { EDIT_TOOLS, READ_TOOLS } from '../core/types';
 import {
@@ -48,6 +51,8 @@ import {
   CheckpointRecord,
   ModelSelection,
   PersistedTask,
+  TaskBannerLabel,
+  TaskBannerPhase,
   TaskStatus,
   ToolInfo,
   UiMessage,
@@ -162,6 +167,8 @@ export class AgentTask {
   /** Verdict of the gate for the tool that is currently executing. */
   private gateVerdict?: GateVerdict;
   private stopAttempts = 0;
+  /** F02: Commands interrupted before recording exit status; cannot be blindly re-run until state is checked. */
+  private readonly unconfirmedCommands = new Set<string>();
 
   constructor(private readonly options: TaskOptions) {
     const restore = options.restore;
@@ -171,16 +178,17 @@ export class AgentTask {
     this.mode = restore?.mode || options.mode;
     if (restore) {
       this.title = restore.title;
-      this.apiMessages = restore.apiMessages;
-      this.uiMessages = restore.uiMessages.map((message) => ({ ...message, partial: false }));
-      this.todos = restore.todos;
-      this.checkpoints = restore.checkpoints;
+      this.apiMessages = restore.apiMessages || [];
+      this.uiMessages = (restore.uiMessages || []).map((message) => ({ ...message, partial: false }));
+      this.todos = restore.todos || [];
+      this.checkpoints = restore.checkpoints || [];
       this.thread = restore.thread;
       this.completionResult = restore.completionResult;
       this.lastModelId = restore.modelId;
       this.status = {
         state: restore.status === 'running' || restore.status === 'waiting' ? 'idle' : restore.status,
         requestCount: restore.requestCount,
+        routeLine: restore.routeLine,
       };
       this.checkpointSeq = this.checkpoints.reduce((max, record) => Math.max(max, record.seq), 0);
       // Unresolved asks from a previous session cannot be answered any more.
@@ -189,8 +197,17 @@ export class AgentTask {
           message.ask.resolved = true;
           message.status = message.status === 'pending' ? 'rejected' : message.status;
         }
-        if (message.command?.running) {
+        if (message.command?.running || message.command?.unconfirmed) {
           message.command.running = false;
+          message.command.unconfirmed = true;
+          if (!message.command.output?.includes('результат не подтверждён')) {
+            message.command.output = message.command.output
+              ? `${message.command.output}\n[результат не подтверждён]`
+              : '[результат не подтверждён]';
+          }
+          if (message.command.command) {
+            this.unconfirmedCommands.add(message.command.command.trim());
+          }
         }
       });
     }
@@ -270,6 +287,9 @@ export class AgentTask {
     if (response.response === 'message' && response.text) {
       this.say({ type: 'user', text: response.text, images: response.images });
     }
+    if (!(pending.kind === 'api_failed' && response.response === 'no')) {
+      this.clearBanner();
+    }
     this.setState('running');
     pending.resolve(response);
   }
@@ -305,7 +325,9 @@ export class AgentTask {
       if (READ_TOOLS.has(message.tool.name)) {
         shouldApprove = outside ? settings.autoApprove.readOutsideWorkspace : settings.autoApprove.read;
       } else if (EDIT_TOOLS.has(message.tool.name)) {
-        shouldApprove = settings.autoApprove.write && (!outside || settings.autoApprove.readOutsideWorkspace);
+        const targetAbs = message.tool.path ? resolveWorkspacePath(this.options.host.cwd, message.tool.path) : undefined;
+        const protectedConfig = targetAbs ? isProtectedAgentConfigPath(targetAbs, this.options.host.cwd) : undefined;
+        shouldApprove = !protectedConfig && settings.autoApprove.write && (!outside || settings.autoApprove.readOutsideWorkspace);
       }
     }
     if (shouldApprove) {
@@ -331,10 +353,11 @@ export class AgentTask {
       }
       pending.resolve({ response: 'no' });
     }
-    this.uiMessages.filter((message) => message.partial).forEach((message) => {
+      this.uiMessages.filter((message) => message.partial).forEach((message) => {
       message.partial = false;
       this.emit(message);
     });
+    this.clearBanner();
     this.setState('aborted');
   }
 
@@ -409,6 +432,7 @@ export class AgentTask {
       status: this.status.askKind === 'completion_result' ? 'completed' : this.status.state,
       requestCount: this.status.requestCount,
       completionResult: this.completionResult,
+      routeLine: this.status.routeLine,
     };
   }
 
@@ -426,6 +450,12 @@ export class AgentTask {
       while (!this.abortController.signal.aborted) {
         const settings = this.options.getSettings();
         if (this.requestsSinceLimitPrompt >= settings.maxRequests) {
+          this.setBanner(
+            'needs_attention',
+            'нужно вмешательство',
+            `Достигнут лимит ${this.requestsSinceLimitPrompt} запросов подряд`,
+            `maxRequests=${settings.maxRequests}`
+          );
           const answer = await this.ask('request_limit', {
             type: 'info',
             text: `The task has made ${this.requestsSinceLimitPrompt} requests in a row. Continue?`,
@@ -542,16 +572,32 @@ export class AgentTask {
           baseModelId: selection.baseModelId,
           thinking: selection.thinking,
           computeMode: selection.computeMode,
+          stopOnFallback: Boolean(settings.stopOnFallback),
           webSearch,
           signal: this.abortController.signal,
           onText,
           onInfo: (text) => this.say({ type: 'info', text }),
+          onRetry: ({ reason, rule }) => {
+            this.setBanner('retrying', 'повторяю запрос', reason, rule);
+          },
           onAccount: (account, model) => {
             reqMessage.meta = { ...reqMessage.meta, account, model };
             reqMessage.text = model;
             this.emit(reqMessage);
           },
         });
+        if (this.status.banner?.phase === 'retrying') {
+          this.clearBanner();
+        }
+        const requestedComputeLabel = getComputeModeOption(selection.computeMode).label;
+        const requestedModelLabel = this.options.getModelLabel(selection.baseModelId, selection.thinking);
+        const routeSummary = result.route || buildRouteSummary({
+          requestedModeLabel: requestedComputeLabel,
+          requestedModelLabel,
+          actualModeLabel: requestedComputeLabel,
+          reportedModel: result.meta?.reportedModel,
+        });
+        this.status.routeLine = routeSummary.line;
         this.status.requestCount += 1;
         this.apiRetries = 0;
         this.requestsSinceLimitPrompt += 1;
@@ -566,10 +612,21 @@ export class AgentTask {
           promptChars: result.promptChars,
           followUp: result.usedFollowUp,
           durationMs: Date.now() - startedAt,
+          routeLine: routeSummary.line,
         };
         reqMessage.text = result.modelLabel;
         this.emit(reqMessage);
-        this.emitEvent({ type: 'request_end', model: result.modelLabel, account: result.accountAlias, promptChars: result.promptChars, durationMs: Date.now() - startedAt, followUp: result.usedFollowUp, ok: true });
+        this.options.callbacks.onState(this);
+        this.emitEvent({
+          type: 'request_end',
+          model: result.modelLabel,
+          account: result.accountAlias,
+          promptChars: result.promptChars,
+          durationMs: Date.now() - startedAt,
+          followUp: result.usedFollowUp,
+          ok: true,
+          routeLine: routeSummary.line,
+        });
         // The streamed preview is replaced by the final parsed content.
         this.removeMessage(streamMessage);
         this.removeMessage(reasoningMessage);
@@ -579,7 +636,7 @@ export class AgentTask {
         this.removeMessage(reasoningMessage);
         reqMessage.partial = false;
         this.emit(reqMessage);
-        const typed = error as Error & { kind?: string };
+        const typed = error as Error & { kind?: string; rule?: string };
         this.emitEvent({ type: 'request_end', model: selection.baseModelId, promptChars: full.prompt.length, durationMs: Date.now() - startedAt, followUp: Boolean(followUpPrompt), ok: false, error: typed.message });
         if (this.abortController.signal.aborted || typed.kind === 'aborted') {
           this.removeMessage(reqMessage);
@@ -587,13 +644,37 @@ export class AgentTask {
         }
         reqMessage.status = 'error';
         this.emit(reqMessage);
-        if (settings.autoApprove.enabled && settings.autoApprove.retry && typed.kind !== 'no_account' && this.apiRetries < 4) {
+        if (
+          settings.autoApprove.enabled
+          && settings.autoApprove.retry
+          && typed.kind !== 'no_account'
+          && typed.kind !== 'fallback_blocked'
+          && this.apiRetries < 4
+        ) {
           this.apiRetries += 1;
           const retryDelayMs = Math.min(5000, 1500 * this.apiRetries);
+          this.setBanner(
+            'retrying',
+            'повторяю запрос',
+            `Ошибка запроса (${typed.message}), повтор ${this.apiRetries}/4`,
+            'autoApprove.retry'
+          );
           this.say({ type: 'info', text: `Request failed: ${typed.message}. Retrying (${this.apiRetries}/4)…` });
           await delay(retryDelayMs, this.abortController.signal);
           continue;
         }
+        const failRule = typed.rule
+          || (typed.kind === 'fallback_blocked'
+            ? 'stopOnFallback'
+            : typed.kind === 'no_account'
+              ? 'accounts.none'
+              : 'transport.api_failed');
+        this.setBanner(
+          'needs_attention',
+          'нужно вмешательство',
+          typed.message || 'Запрос к модели завершился ошибкой',
+          failRule
+        );
         const answer = await this.ask('api_failed', { type: 'error', text: typed.message || 'Request failed.' });
         if (answer.response === 'no') {
           this.setState('error');
@@ -674,6 +755,12 @@ export class AgentTask {
         this.appendToLastUser('\n\n[System recovery: Multiple consecutive tool calls failed. Re-read the target file with read_file to inspect its current contents before editing, verify all required XML parameter tags are closed, and use smaller apply_diff or write_to_file steps.]');
         return 'continue';
       }
+      this.setBanner(
+        'needs_attention',
+        'нужно вмешательство',
+        'Несколько вызовов инструментов подряд завершились с ошибкой',
+        `mistake_limit=${MAX_CONSECUTIVE_MISTAKES}`
+      );
       const answer = await this.ask('mistake_limit', {
         type: 'error',
         text: 'The model is having trouble using tools correctly. You can give guidance (for example "read the file first" or "split the change into smaller steps") or try a different model.',
@@ -819,6 +906,12 @@ export class AgentTask {
           return missing('question');
         }
         const suggestions = parseFollowUpSuggestionsWithMode(params.follow_up);
+        this.setBanner(
+          'needs_attention',
+          'нужно вмешательство',
+          question.slice(0, 180),
+          'ask_followup_question'
+        );
         const answer = await this.ask('followup', { type: 'followup', text: question, suggestions });
         if (this.abortController.signal.aborted) {
           return 'stop';
@@ -840,7 +933,20 @@ export class AgentTask {
         }
         this.consecutiveMistakes = 0;
         if (this.options.gate?.stop) {
-          const stop = await this.options.gate.stop(this.gateContext, resultText, this.stopAttempts);
+          this.setBanner(
+            'verifying',
+            'проверяю результат',
+            'Выполняется проверка результата перед завершением задачи',
+            'verify.command / hooks.Stop'
+          );
+          let stop: Awaited<ReturnType<NonNullable<ToolGate['stop']>>>;
+          try {
+            stop = await this.options.gate.stop(this.gateContext, resultText, this.stopAttempts);
+          } finally {
+            if (this.status.banner?.phase === 'verifying') {
+              this.clearBanner();
+            }
+          }
           if (stop.continueReason && !this.abortController.signal.aborted) {
             this.stopAttempts += 1;
             this.say({ type: 'info', text: `Not done yet: ${stop.continueReason.split('\n')[0].slice(0, 300)}` });
@@ -1014,6 +1120,12 @@ export class AgentTask {
         output = await listCodeDefinitionsTool(host, absPath);
       }
       this.consecutiveMistakes = 0;
+      if (this.unconfirmedCommands.size > 0) {
+        this.unconfirmedCommands.clear();
+        if (this.status.banner?.rule === 'resume.unconfirmed_command') {
+          this.clearBanner();
+        }
+      }
       message.status = 'done';
       message.tool = { ...message.tool!, content: truncateMiddle(output, 4000) };
       this.emit(message);
@@ -1153,7 +1265,19 @@ export class AgentTask {
       added: stats.added,
       removed: stats.removed,
     };
-    const approved = await this.approve('tool', settings.autoApprove.write && (!outside || settings.autoApprove.readOutsideWorkspace), info);
+    const protectedConfig = isProtectedAgentConfigPath(absPath, host.cwd);
+    const canAutoWrite = !protectedConfig && settings.autoApprove.write && (!outside || settings.autoApprove.readOutsideWorkspace);
+    const approved = await this.approve(
+      'tool',
+      canAutoWrite,
+      info,
+      protectedConfig
+        ? {
+          reason: `Защищённый конфиг (${protectedConfig}) всегда требует явного подтверждения.`,
+          rule: `protected-config: ${protectedConfig}`,
+        }
+        : undefined
+    );
     if (approved.response === 'no' || this.abortController.signal.aborted) {
       return this.denied(tool.name, displayPath, approved.text);
     }
@@ -1171,7 +1295,17 @@ export class AgentTask {
       this.say({ type: 'checkpoint', checkpoint: { seq }, text: displayPath });
       this.emitEvent({ type: 'file_edit', path: displayPath, created: original === null, added: stats.added, removed: stats.removed, checkpoint: seq });
       this.consecutiveMistakes = 0;
-      const problems = host.getDiagnostics ? await host.getDiagnostics(absPath) : '';
+      let problems = '';
+      if (host.getDiagnostics) {
+        this.setBanner('verifying', 'проверяю результат', `Проверка диагностики IDE для ${displayPath}`, 'ide.diagnostics');
+        try {
+          problems = await host.getDiagnostics(absPath);
+        } finally {
+          if (this.status.banner?.rule === 'ide.diagnostics') {
+            this.clearBanner();
+          }
+        }
+      }
       const partialFailures = (tool as ParsedToolUse & { partialFailures?: string[] }).partialFailures || [];
       const replacements = (tool as ParsedToolUse & { replacements?: number }).replacements;
       const lines = [
@@ -1195,11 +1329,35 @@ export class AgentTask {
     if (!command) {
       return missing('command');
     }
+    if (this.unconfirmedCommands.has(command)) {
+      this.setBanner(
+        'verifying',
+        'проверяю результат',
+        `Повторный запуск '${command.slice(0, 80)}' отложен: результат предыдущего запуска не подтверждён`,
+        'resume.unconfirmed_command'
+      );
+      this.say({
+        type: 'info',
+        text: `Команда \`${command}\` помечена как «результат не подтверждён» после обрыва. Сначала проверьте фактическое состояние (read_file / list_files / search_files).`,
+      });
+      this.pushToolResult(
+        tool.name,
+        command,
+        `[результат не подтверждён] Command \`${command}\` was already started before the stream interruption and its outcome was not confirmed. Do NOT re-run it yet; inspect the actual workspace state first using read_file, list_files, or search_files.`
+      );
+      return 'continue';
+    }
     const host = this.options.host;
     const cwd = tool.params.cwd ? resolveWorkspacePath(host.cwd, tool.params.cwd) : host.cwd;
+    const protectedCmdHit = commandTouchesProtectedConfig(command);
+    const shellParsed = analyzeShellCommand(command);
     const gateDecision = this.gateVerdict?.decision;
-    const legacyAuto = settings.autoApprove.enabled && settings.autoApprove.execute && isCommandAutoApproved(command, settings.allowedCommands, settings.deniedCommands);
-    const autoApproved = gateDecision === 'allow' || (gateDecision !== 'ask' && legacyAuto);
+    const legacyAuto = !protectedCmdHit
+      && shellParsed.valid
+      && settings.autoApprove.enabled
+      && settings.autoApprove.execute
+      && isCommandAutoApproved(command, settings.allowedCommands, settings.deniedCommands);
+    const autoApproved = !protectedCmdHit && shellParsed.valid && (gateDecision === 'allow' || (gateDecision !== 'ask' && legacyAuto));
     const askId = makeId();
     const commandMessage: UiMessage = {
       id: askId,
@@ -1213,6 +1371,25 @@ export class AgentTask {
       commandMessage.ask = { kind: 'command', resolved: true, autoApproved: true };
       this.pushUi(commandMessage);
     } else {
+      const cmdRule = this.gateVerdict?.source
+        || (protectedCmdHit
+          ? `protected-config: ${protectedCmdHit}`
+          : !shellParsed.valid
+            ? 'shell.unparseable'
+            : matchesCommandPrefix(command, settings.deniedCommands)
+              ? 'deniedCommands'
+              : !settings.autoApprove.enabled
+                ? 'autoApprove.enabled=false'
+                : !settings.autoApprove.execute
+                  ? 'autoApprove.execute=false'
+                  : 'allowedCommands');
+      const cmdReason = this.gateVerdict?.reason
+        || (protectedCmdHit
+          ? `Команда затрагивает защищённый конфиг (${protectedCmdHit})`
+          : !shellParsed.valid
+            ? (shellParsed.reason || 'Неразборчивый синтаксис shell-команды требует подтверждения')
+            : `Запуск команды требует подтверждения: ${command.slice(0, 100)}`);
+      this.setBanner('waiting_approval', 'жду подтверждения', cmdReason, cmdRule);
       commandMessage.ask = { kind: 'command', resolved: false };
       const answer = await this.waitAsk(commandMessage);
       if (answer.response === 'no' || this.abortController.signal.aborted) {
@@ -1456,6 +1633,7 @@ export class AgentTask {
 
   private finishCompletion(result: string): void {
     this.completionResult = result;
+    this.clearBanner();
     this.emitEvent({ type: 'completion', result });
     this.setState('completed');
     const resolvers = this.completionResolvers;
@@ -1468,7 +1646,12 @@ export class AgentTask {
   // Asks and UI helpers
   // ---------------------------------------------------------------------------------------------
 
-  private async approve(kind: AskKind, autoApproved: boolean, info: ToolInfo): Promise<AskResponse & { message: UiMessage }> {
+  private async approve(
+    kind: AskKind,
+    autoApproved: boolean,
+    info: ToolInfo,
+    forceAsk?: { reason: string; rule: string }
+  ): Promise<AskResponse & { message: UiMessage }> {
     const settings = this.options.getSettings();
     const message: UiMessage = { id: makeId(), ts: Date.now(), type: 'tool', tool: info, status: 'pending' };
     const gateDecision = kind === 'tool' || kind === 'new_task' ? this.gateVerdict?.decision : undefined;
@@ -1478,15 +1661,35 @@ export class AgentTask {
       || (settings.autoApprove.enabled && settings.autoApprove.readOutsideWorkspace)
       || this.gateVerdict?.source === 'mode: bypassPermissions'
       || Boolean(this.gateVerdict?.source?.includes('('));
-    const auto =
+    const auto = !forceAsk && (
       (gateDecision === 'allow' && explicitOutsideAllow)
-      || (gateDecision !== 'ask' && autoApproved && settings.autoApprove.enabled);
+      || (gateDecision !== 'ask' && autoApproved && settings.autoApprove.enabled)
+    );
     if (auto) {
       message.status = 'approved';
       message.ask = { kind, resolved: true, autoApproved: true };
       this.pushUi(message);
       return { response: 'yes', message };
     }
+    const askRule = forceAsk?.rule
+      || this.gateVerdict?.source
+      || (info.outsideWorkspace
+        ? 'workspace.outside'
+        : !settings.autoApprove.enabled
+          ? 'autoApprove.enabled=false'
+          : EDIT_TOOLS.has(info.name)
+            ? 'autoApprove.write=false'
+            : READ_TOOLS.has(info.name)
+              ? 'autoApprove.read=false'
+              : kind === 'mode_switch'
+                ? 'autoApprove.modeSwitch=false'
+                : kind === 'new_task'
+                  ? 'autoApprove.subtasks=false'
+                  : 'autoApprove.tool=false');
+    const askReason = forceAsk?.reason
+      || this.gateVerdict?.reason
+      || `Ожидание подтверждения: ${info.title}`;
+    this.setBanner('waiting_approval', 'жду подтверждения', askReason, askRule);
     message.ask = { kind, resolved: false };
     const answer = await this.waitAsk(message);
     return { ...answer, message };
@@ -1598,6 +1801,53 @@ export class AgentTask {
   /** Signals session start for resumed tasks (journal). */
   markResumed(): void {
     this.emitEvent({ type: 'session_start', mode: this.mode, cwd: this.options.host.cwd, resumed: true });
+  }
+
+  /** F02: Registers interrupted commands whose outcome was not confirmed before a disconnect. */
+  markUnconfirmedCommands(commands: string[]): void {
+    for (const raw of commands) {
+      const cmd = raw.trim();
+      if (!cmd) continue;
+      this.unconfirmedCommands.add(cmd);
+      for (const message of this.uiMessages) {
+        if (message.command && message.command.command.trim() === cmd && message.command.exitCode === undefined) {
+          message.command.running = false;
+          message.command.unconfirmed = true;
+          if (!message.command.output?.includes('результат не подтверждён')) {
+            message.command.output = message.command.output
+              ? `${message.command.output}\n[результат не подтверждён]`
+              : '[результат не подтверждён]';
+          }
+        }
+      }
+    }
+    if (this.unconfirmedCommands.size > 0) {
+      this.setBanner(
+        'verifying',
+        'проверяю результат',
+        `После обрыва результат не подтверждён для: ${[...this.unconfirmedCommands].join(', ').slice(0, 140)}`,
+        'resume.unconfirmed_command'
+      );
+    }
+  }
+
+  setBanner(phase: TaskBannerPhase, label: TaskBannerLabel, reason: string, rule: string): void {
+    const next = { phase, label, reason, rule };
+    const prev = this.status.banner;
+    if (prev && prev.phase === next.phase && prev.label === next.label && prev.reason === next.reason && prev.rule === next.rule) {
+      return;
+    }
+    this.status.banner = next;
+    this.emitEvent({ type: 'banner', phase, label, reason, rule });
+    this.options.callbacks.onState(this);
+  }
+
+  clearBanner(): void {
+    if (!this.status.banner) {
+      return;
+    }
+    this.status.banner = undefined;
+    this.options.callbacks.onState(this);
   }
 
   private async withEnvironment(content: string, includeFiles: boolean): Promise<string> {

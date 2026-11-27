@@ -1,9 +1,9 @@
 import * as vscode from 'vscode';
 import { loadSubagents, SubagentDefinition } from '../core/agents';
 import { CoreGate } from '../core/gate';
-import { sessionsDir, SessionJournal } from '../core/journal';
+import { detectInterruptedWork, resumeNote, sessionsDir, SessionJournal } from '../core/journal';
 import { loadSettings } from '../core/settings';
-import { CoreEvent, PERMISSION_MODES, PermissionMode } from '../core/types';
+import { CoreEvent, PERMISSION_MODES, PermissionMode, TimedCoreEvent } from '../core/types';
 import { VERIFICATION_LABELS, VerificationReport, VerificationTracker } from '../core/verification';
 import { readSetting } from '../config/settingsStore';
 import type { AgentTask } from './task';
@@ -100,6 +100,33 @@ export class CoreBridge {
         this.log(`[core] journal disabled: ${(error as Error).message}`);
       }
     }
+  }
+
+  journalEvents(taskId: string): TimedCoreEvent[] {
+    try {
+      return SessionJournal.events(taskId, sessionsDir());
+    } catch {
+      return [];
+    }
+  }
+
+  /** F02: Marks unconfirmed commands when reopening an interrupted task in IDE. */
+  resumeCheck(task: AgentTask): void {
+    const events = this.journalEvents(task.id);
+    if (events.length === 0) {
+      return;
+    }
+    const work = detectInterruptedWork(events);
+    if (work.unknownCommands.length === 0 && work.unfinishedTools.length === 0) {
+      return;
+    }
+    task.markResumed();
+    if (work.unknownCommands.length > 0) {
+      this.journals.get(task.id)?.recordUnconfirmedCommands(work.unknownCommands);
+      task.markUnconfirmedCommands(work.unknownCommands);
+    }
+    task.addNote(resumeNote(work));
+    this.snapshot(task);
   }
 
   private rootOf(taskId: string): string {

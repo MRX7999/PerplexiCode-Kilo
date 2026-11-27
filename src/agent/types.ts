@@ -56,11 +56,11 @@ export interface UiMessage {
   text?: string;
   partial?: boolean;
   tool?: ToolInfo;
-  command?: { command: string; cwd?: string; output?: string; exitCode?: number | null; running?: boolean };
+  command?: { command: string; cwd?: string; output?: string; exitCode?: number | null; running?: boolean; unconfirmed?: boolean };
   suggestions?: Array<{ text: string; mode?: string }>;
   ask?: { kind: AskKind; resolved: boolean; response?: 'yes' | 'no' | 'message'; autoApproved?: boolean };
   status?: 'pending' | 'approved' | 'rejected' | 'done' | 'error' | 'running';
-  meta?: { model?: string; account?: string; citations?: string[]; promptChars?: number; followUp?: boolean; durationMs?: number };
+  meta?: { model?: string; account?: string; citations?: string[]; promptChars?: number; followUp?: boolean; durationMs?: number; routeLine?: string };
   checkpoint?: { seq: number; restored?: boolean };
   images?: string[];
 }
@@ -105,6 +105,8 @@ export interface AgentSettings {
   modeInstructions: Record<string, string>;
   diffEnabled: boolean;
   includeFileListOnStart: boolean;
+  /** F04: Stop task instead of falling back to another model/compute mode. */
+  stopOnFallback?: boolean;
 }
 
 export interface ModelSelection {
@@ -115,11 +117,25 @@ export interface ModelSelection {
   computeMode?: ComputeMode;
 }
 
+export type TaskBannerPhase = 'waiting_approval' | 'retrying' | 'verifying' | 'needs_attention';
+export type TaskBannerLabel = 'жду подтверждения' | 'повторяю запрос' | 'проверяю результат' | 'нужно вмешательство';
+
+export interface TaskStateBanner {
+  phase: TaskBannerPhase;
+  label: TaskBannerLabel;
+  reason: string;
+  rule: string;
+}
+
 export interface TaskStatus {
   state: 'idle' | 'running' | 'waiting' | 'completed' | 'aborted' | 'error';
   askId?: string;
   askKind?: AskKind;
   requestCount: number;
+  /** F03: Transparent task state banner with concrete reason and rule. */
+  banner?: TaskStateBanner;
+  /** F04: Last request route line: "<запрошенный режим> → <фактический>, <причина>". */
+  routeLine?: string;
 }
 
 export interface PersistedTask {
@@ -140,6 +156,7 @@ export interface PersistedTask {
   status: TaskStatus['state'];
   requestCount: number;
   completionResult?: string;
+  routeLine?: string;
 }
 
 export interface HistoryItem {

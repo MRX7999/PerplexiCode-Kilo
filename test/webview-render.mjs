@@ -275,6 +275,48 @@ await page.click('[data-mcp-category="all"]');
 await fit('desktop after mobile');
 await send({ type: 'view', view: 'chat' });
 check(Boolean(await page.$('#welcome:not(.hidden)')), 'return to chat works after catalog interaction');
+
+// 3.5: task state card (F03), route summary line (F04), and diagnostics preview modal (F08).
+await page.setViewport({ width: 420, height: 900, deviceScaleFactor: 2 });
+const task35 = copy(fixture.withTask);
+task35.task.status = {
+  state: 'waiting',
+  askId: 'ask-35',
+  askKind: 'edit',
+  requestCount: 2,
+  routeLine: 'Computer (Claude 5.5 Sonnet) → Search (модель: не сообщена), план Pro не поддерживает Computer',
+  banner: {
+    phase: 'waiting_approval',
+    label: 'жду подтверждения',
+    reason: 'Защищённый конфиг (.mcp.json) всегда требует явного подтверждения.',
+    rule: 'protected-config: .mcp.json',
+  },
+};
+await send(task35);
+check(Boolean(await page.$('.task-state-card')), '3.5 task state card visible when banner active');
+check(await page.$eval('.task-state-card', (el) => el.textContent.includes('жду подтверждения') && el.textContent.includes('protected-config: .mcp.json')), '3.5 task state card renders label, reason and rule');
+check(Boolean(await page.$('.task-route-line')), '3.5 task route line visible');
+check(await page.$eval('.task-route-line', (el) => el.textContent.includes('не сообщена') && el.textContent.includes('→')), '3.5 task route line renders fallback and unreported model');
+check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), '3.5 task state card and route line have no horizontal overflow');
+await shot('27-release-35-status-card');
+
+check((await clickPosted('#task-diagnostics')).some((m) => m.type === 'requestDiagnosticsPreview'), '3.5 header diagnostics button requests preview before copy');
+await send({
+  type: 'diagnosticsPreview',
+  json: JSON.stringify({
+    schemaVersion: 1,
+    redacted: true,
+    versions: { perplexicode: '3.5.0', platform: 'linux', node: 'v22' },
+    excludedData: ['cookies', 'csrf_tokens', 'http_headers', 'prompts', 'source_code', 'terminal_output'],
+    stages: [{ seq: 1, stage: 'banner:waiting_approval', decision: 'жду подтверждения', rule: 'protected-config: .mcp.json' }],
+  }, null, 2),
+});
+check(Boolean(await page.$('#diag-modal:not(.hidden)')), '3.5 diagnostics preview modal opens');
+check(await page.$eval('#diag-modal', (el) => el.textContent.includes('Скопировать диагностику') && el.textContent.includes('3.5.0')), '3.5 diagnostics modal shows preview JSON and copy button');
+await shot('28-release-35-diag-modal');
+check((await clickPosted('[data-action="diag-copy"]')).some((m) => m.type === 'copy' && m.text.includes('3.5.0')), '3.5 confirm button copies previewed diagnostics');
+check(Boolean(await page.$('#diag-modal.hidden')), '3.5 diagnostics modal closes after copy');
+
 const posted = await page.evaluate(() => window.__posted.map((m) => m.type));
 console.log('posted:', [...new Set(posted)].join(','));
 console.log('tabs:', tabs.length);
