@@ -38,14 +38,14 @@ PerplexiCode Kilo stores authenticated sessions for paid Perplexity accounts and
 - **Mitigation (F08 & Core Policy):**
   - Secret file patterns (`.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`, `id_ed25519*`, `.npmrc`, `.netrc`, `credentials.json`) are protected by default in `permissions.protectSecrets`.
   - `scrubSecrets()` strips cookies, CSRF tokens, bearer/API tokens, and sensitive HTTP headers before writing any event into `SessionJournal`.
-  - `pcode doctor --bundle` and **Скопировать диагностику** export only versions, stage timings, tool categories, and rule verdicts — never cookies, headers, prompts, file paths/code, or terminal output — and always show a full preview before export/copy.
+  - `pcode doctor --bundle` and **Copy Diagnostics** export only versions, stage timings, tool categories, and rule verdicts — never cookies, headers, prompts, file paths/code, or terminal output — and always show a full preview before export/copy.
 
 ### 5. Supply-Chain Integrity of VSIX Installers & Interrupted Execution
 - **Threat:** Corrupted or tampered release assets during CLI-driven VSIX installation; duplicate file edits or duplicate shell executions after SSE chunk replays or mid-stream network drops.
 - **Mitigation (F01, F02, F07):**
   - `scripts/install.sh` and `scripts/install.ps1` download `SHA256SUMS.txt` from the matching GitHub Release, verify the SHA-256 digest of `perplexicode-kilo.vsix`, and abort with a non-zero exit status on mismatch before running any editor CLI.
   - SSE frame parsing deduplicates repeated terminal chunks and aborts cleanly on mid-tool-call stream truncation.
-  - Commands interrupted before recording an exit code are marked `результат не подтверждён` in the journal; on resume, blind re-execution of the unconfirmed command is blocked until workspace state is inspected.
+  - Commands interrupted before recording an exit code are marked `outcome not confirmed` in the journal; on resume, blind re-execution of the unconfirmed command is blocked until workspace state is inspected.
 
 ## Reporting a Vulnerability
 

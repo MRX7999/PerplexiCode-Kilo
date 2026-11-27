@@ -259,7 +259,7 @@ root.innerHTML = `
               <button id="compute-btn" class="pill compute-pill" title="Compute mode"></button>
               <div id="compute-menu" class="menu compute-menu hidden"></div>
             </div>
-            <button id="worktree-btn" class="pill wt-pill" data-action="toggle-worktree" title="Изоляция задачи в отдельном git worktree от HEAD"></button>
+            <button id="worktree-btn" class="pill wt-pill" data-action="toggle-worktree" title="Run the task in a separate git worktree from HEAD"></button>
             <button id="web-btn" class="icon-btn toggle" title="Web search"></button>
             <button id="enhance-btn" class="icon-btn" title="Enhance prompt">${icons.sparkle}</button>
             <button id="send-btn" class="icon-btn send" title="Send (Enter)">${icons.send}</button>
@@ -621,7 +621,7 @@ function commandHtml(message: UiMessage): string {
   return `<div class="tool-card command">
     <div class="tool-head" data-toggle-tool="${message.id}">${icons.terminal}<span class="tool-title">${message.status === 'pending' ? 'PerplexiCode wants to run' : 'Command'}</span>
       ${command.cwd ? `<span class="muted">in ${escapeHtml(command.cwd)}</span>` : ''}<span class="spacer"></span>
-      ${command.unconfirmed ? '<span class="badge warn">результат не подтверждён</span>' : ''}
+      ${command.unconfirmed ? '<span class="badge warn">outcome not confirmed</span>' : ''}
       ${command.exitCode !== undefined && command.exitCode !== null && !command.running ? `<span class="exit ${command.exitCode === 0 ? 'ok' : 'fail'}">exit ${command.exitCode}</span>` : ''}
       ${statusIcon(message)}${command.output ? (open ? icons.chevronDown : icons.chevronRight) : ''}</div>
     <pre class="command-line"><code>$ ${escapeHtml(command.command)}</code></pre>
@@ -671,8 +671,8 @@ function renderTaskHeader(): void {
     ${task.depth > 0 ? `<div class="subtask-banner">${icons.subtask}<span>Subtask of: ${escapeHtml(task.parentTitle || 'parent task')}</span></div>` : ''}
     <div class="task-title-row">
       <button class="task-title ${titleExpanded ? 'expanded' : ''}" id="task-title-toggle"><span class="task-label">Task:</span> ${escapeHtml(task.title || 'New task')}</button>
-      <button class="icon-btn" id="task-context-inspector" data-action="inspectContext" title="Инспектор контекста">${icons.review}</button>
-      <button class="icon-btn" id="task-diagnostics" data-action="copyDiagnostics" title="Скопировать диагностику">${icons.info}</button>
+      <button class="icon-btn" id="task-context-inspector" data-action="inspectContext" title="Context Inspector">${icons.review}</button>
+      <button class="icon-btn" id="task-diagnostics" data-action="copyDiagnostics" title="Copy Diagnostics">${icons.info}</button>
       <button class="icon-btn" id="task-export" title="Export task as Markdown">${icons.export}</button>
       <button class="icon-btn" id="task-close" title="Close task (start new)">${icons.x}</button>
     </div>
@@ -682,9 +682,9 @@ function renderTaskHeader(): void {
       <span class="chip">${task.status.requestCount} requests</span>
       <span class="chip state-${task.status.state}">${escapeHtml(stateLabel(task.status.state, task.busy))}</span>
     </div>
-    ${task.status.routeLine ? `<div class="task-route-line" title="Запрошенный режим → фактический, причина">${escapeHtml(task.status.routeLine)}</div>` : ''}
+    ${task.status.routeLine ? `<div class="task-route-line" title="Requested mode → actual, reason">${escapeHtml(task.status.routeLine)}</div>` : ''}
     ${banner ? `<div class="task-state-card phase-${escapeHtml(banner.phase)}">
-      <div class="task-state-head">${bannerIcon}<b>${escapeHtml(banner.label)}</b><span class="badge">правило: ${escapeHtml(banner.rule)}</span></div>
+      <div class="task-state-head">${bannerIcon}<b>${escapeHtml(banner.label)}</b><span class="badge">rule: ${escapeHtml(banner.rule)}</span></div>
       <div class="task-state-reason">${escapeHtml(banner.reason)}</div>
     </div>` : ''}
     ${todos.length > 0 ? `
@@ -814,24 +814,24 @@ function renderWorktreeCard(): void {
   el.classList.remove('hidden');
 
   const stateLabels: Record<WorktreeCardView['state'], [string, string]> = {
-    pending: ['Ожидает решения', 'wt-pending'],
-    applied: ['Применено', 'ok-badge'],
-    discarded: ['Отброшено', 'wt-discarded'],
-    conflict: ['Конфликт', 'wt-conflict'],
+    pending: ['Awaiting decision', 'wt-pending'],
+    applied: ['Applied', 'ok-badge'],
+    discarded: ['Discarded', 'wt-discarded'],
+    conflict: ['Conflict', 'wt-conflict'],
   };
   const [stateLabel, stateClass] = stateLabels[card.state] || stateLabels.pending;
 
   const verifyLabels: Record<string, [string, string]> = {
-    verified: ['Verify: пройдено', 'ok-badge'],
-    failed: ['Verify: ошибка', 'wt-conflict'],
-    blocked: ['Verify: заблокировано', 'wt-conflict'],
-    needs_review: ['Verify: нужна проверка', 'wt-pending'],
-    no_changes: ['Verify: без правок', ''],
+    verified: ['Verify: passed', 'ok-badge'],
+    failed: ['Verify: failed', 'wt-conflict'],
+    blocked: ['Verify: blocked', 'wt-conflict'],
+    needs_review: ['Verify: needs review', 'wt-pending'],
+    no_changes: ['Verify: no changes', ''],
   };
   const [verifyLabel, verifyClass] = verifyLabels[card.verify.status] || [`Verify: ${card.verify.status}`, ''];
 
   const filesHtml = card.changedFiles.length === 0
-    ? '<div class="muted small">Изменённых файлов в worktree нет.</div>'
+    ? '<div class="muted small">No changed files in the worktree.</div>'
     : `<div class="wt-files">${card.changedFiles.map((file) => `
       <div class="wt-file-row">
         <span class="badge">${escapeHtml(file.status.slice(0, 1).toUpperCase())}</span>
@@ -842,14 +842,14 @@ function renderWorktreeCard(): void {
 
   const conflictHtml = card.state === 'conflict' && card.conflictFiles.length > 0
     ? `<div class="wt-conflict-box">
-        <b>Конфликт при применении — остановлено без merge/push:</b>
+        <b>Conflict while applying — stopped without merge or push:</b>
         <ul class="wt-conflict-list">${card.conflictFiles.map((f) => `<li><code>${escapeHtml(f)}</code></li>`).join('')}</ul>
       </div>`
     : '';
 
   const diffPreview = card.unifiedDiff
     ? `<div class="wt-diff-section">
-        <button class="btn ghost small" data-action="toggle-worktree-diff">${worktreeDiffOpen ? icons.chevronDown : icons.chevronRight} Diff (${card.changedFiles.length} файлов, +${card.totalAdditions} / -${card.totalDeletions})</button>
+        <button class="btn ghost small" data-action="toggle-worktree-diff">${worktreeDiffOpen ? icons.chevronDown : icons.chevronRight} Diff (${card.changedFiles.length} files, +${card.totalAdditions} / -${card.totalDeletions})</button>
         ${worktreeDiffOpen ? `<pre class="wt-diff-pre">${escapeHtml(card.unifiedDiff.slice(0, 16000))}</pre>` : ''}
       </div>`
     : '';
@@ -862,20 +862,20 @@ function renderWorktreeCard(): void {
     <div class="wt-card state-${escapeHtml(card.state)}">
       <div class="wt-head">
         ${icons.diff}
-        <b class="wt-title">Результат worktree: <code>${escapeHtml(card.worktreeName)}</code></b>
+        <b class="wt-title">Worktree result: <code>${escapeHtml(card.worktreeName)}</code></b>
         <span class="badge ${verifyClass}" title="${escapeHtml(card.verify.detail)}">${escapeHtml(verifyLabel)}</span>
         <span class="badge ${stateClass}">${escapeHtml(stateLabel)}</span>
       </div>
-      <div class="muted small">${escapeHtml(card.verify.detail)} · база <code>${escapeHtml(card.baseCommit.slice(0, 8))}</code></div>
+      <div class="muted small">${escapeHtml(card.verify.detail)} · base <code>${escapeHtml(card.baseCommit.slice(0, 8))}</code></div>
       ${filesHtml}
       ${conflictHtml}
       ${card.statusMessage ? `<div class="wt-status-msg small">${escapeHtml(card.statusMessage)}</div>` : ''}
       ${diffPreview}
       <div class="wt-actions">
-        <span class="muted small">Без авто-merge и push</span>
+        <span class="muted small">No auto merge or push</span>
         <span class="spacer"></span>
-        <button class="btn secondary small" data-action="discard-worktree" ${discardDisabled ? 'disabled' : ''}>Отбросить</button>
-        <button class="btn primary small" data-action="apply-worktree" ${applyDisabled ? 'disabled' : ''}>Применить</button>
+        <button class="btn secondary small" data-action="discard-worktree" ${discardDisabled ? 'disabled' : ''}>Discard</button>
+        <button class="btn primary small" data-action="apply-worktree" ${applyDisabled ? 'disabled' : ''}>Apply</button>
       </div>
     </div>`;
 }
@@ -936,8 +936,8 @@ function renderComposer(): void {
   wtBtn.innerHTML = `${icons.diff}<span>${wtActiveName ? escapeHtml(wtActiveName) : 'Worktree'}</span>`;
   wtBtn.classList.toggle('on', wtEnabled || Boolean(wtActiveName));
   wtBtn.title = wtActiveName
-    ? `Задача выполняется в изолированном git worktree: ${wtActiveName}`
-    : `Изоляция в git worktree: ${wtEnabled ? 'вкл.' : 'выкл.'} (кликните для переключения)`;
+    ? `Task runs in the isolated git worktree: ${wtActiveName}`
+    : `Git worktree isolation: ${wtEnabled ? 'on' : 'off'} (click to toggle)`;
   const webOn = state.selection.webSearch === null ? state.selection.modeWebSearchDefault && state.settings.webSearch !== 'never' || state.settings.webSearch === 'always' : state.selection.webSearch;
   const webBtn = $('web-btn');
   webBtn.innerHTML = icons.globe + (state.selection.webSearch === null ? '<span class="auto-dot"></span>' : '');
@@ -1112,7 +1112,7 @@ interface SlashCommandItem {
 const SLASH_COMMANDS = (): SlashCommandItem[] => [
   ...(state?.modes || []).map((mode) => ({ label: `/${mode.slug}`, value: `mode:${mode.slug}`, description: `Switch to ${mode.name} mode` })),
   { label: '/newtask', value: 'newtask', description: 'Start a new task with the following text' },
-  { label: '/context', value: 'context', description: 'Инспектор контекста: что уходит в следующий запрос, почему и что исключить' },
+  { label: '/context', value: 'context', description: 'Context Inspector: what goes into the next request, why, and what to exclude' },
   { label: '/history', value: 'history', description: 'Open task history' },
   { label: '/settings', value: 'settings', description: 'Open settings' },
   { label: '/web', value: 'web', description: 'Toggle web search (auto → on → off)' },
@@ -1207,7 +1207,7 @@ function applySlash(value: string, restText = '', fromSubmit = false): void {
     const entry = SLASH_COMMANDS().find((item) => item.value === value);
     if (!fromSubmit && !restText && entry?.requiredArgs && entry.requiredArgs.length > 0) {
       input.value = `${entry.label} `;
-      showToast(`Введите аргументы: ${entry.requiredArgs.map((a) => `${a}=…`).join(' ')} и нажмите Enter`);
+      showToast(`Enter arguments: ${entry.requiredArgs.map((a) => `${a}=…`).join(' ')} and press Enter`);
     } else {
       post({ type: 'runMcpPrompt', server: serverName, name: promptName, rawArgs: restText });
       setView('chat');
@@ -1359,7 +1359,7 @@ function renderSettings(): void {
     case 'models':
       body = `
         ${field('root.subscriptionPlan', 'Subscription plan', 'Auto-detect from the account, or force Max to unlock Max-only models when detection fails', select('root.subscriptionPlan', state.general.subscriptionPlan, [['auto', 'Auto-detect'], ['pro', 'Pro'], ['max', 'Max']]))}
-        ${field('stopOnFallback', 'Остановиться вместо fallback', 'Останавливать задачу вместо переключения на другой режим, модель или аккаунт при недоступности запрошенного маршрута', checkbox('stopOnFallback', Boolean(s.stopOnFallback)))}
+        ${field('stopOnFallback', 'Stop instead of falling back', 'Stop the task instead of switching to another mode, model or account when the requested route is not available', checkbox('stopOnFallback', Boolean(s.stopOnFallback)))}
         ${field('webSearch', 'Web search', 'Auto: on for Ask/Architect, off for coding modes. The globe button overrides it per session.', select('webSearch', s.webSearch, [['auto', 'Auto (per mode)'], ['always', 'Always'], ['never', 'Never']]))}
         <div class="section-title">Available models (${state.models.length})</div>
         <div class="model-table">${state.models.map((model) => `<div class="model-row ${model.selectable ? '' : 'locked'}">${providerIcon(model.provider, model.id)}<span>${escapeHtml(model.label)}</span>${model.requiredPlan === 'max' ? '<span class="badge max">Max</span>' : ''}${model.supportsThinking ? '<span class="badge">Thinking</span>' : ''}<span class="spacer"></span><code class="muted">${escapeHtml(model.id)}</code></div>`).join('')}</div>`;
@@ -1385,14 +1385,14 @@ function renderSettings(): void {
       body = `
         ${field('contextStrategy', 'Context strategy', 'Auto: resend the full task while it fits, then continue the Perplexity thread. Full: always resend. Thread: always use follow-ups.', select('contextStrategy', s.contextStrategy, [['auto', 'Auto'], ['full', 'Always full prompt'], ['thread', 'Perplexity thread follow-ups']]))}
         ${field('maxPromptChars', 'Max prompt size (chars)', 'Older messages are dropped from the middle when the prompt is larger', number('maxPromptChars', s.maxPromptChars, 8000, 400000))}
-        ${field('repoMapEnabled', 'Карта репозитория (@repo)', 'Символы, сигнатуры, импорты и связанные тесты с приоритетом активного файла и текущего diff', checkbox('repoMapEnabled', s.repoMapEnabled !== false))}
-        ${field('repoMapMaxChars', 'Бюджет карты репозитория (симв.)', 'Жёсткий потолок символов для блока @repo', number('repoMapMaxChars', s.repoMapMaxChars ?? 6000, 500, 60000))}
-        ${field('autoCompactThreshold', 'Порог авто-сжатия (0..0.98)', 'Доля от maxPromptChars для структурированного авто-сжатия (0 выключает)', number('autoCompactThreshold', s.autoCompactThreshold ?? 0.8, 0, 0.98))}
-        ${field('autoCompactKeepSteps', 'Нетронутых последних шагов при сжатии', 'Последние N шагов и системный промпт не затрагиваются', number('autoCompactKeepSteps', s.autoCompactKeepSteps ?? 4, 1, 20))}
-        ${field('worktreeEnabled', 'Изоляция задачи в git worktree', 'Создавать отдельный git worktree от HEAD с изоляцией путей, симлинков и git -C', checkbox('worktreeEnabled', Boolean(s.worktreeEnabled)))}
-        ${field('maxParallelSubtasks', 'Лимит параллельных субагентов Orchestrator', 'Читающие субагенты работают в основном дереве, пишущие — каждый в своём worktree', number('maxParallelSubtasks', s.maxParallelSubtasks ?? 3, 1, 16))}
-        ${field('crossModelReview', 'Кросс-модельное ревью перед завершением', 'Перед attempt_completion модель другого семейства проверяет git diff и результат verify (по умолчанию выключено)', checkbox('crossModelReview', Boolean(s.crossModelReview)))}
-        ${field('crossModelReviewModel', 'Модель кросс-ревью (необязательно)', 'Пусто = авто-выбор модели другого семейства (Claude ↔ GPT ↔ Gemini)', select('crossModelReviewModel', s.crossModelReviewModel || '', [['', 'Авто (другое семейство)'], ...state.models.filter((m) => m.selectable).map((m): [string, string] => [m.id, `${m.label} (${m.id})`])]))}
+        ${field('repoMapEnabled', 'Repository map (@repo)', 'Symbols, signatures, imports and related tests, active file and current diff first', checkbox('repoMapEnabled', s.repoMapEnabled !== false))}
+        ${field('repoMapMaxChars', 'Repository map budget (chars)', 'Hard character ceiling for the @repo block', number('repoMapMaxChars', s.repoMapMaxChars ?? 6000, 500, 60000))}
+        ${field('autoCompactThreshold', 'Auto-compact threshold (0..0.98)', 'Share of maxPromptChars that triggers structured auto-compaction (0 turns it off)', number('autoCompactThreshold', s.autoCompactThreshold ?? 0.8, 0, 0.98))}
+        ${field('autoCompactKeepSteps', 'Steps kept verbatim when compacting', 'The last N steps and the system prompt are never touched', number('autoCompactKeepSteps', s.autoCompactKeepSteps ?? 4, 1, 20))}
+        ${field('worktreeEnabled', 'Isolate tasks in a git worktree', 'Create a separate git worktree from HEAD with path, symlink and git -C isolation', checkbox('worktreeEnabled', Boolean(s.worktreeEnabled)))}
+        ${field('maxParallelSubtasks', 'Parallel Orchestrator subagents', 'Read-only subagents run in the main tree, writers each get their own worktree', number('maxParallelSubtasks', s.maxParallelSubtasks ?? 3, 1, 16))}
+        ${field('crossModelReview', 'Cross-model review before completion', 'Before attempt_completion a model from another family reviews the git diff and the verify result (off by default)', checkbox('crossModelReview', Boolean(s.crossModelReview)))}
+        ${field('crossModelReviewModel', 'Cross-review model (optional)', 'Empty = pick a model from another family automatically (Claude ↔ GPT ↔ Gemini)', select('crossModelReviewModel', s.crossModelReviewModel || '', [['', 'Auto (other family)'], ...state.models.filter((m) => m.selectable).map((m): [string, string] => [m.id, `${m.label} (${m.id})`])]))}
         ${field('maxReadFileLines', 'Max lines per file read', 'Larger files are truncated; the model can read ranges', number('maxReadFileLines', s.maxReadLines, 50, 20000))}
         ${field('includeFileListOnStart', 'Include file list', 'Send the workspace file list with the first message', checkbox('includeFileListOnStart', s.includeFileListOnStart))}
         ${field('diffEnabled', 'Diff edits', 'Let the model use apply_diff (targeted SEARCH/REPLACE edits)', checkbox('diffEnabled', s.diffEnabled))}
@@ -1412,7 +1412,7 @@ function renderSettings(): void {
         <p class="muted">Kilo Code-style agent for Perplexity. Fork of yuki-20/PerplexiCode.</p>
         <p class="muted small">Model snapshot: ${escapeHtml(state.general.modelsSnapshot)} · ${state.models.length} models</p>
         <div class="about-actions">
-          <button class="btn secondary small" data-action="copyDiagnostics">${icons.copy} Скопировать диагностику</button>
+          <button class="btn secondary small" data-action="copyDiagnostics">${icons.copy} Copy Diagnostics</button>
           <button class="btn ghost small" data-action="openSettingsJson">${icons.gear} Open all settings</button>
         </div></div>`;
   }
@@ -1699,8 +1699,8 @@ function mcpTabHtml(): string {
       <div class="lib-card mcp-card">
         <div class="lib-card-head">${icons.plug}<b>${escapeHtml(server.name)}</b>${statusBadge(server)}<span class="badge">${escapeHtml(server.type)}</span><span class="badge">${escapeHtml(server.scope)}</span>${server.type !== 'stdio' && server.oauthAuthenticated ? '<span class="badge new" data-testid="mcp-oauth-active">OAuth ✓</span>' : ''}<span class="spacer"></span>
           ${server.type !== 'stdio' ? (server.oauthAuthenticated
-            ? `<button class="btn ghost small" data-mcp-oauth-logout="${escapeHtml(server.name)}" data-testid="mcp-oauth-logout-${escapeHtml(server.name)}" title="Удалить OAuth токен из SecretStorage">OAuth Logout</button>`
-            : `<button class="btn secondary small" data-mcp-oauth-login="${escapeHtml(server.name)}" data-testid="mcp-oauth-login-${escapeHtml(server.name)}" title="Войти через OAuth 2.0 + PKCE (SecretStorage)">OAuth Login</button>`) : ''}
+            ? `<button class="btn ghost small" data-mcp-oauth-logout="${escapeHtml(server.name)}" data-testid="mcp-oauth-logout-${escapeHtml(server.name)}" title="Remove the OAuth token from SecretStorage">OAuth Logout</button>`
+            : `<button class="btn secondary small" data-mcp-oauth-login="${escapeHtml(server.name)}" data-testid="mcp-oauth-login-${escapeHtml(server.name)}" title="Sign in with OAuth 2.0 + PKCE (SecretStorage)">OAuth Login</button>`) : ''}
           <button class="icon-btn" data-mcp-connect="${escapeHtml(server.name)}" title="${server.status === 'connected' ? 'Reconnect' : 'Connect'}">${icons.refresh}</button>
           <button class="icon-btn" data-mcp-file="${escapeHtml(server.sourceFile)}" title="Open ${escapeHtml(server.sourceFile)}">${icons.file}</button>
           <button class="icon-btn" data-mcp-remove="${escapeHtml(server.name)}" data-scope="${escapeHtml(server.scope)}" title="Remove from config">${icons.trash}</button></div>
@@ -1709,7 +1709,7 @@ function mcpTabHtml(): string {
         ${server.serverInfo?.name ? `<div class="muted small">${escapeHtml(server.serverInfo.name)}${server.serverInfo.version ? ` ${escapeHtml(server.serverInfo.version)}` : ''}</div>` : ''}
         ${server.tools.length ? `<div class="mcp-tools">${server.tools.map((tool) => `<span class="chip" title="${escapeHtml(tool.description)}"><code>${escapeHtml(tool.name)}</code></span>`).join('')}</div>` : ''}
         ${server.resources.length ? `<div class="muted small">${server.resources.length} resource${server.resources.length === 1 ? '' : 's'}: ${server.resources.slice(0, 5).map((resource) => `<code>${escapeHtml(resource.uri)}</code>`).join(', ')}${server.resources.length > 5 ? ', …' : ''}</div>` : ''}
-        ${server.prompts.length ? `<div class="muted small">${server.prompts.length} prompt${server.prompts.length === 1 ? '' : 's'} (slash-меню): ${server.prompts.slice(0, 8).map((prompt) => `<button class="chip" data-slash="mcpPrompt:${encodeURIComponent(server.name)}:${encodeURIComponent(prompt.name)}" title="${escapeHtml(prompt.description || prompt.name)}"><code>/${escapeHtml(sanitizeMcpSlashSegment(server.name))}:${escapeHtml(sanitizeMcpSlashSegment(prompt.name))}</code></button>`).join(' ')}</div>` : ''}
+        ${server.prompts.length ? `<div class="muted small">${server.prompts.length} prompt${server.prompts.length === 1 ? '' : 's'} (slash menu): ${server.prompts.slice(0, 8).map((prompt) => `<button class="chip" data-slash="mcpPrompt:${encodeURIComponent(server.name)}:${encodeURIComponent(prompt.name)}" title="${escapeHtml(prompt.description || prompt.name)}"><code>/${escapeHtml(sanitizeMcpSlashSegment(server.name))}:${escapeHtml(sanitizeMcpSlashSegment(prompt.name))}</code></button>`).join(' ')}</div>` : ''}
       </div>`).join('')}
     ${mcpCatalogHtml(mcp)}`;
 }
@@ -1959,7 +1959,7 @@ document.addEventListener('click', (event) => {
     case 'toggle-worktree': {
       const next = !(state?.worktree?.enabled || state?.settings?.worktreeEnabled);
       post({ type: 'toggleWorktree', enabled: next });
-      showToast(`Git worktree: ${next ? 'включён' : 'выключен'}`);
+      showToast(`Git worktree: ${next ? 'on' : 'off'}`);
       break;
     }
     case 'toggle-worktree-diff':
@@ -1983,7 +1983,7 @@ document.addEventListener('click', (event) => {
     case 'diag-copy':
       if (diagnosticsPreviewJson) {
         post({ type: 'copy', text: diagnosticsPreviewJson });
-        showToast('Диагностика скопирована');
+        showToast('Diagnostics copied');
       }
       diagnosticsPreviewJson = undefined;
       renderDiagnosticsModal();
@@ -2190,17 +2190,17 @@ function renderDiagnosticsModal(): void {
   }
   modal.classList.remove('hidden');
   modal.innerHTML = `
-    <div class="diag-dialog" role="dialog" aria-modal="true" aria-label="Предпросмотр диагностики">
+    <div class="diag-dialog" role="dialog" aria-modal="true" aria-label="Diagnostics preview">
       <div class="diag-head">
-        <b>Предпросмотр диагностики</b>
+        <b>Diagnostics preview</b>
         <span class="spacer"></span>
-        <button class="icon-btn" data-action="diag-close" title="Закрыть">${icons.x}</button>
+        <button class="icon-btn" data-action="diag-close" title="Close">${icons.x}</button>
       </div>
-      <div class="muted small">Без cookie, заголовков, промптов, кода и вывода терминала. Проверьте пакет перед копированием.</div>
+      <div class="muted small">No cookies, headers, prompts, code or terminal output. Review the bundle before copying.</div>
       <pre class="diag-preview"><code>${escapeHtml(diagnosticsPreviewJson)}</code></pre>
       <div class="diag-actions">
-        <button class="btn ghost small" data-action="diag-close">Отмена</button>
-        <button class="btn primary small" data-action="diag-copy">${icons.copy} Скопировать диагностику</button>
+        <button class="btn ghost small" data-action="diag-close">Cancel</button>
+        <button class="btn primary small" data-action="diag-copy">${icons.copy} Copy Diagnostics</button>
       </div>
     </div>`;
 }
@@ -2215,15 +2215,15 @@ function renderContextModal(): void {
   modal.classList.remove('hidden');
   if (contextInspectionReport === null) {
     modal.innerHTML = `
-      <div class="diag-dialog ctx-dialog" role="dialog" aria-modal="true" aria-label="Инспектор контекста">
+      <div class="diag-dialog ctx-dialog" role="dialog" aria-modal="true" aria-label="Context Inspector">
         <div class="diag-head">
-          <b>Инспектор контекста</b>
+          <b>Context Inspector</b>
           <span class="spacer"></span>
-          <button class="icon-btn" data-action="ctx-close" title="Закрыть">${icons.x}</button>
+          <button class="icon-btn" data-action="ctx-close" title="Close">${icons.x}</button>
         </div>
-        <div class="muted small">Нет активной задачи для инспекции контекста. Запустите задачу или откройте её из истории.</div>
+        <div class="muted small">No active task to inspect. Start a task or open one from history.</div>
         <div class="diag-actions">
-          <button class="btn primary small" data-action="ctx-close">Закрыть</button>
+          <button class="btn primary small" data-action="ctx-close">Close</button>
         </div>
       </div>`;
     return;
@@ -2237,21 +2237,21 @@ function renderContextModal(): void {
     .map((item) => {
       const included = item.status === 'included' || item.status === 'compacted';
       const stateBadge = item.status === 'excluded' || item.excluded
-        ? '<span class="badge warn">исключено</span>'
+        ? '<span class="badge warn">excluded</span>'
         : item.status === 'compacted'
-          ? '<span class="badge">сжато</span>'
+          ? '<span class="badge">compacted</span>'
           : item.status === 'included'
-            ? '<span class="badge ok-badge">в запросе</span>'
-            : '<span class="badge warn">вне бюджета</span>';
+            ? '<span class="badge ok-badge">in request</span>'
+            : '<span class="badge warn">over budget</span>';
       const actionBtn = item.canExclude
-        ? `<button class="btn ${item.excluded ? 'secondary' : 'ghost'} small" data-ctx-toggle="${escapeHtml(item.id)}" data-ctx-excluded="${item.excluded ? '1' : '0'}">${item.excluded ? 'Вернуть' : 'Исключить'}</button>`
-        : '<span class="muted small">обязательный</span>';
+        ? `<button class="btn ${item.excluded ? 'secondary' : 'ghost'} small" data-ctx-toggle="${escapeHtml(item.id)}" data-ctx-excluded="${item.excluded ? '1' : '0'}">${item.excluded ? 'Include' : 'Exclude'}</button>`
+        : '<span class="muted small">required</span>';
       const reasonLine = item.compactionDetail ? `${item.reason} · ${item.compactionDetail}` : item.reason;
       return `<div class="ctx-item ${included ? '' : 'ctx-excluded'}">
         <div class="ctx-item-head">
           <b class="ctx-item-title">${escapeHtml(item.label)}</b>
           ${stateBadge}
-          <span class="muted small">${item.chars.toLocaleString('en-US')} симв.</span>
+          <span class="muted small">${item.chars.toLocaleString('en-US')} chars</span>
           <span class="spacer"></span>
           ${actionBtn}
         </div>
@@ -2261,25 +2261,25 @@ function renderContextModal(): void {
     })
     .join('');
   modal.innerHTML = `
-    <div class="diag-dialog ctx-dialog" role="dialog" aria-modal="true" aria-label="Инспектор контекста">
+    <div class="diag-dialog ctx-dialog" role="dialog" aria-modal="true" aria-label="Context Inspector">
       <div class="diag-head">
-        <b>Инспектор контекста</b>
-        <span class="badge">${r.items.length} блоков</span>
-        ${hasCompacted ? '<span class="badge">авто-сжатие активно</span>' : ''}
-        ${r.excludedCount > 0 ? `<span class="badge warn">исключено: ${r.excludedCount}</span>` : ''}
+        <b>Context Inspector</b>
+        <span class="badge">${r.items.length} blocks</span>
+        ${hasCompacted ? '<span class="badge">auto-compact active</span>' : ''}
+        ${r.excludedCount > 0 ? `<span class="badge warn">excluded: ${r.excludedCount}</span>` : ''}
         <span class="spacer"></span>
-        <button class="icon-btn" data-action="ctx-close" title="Закрыть">${icons.x}</button>
+        <button class="icon-btn" data-action="ctx-close" title="Close">${icons.x}</button>
       </div>
       <div class="ctx-meter-wrap">
         <div class="ctx-meter-labels">
-          <span>Отправляется: <b>${r.totalChars.toLocaleString('en-US')}</b> / ${r.maxPromptChars.toLocaleString('en-US')} симв. (${pct}%)</span>
-          <span class="muted small">Порог авто-сжатия: ${r.autoCompactThresholdChars.toLocaleString('en-US')} симв. (${thresholdPct}%)${wouldTrigger ? ' · сработает на следующем шаге' : ''}</span>
+          <span>Sending: <b>${r.totalChars.toLocaleString('en-US')}</b> / ${r.maxPromptChars.toLocaleString('en-US')} chars (${pct}%)</span>
+          <span class="muted small">Auto-compact threshold: ${r.autoCompactThresholdChars.toLocaleString('en-US')} chars (${thresholdPct}%)${wouldTrigger ? ' · triggers on the next step' : ''}</span>
         </div>
         <div class="ctx-meter"><div class="ctx-meter-fill ${wouldTrigger ? 'warn' : ''}" style="width:${pct}%"></div></div>
       </div>
       <div class="ctx-list">${itemsHtml}</div>
       <div class="diag-actions">
-        <button class="btn primary small" data-action="ctx-close">Готово</button>
+        <button class="btn primary small" data-action="ctx-close">Done</button>
       </div>
     </div>`;
 }

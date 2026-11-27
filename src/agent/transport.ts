@@ -38,7 +38,7 @@ export interface RouteSummary {
   actualModelReported: boolean;
   fallbackUsed: boolean;
   reason: string;
-  /** Formatted string: "<запрошенный режим> → <фактический>, <причина>" */
+  /** Formatted string: "<requested mode> → <actual>, <reason>" */
   line: string;
 }
 
@@ -116,12 +116,12 @@ export function buildRouteSummary(params: {
 }): RouteSummary {
   const requested = `${params.requestedModeLabel} (${params.requestedModelLabel})`;
   const actualModelReported = Boolean(params.reportedModel && params.reportedModel.trim());
-  const actualModelText = actualModelReported ? params.reportedModel!.trim() : 'не сообщена';
+  const actualModelText = actualModelReported ? params.reportedModel!.trim() : 'not reported';
   const actual = `${params.actualModeLabel} (${actualModelText})`;
   const fallbackUsed = Boolean(params.fallbackReason);
-  let reason = params.fallbackReason || 'по запросу';
+  let reason = params.fallbackReason || 'as requested';
   if (!params.fallbackReason && actualModelReported && params.reportedModel!.trim() !== params.requestedModelLabel) {
-    reason = 'модель выбрана сервером';
+    reason = 'model chosen by server';
   }
   return {
     requested,
@@ -242,7 +242,7 @@ export class PerplexityTransport {
       if (rpmWaitMs > 0) {
         const rpmCap = this.rotationEngine.getMaxRequestsPerMinute();
         request.onRetry?.({
-          reason: `Лимит ${rpmCap} запр./мин на аккаунт достигнут, ожидание ${Math.ceil(rpmWaitMs / 1000)} с`,
+          reason: `Per-account limit of ${rpmCap} req/min reached, waiting ${Math.ceil(rpmWaitMs / 1000)} s`,
           rule: 'rateLimit.rpm',
         });
         await this.sleepFn(rpmWaitMs, request.signal);
@@ -256,7 +256,7 @@ export class PerplexityTransport {
     if (!account && route.searchMode !== 'search') {
       if (request.stopOnFallback) {
         throw new TransportError(
-          `Остановка вместо fallback: режим ${requestedComputeLabel} (${requestedModelLabel}) недоступен на подключённых аккаунтах.`,
+          `Stopped instead of falling back: mode ${requestedComputeLabel} (${requestedModelLabel}) is not available on connected accounts.`,
           'fallback_blocked',
           'stopOnFallback'
         );
@@ -274,7 +274,7 @@ export class PerplexityTransport {
           quotaBucket: searchReq.quotaBucket,
           sources: this._sources(request.webSearch),
           useFollowUp: false,
-          fallbackReason: `нет аккаунта для ${requestedComputeLabel}, fallback на Search`,
+          fallbackReason: `no account for ${requestedComputeLabel}, falling back to Search`,
         }, new Set(), requestedComputeLabel, requestedModelLabel);
       }
     }
@@ -282,7 +282,7 @@ export class PerplexityTransport {
     if (!account) {
       if (request.stopOnFallback && route.modelId !== 'turbo') {
         throw new TransportError(
-          `Остановка вместо fallback: модель ${requestedModelLabel} недоступна на подключённых аккаунтах.`,
+          `Stopped instead of falling back: model ${requestedModelLabel} is not available on connected accounts.`,
           'fallback_blocked',
           'stopOnFallback'
         );
@@ -299,7 +299,7 @@ export class PerplexityTransport {
           quotaBucket: 'free_queries',
           sources: this._sources(request.webSearch),
           useFollowUp: false,
-          fallbackReason: `модель ${requestedModelLabel} недоступна на аккаунтах, fallback на Best`,
+          fallbackReason: `model ${requestedModelLabel} is not available on accounts, falling back to Best`,
         }, new Set(), requestedComputeLabel, requestedModelLabel);
       }
       throw new TransportError(
@@ -370,7 +370,7 @@ export class PerplexityTransport {
     if (slotWaitMs > 0) {
       const rpmCap = this.rotationEngine.getMaxRequestsPerMinute();
       request.onRetry?.({
-        reason: `Лимит ${rpmCap} запр./мин для ${attempt.account.alias}, пауза ${Math.ceil(slotWaitMs / 1000)} с`,
+        reason: `Limit of ${rpmCap} req/min for ${attempt.account.alias}, pausing ${Math.ceil(slotWaitMs / 1000)} s`,
         rule: 'rateLimit.rpm',
       });
       await this.sleepFn(slotWaitMs, request.signal);
@@ -515,7 +515,7 @@ export class PerplexityTransport {
 
     // 1. A broken follow-up thread: resend the self-contained prompt as a new thread.
     if (attempt.useFollowUp) {
-      const reason = 'Цепочка follow-up оборвалась, переотправка полного контекста';
+      const reason = 'Follow-up thread broke, resending the full context';
       request.onInfo?.('Perplexity thread could not be continued. Resending the full task context.');
       request.onRetry?.({ reason, rule: 'transport.thread_reset' });
       return { ...attempt, useFollowUp: false };
@@ -531,8 +531,8 @@ export class PerplexityTransport {
       const delayMs = computeBackoffWithJitterMs(nextRetry - 1, { rng: this.rng });
       request.onRetry?.({
         reason: isTruncated
-          ? `Поток оборвался внутри вызова инструмента (попытка ${nextRetry}/2, пауза ${delayMs} мс)`
-          : `Пустой ответ от сервера (попытка ${nextRetry}/2, пауза ${delayMs} мс)`,
+          ? `Stream cut off inside a tool call (attempt ${nextRetry}/2, pausing ${delayMs} ms)`
+          : `Empty response from server (attempt ${nextRetry}/2, pausing ${delayMs} ms)`,
         rule: isTruncated ? 'transport.truncated_tool_call' : 'transport.empty_answer',
       });
       await this.sleepFn(delayMs, request.signal);
@@ -547,7 +547,7 @@ export class PerplexityTransport {
     if (attempt.sources.length === 0 && isAccessDenied) {
       this.emptySourcesRejected = true;
       request.onRetry?.({
-        reason: 'Повтор с включённым источником web после отказа без источников',
+        reason: 'Retrying with the web source enabled after a refusal without sources',
         rule: 'transport.sources_web',
       });
       return { ...attempt, sources: ['web'] };
@@ -558,7 +558,7 @@ export class PerplexityTransport {
       if (await this._tryAutoRefresh(attempt.account)) {
         request.onInfo?.(`Session refreshed for ${attempt.account.alias}. Retrying.`);
         request.onRetry?.({
-          reason: `Сессия аккаунта ${attempt.account.alias} обновлена, повтор запроса`,
+          reason: `Session for ${attempt.account.alias} refreshed, retrying request`,
           rule: 'transport.session_refresh',
         });
         return attempt;
@@ -584,13 +584,13 @@ export class PerplexityTransport {
       if (failover) {
         request.onInfo?.(`${attempt.account.alias} could not serve the request. Switching to ${failover.alias}.`);
         request.onRetry?.({
-          reason: `Переключение с ${attempt.account.alias} на резервный аккаунт ${failover.alias}`,
+          reason: `Switching from ${attempt.account.alias} to backup account ${failover.alias}`,
           rule: 'transport.account_failover',
         });
         return {
           ...attempt,
           account: failover,
-          fallbackReason: attempt.fallbackReason || `переключение на аккаунт ${failover.alias}`,
+          fallbackReason: attempt.fallbackReason || `switched to account ${failover.alias}`,
         };
       }
     }
@@ -598,7 +598,7 @@ export class PerplexityTransport {
     const blockIfStopOnFallback = (reason: string) => {
       if (request.stopOnFallback) {
         throw new TransportError(
-          `Остановка вместо fallback (${requestedComputeLabel} / ${requestedModelLabel}): ${reason} (${error.message})`,
+          `Stopped instead of falling back (${requestedComputeLabel} / ${requestedModelLabel}): ${reason} (${error.message})`,
           'fallback_blocked',
           'stopOnFallback'
         );
@@ -607,7 +607,7 @@ export class PerplexityTransport {
 
     // Compute mode fallback chain: asi -> browser_agent -> search
     if ((isAccessDenied || isQuota) && attempt.searchMode === 'asi') {
-      const reason = 'маршрут ASI отклонён, fallback на browser_agent';
+      const reason = 'ASI route rejected, falling back to browser_agent';
       blockIfStopOnFallback(reason);
       request.onInfo?.('Computer (ASI) route was rejected. Trying alternate Computer route.');
       request.onRetry?.({ reason, rule: 'transport.fallback_compute' });
@@ -622,7 +622,7 @@ export class PerplexityTransport {
 
     if ((isAccessDenied || isQuota) && attempt.searchMode !== 'search') {
       const fallbackModel = attempt.fallbackSearchModelId || 'turbo';
-      const reason = `режим ${attempt.searchMode} недоступен (${isQuota ? 'квота' : 'доступ'}), fallback на Search`;
+      const reason = `mode ${attempt.searchMode} is not available (${isQuota ? 'quota' : 'access'}), falling back to Search`;
       blockIfStopOnFallback(reason);
       const fallbackReq = this._requirementFor(fallbackModel, 'search');
       const fallbackAccount = this.rotationEngine.selectAccount(this.accountManager.getAccounts(), fallbackReq) || attempt.account;
@@ -642,7 +642,7 @@ export class PerplexityTransport {
     if (isAccessDenied && isThinkingModelId(attempt.modelId)) {
       const baseId = getBaseModelId(attempt.modelId);
       if (baseId !== attempt.modelId && getModelById(baseId)) {
-        const reason = `thinking-вариант отклонён, fallback на ${getModelLabel(baseId)}`;
+        const reason = `thinking variant rejected, falling back to ${getModelLabel(baseId)}`;
         blockIfStopOnFallback(reason);
         request.onInfo?.(`Thinking variant was rejected. Retrying ${getModelLabel(baseId)} without thinking.`);
         request.onRetry?.({ reason, rule: 'transport.fallback_non_thinking' });
@@ -651,14 +651,14 @@ export class PerplexityTransport {
     }
 
     if (isAccessDenied && attempt.requestMode === 'COPILOT') {
-      const reason = 'режим COPILOT отклонён, fallback на CONCISE';
+      const reason = 'COPILOT mode rejected, falling back to CONCISE';
       blockIfStopOnFallback(reason);
       request.onRetry?.({ reason, rule: 'transport.fallback_concise' });
       return { ...attempt, requestMode: 'CONCISE', fallbackReason: reason };
     }
 
     if ((isAccessDenied || isRateLimit || isQuota || isEmpty) && attempt.modelId !== 'turbo') {
-      const reason = `модель ${getModelLabel(attempt.modelId)} недоступна (${isRateLimit ? 'rate limit' : isQuota ? 'квота' : 'отказ'}), fallback на Best`;
+      const reason = `model ${getModelLabel(attempt.modelId)} is not available (${isRateLimit ? 'rate limit' : isQuota ? 'quota' : 'refused'}), falling back to Best`;
       blockIfStopOnFallback(reason);
       const turboAccount = this.rotationEngine.selectAccount(this.accountManager.getAccounts(), this._requirementFor('turbo'));
       if (turboAccount) {

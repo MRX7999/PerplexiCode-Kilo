@@ -97,7 +97,7 @@ export function sanitizeWorktreeName(raw?: string): string {
     .replace(/^-+|-+$/g, '')
     .slice(0, 48);
   if (!cleaned || cleaned === '.' || cleaned === '..') {
-    throw new Error(`Недопустимое имя worktree: '${raw}'.`);
+    throw new Error(`Invalid worktree name: '${raw}'.`);
   }
   return cleaned;
 }
@@ -143,9 +143,9 @@ export function inspectMainCheckoutDirty(cwd: string): DirtyCheckoutInspection {
   const dirty = dirtyFiles.length > 0;
   let warningMessage: string | undefined;
   if (dirty) {
-    const sample = dirtyFiles.slice(0, 5).join(', ') + (dirtyFiles.length > 5 ? ` и ещё ${dirtyFiles.length - 5}` : '');
+    const sample = dirtyFiles.slice(0, 5).join(', ') + (dirtyFiles.length > 5 ? ` and ${dirtyFiles.length - 5} more` : '');
     const shortSha = headCommit ? headCommit.slice(0, 7) : 'HEAD';
-    warningMessage = `Предупреждение: в основном рабочем дереве есть незакоммиченные изменения (${dirtyFiles.length}: ${sample}). Изолированный git worktree создаётся от коммита HEAD (${shortSha}) и не включает незакоммиченные правки основного checkout.`;
+    warningMessage = `Warning: the main working tree has uncommitted changes (${dirtyFiles.length}: ${sample}). The isolated git worktree is created from HEAD (${shortSha}) and does not include uncommitted edits from the main checkout.`;
   }
 
   return {
@@ -175,7 +175,7 @@ export interface CreateWorktreeOptions {
 export async function createIsolatedWorktree(options: CreateWorktreeOptions): Promise<IsolatedWorktreeHandle> {
   const inspection = inspectMainCheckoutDirty(options.cwd);
   if (!inspection.isGitRepo || !inspection.headCommit) {
-    throw new Error('Для запуска в режиме --worktree требуется git-репозиторий с хотя бы одним коммитом (HEAD).');
+    throw new Error('--worktree needs a git repository with at least one commit (HEAD).');
   }
 
   const name = sanitizeWorktreeName(options.name);
@@ -194,7 +194,7 @@ export async function createIsolatedWorktree(options: CreateWorktreeOptions): Pr
 
   const addRes = runGit(inspection.repoRoot, ['worktree', 'add', '--detach', worktreePath, inspection.headCommit]);
   if (addRes.status !== 0) {
-    throw new Error(`Не удалось создать git worktree '${name}': ${addRes.stderr.trim() || addRes.stdout.trim()}`);
+    throw new Error(`Could not create git worktree '${name}': ${addRes.stderr.trim() || addRes.stdout.trim()}`);
   }
   worktreePath = safeRealpath(worktreePath);
   let createdByHook = false;
@@ -214,7 +214,7 @@ export async function createIsolatedWorktree(options: CreateWorktreeOptions): Pr
       runGit(inspection.repoRoot, ['worktree', 'remove', '--force', worktreePath]);
       fs.rmSync(worktreePath, { recursive: true, force: true });
       throw new WorktreeHookBlockedError(
-        decision.reason || decision.stopReason || 'Создание worktree заблокировано хуком WorktreeCreate.'
+        decision.reason || decision.stopReason || 'Worktree creation was blocked by the WorktreeCreate hook.'
       );
     }
     if (decision.worktreePath) {
@@ -363,7 +363,7 @@ export function enforceWorktreePathIsolation(
     return {
       ok: false,
       resolvedPath: lexResolved,
-      reason: `Путь '${candidatePath}' выходит за пределы изолированного worktree (${wtReal}).`,
+      reason: `Path '${candidatePath}' is outside the isolated worktree (${wtReal}).`,
     };
   }
 
@@ -393,7 +393,7 @@ export function enforceWorktreePathIsolation(
         return {
           ok: false,
           resolvedPath: linkTargetAbs,
-          reason: `Симлинк '${candidatePath}' указывает за пределы изолированного worktree (${linkTargetAbs}).`,
+          reason: `Symlink '${candidatePath}' points outside the isolated worktree (${linkTargetAbs}).`,
         };
       }
       cursor = linkTargetAbs;
@@ -409,7 +409,7 @@ export function enforceWorktreePathIsolation(
         return {
           ok: false,
           resolvedPath: realProbe,
-          reason: `Реальный путь '${realProbe}' выходит за пределы изолированного worktree (${wtReal}).`,
+          reason: `Real path '${realProbe}' is outside the isolated worktree (${wtReal}).`,
         };
       }
       break;
@@ -488,7 +488,7 @@ export function enforceWorktreeCommandIsolation(params: {
   if (!analysis.valid) {
     return {
       ok: false,
-      reason: `Команда отклонена в режиме изоляции worktree (неразборчивый или динамический синтаксис): ${analysis.reason || 'unparseable shell'}`,
+      reason: `Command rejected in worktree isolation (unparseable or dynamic syntax): ${analysis.reason || 'unparseable shell'}`,
     };
   }
 
@@ -506,7 +506,7 @@ export function enforceWorktreeCommandIsolation(params: {
       if (!envPathCheck.ok) {
         return {
           ok: false,
-          reason: `Переменная ${envKey} указывает за пределы изолированного worktree: ${envVal}`,
+          reason: `Variable ${envKey} points outside the isolated worktree: ${envVal}`,
         };
       }
     }
@@ -527,7 +527,7 @@ export function enforceWorktreeCommandIsolation(params: {
         if (!envPathCheck.ok) {
           return {
             ok: false,
-            reason: `Переменная ${envKey} указывает за пределы изолированного worktree: ${envVal}`,
+            reason: `Variable ${envKey} points outside the isolated worktree: ${envVal}`,
           };
         }
       }
@@ -550,7 +550,7 @@ export function enforceWorktreeCommandIsolation(params: {
       if (target === '~' || target.startsWith('~/') || target === '-') {
         return {
           ok: false,
-          reason: `Переход '${bin} ${target}' за пределы изолированного worktree запрещён.`,
+          reason: `'${bin} ${target}' leaves the isolated worktree and is not allowed.`,
         };
       }
       const nextAbs = path.resolve(effectiveCwd, target);
@@ -573,7 +573,7 @@ export function enforceWorktreeCommandIsolation(params: {
           if (!check.ok) {
             return {
               ok: false,
-              reason: `Команда 'git -C ${dirArg}' обращается за пределы изолированного worktree.`,
+              reason: `'git -C ${dirArg}' reaches outside the isolated worktree.`,
             };
           }
           i += 1;
@@ -585,7 +585,7 @@ export function enforceWorktreeCommandIsolation(params: {
           if (!check.ok) {
             return {
               ok: false,
-              reason: `Команда 'git ${arg}' обращается за пределы изолированного worktree.`,
+              reason: `'git ${arg}' reaches outside the isolated worktree.`,
             };
           }
           continue;
@@ -596,7 +596,7 @@ export function enforceWorktreeCommandIsolation(params: {
           if (!check.ok) {
             return {
               ok: false,
-              reason: `Команда 'git ${arg} ${dirArg}' обращается за пределы изолированного worktree.`,
+              reason: `'git ${arg} ${dirArg}' reaches outside the isolated worktree.`,
             };
           }
           i += 1;
@@ -608,7 +608,7 @@ export function enforceWorktreeCommandIsolation(params: {
           if (!check.ok) {
             return {
               ok: false,
-              reason: `Команда 'git ${arg}' обращается за пределы изолированного worktree.`,
+              reason: `'git ${arg}' reaches outside the isolated worktree.`,
             };
           }
           continue;
@@ -620,13 +620,13 @@ export function enforceWorktreeCommandIsolation(params: {
       if (gitSubcmd === 'push') {
         return {
           ok: false,
-          reason: 'Автоматический git push из изолированного worktree запрещён (используйте карточку результата).',
+          reason: 'git push from an isolated worktree is not allowed (use the result card).',
         };
       }
       if (gitSubcmd === 'worktree') {
         return {
           ok: false,
-          reason: 'Управление git worktree изнутри изолированной задачи запрещено.',
+          reason: 'Managing git worktrees from inside an isolated task is not allowed.',
         };
       }
     }
@@ -646,7 +646,7 @@ export function enforceWorktreeCommandIsolation(params: {
         if (!check.ok) {
           return {
             ok: false,
-            reason: `Создание симлинка на внешний путь '${rawTarget}' в изолированном worktree запрещено.`,
+            reason: `Creating a symlink to the outside path '${rawTarget}' in an isolated worktree is not allowed.`,
           };
         }
       }
@@ -664,7 +664,7 @@ export function enforceWorktreeCommandIsolation(params: {
       if (cleanedArg === '~' || cleanedArg.startsWith('~/')) {
         return {
           ok: false,
-          reason: `Обращение к домашнему каталогу '${cleanedArg}' из изолированного worktree запрещено.`,
+          reason: `Accessing the home directory '${cleanedArg}' from an isolated worktree is not allowed.`,
         };
       }
 
@@ -924,7 +924,7 @@ export async function applyWorktreeChanges(
       state: 'applied',
       appliedFiles: [],
       conflictFiles: [],
-      message: 'В worktree нет изменений для применения.',
+      message: 'The worktree has no changes to apply.',
     };
   }
 
@@ -973,7 +973,7 @@ export async function applyWorktreeChanges(
         state: 'conflict',
         appliedFiles: [],
         conflictFiles,
-        message: `Конфликт при применении worktree '${handle.name}'. Основное дерево не изменено. Конфликтующие файлы: ${conflictFiles.join(', ')}`,
+        message: `Conflict while applying worktree '${handle.name}'. The main tree was not changed. Conflicting files: ${conflictFiles.join(', ')}`,
       };
     }
 
@@ -988,7 +988,7 @@ export async function applyWorktreeChanges(
         state: 'conflict',
         appliedFiles: [],
         conflictFiles,
-        message: `Ошибка применения патча worktree '${handle.name}': ${applyRes.stderr.trim()}`,
+        message: `Failed to apply the patch from worktree '${handle.name}': ${applyRes.stderr.trim()}`,
       };
     }
 
@@ -1007,7 +1007,7 @@ export async function applyWorktreeChanges(
       state: 'applied',
       appliedFiles,
       conflictFiles: [],
-      message: `Изменения из worktree '${handle.name}' применены к рабочей копии (${appliedFiles.length} файл(ов), без авто-merge и push).`,
+      message: `Changes from worktree '${handle.name}' applied to the working copy (${appliedFiles.length} file(s), no auto merge or push).`,
     };
   } finally {
     try {
@@ -1040,7 +1040,7 @@ export async function discardWorktreeChanges(
     ok: true,
     worktreeName: handle.name,
     state: 'discarded',
-    message: `Изменения worktree '${handle.name}' отброшены, изолированное дерево удалено.`,
+    message: `Changes in worktree '${handle.name}' discarded, isolated tree removed.`,
   };
 }
 

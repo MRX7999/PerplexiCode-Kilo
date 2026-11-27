@@ -798,7 +798,7 @@ class Printer {
         break;
       case 'command':
         if (message.command && message.command.unconfirmed && !message.command.running) {
-          line(`${yellow('!')} ${bold('$')} ${message.command.command} ${yellow('(результат не подтверждён)')}`);
+          line(`${yellow('!')} ${bold('$')} ${message.command.command} ${yellow('(outcome not confirmed)')}`);
         } else if (message.command && message.command.exitCode !== undefined && !message.command.running) {
           const code = message.command.exitCode;
           line(`${code === 0 ? green('●') : red('●')} ${bold('$')} ${message.command.command} ${dim(`(exit ${code ?? '?'})`)}`);
@@ -823,7 +823,7 @@ class Printer {
         break;
       case 'api_req':
         if (message.meta?.routeLine && first === false && message.meta?.durationMs) {
-          line(dim(`[маршрут] ${message.meta.routeLine}`));
+          line(dim(`[route] ${message.meta.routeLine}`));
         }
         if (this.verbose && message.meta?.durationMs) {
           line(dim(`↳ ${message.meta.model || ''}${message.meta.account ? ` · ${message.meta.account}` : ''} · ${(message.meta.durationMs / 1000).toFixed(1)}s`));
@@ -861,7 +861,7 @@ export function headlessAnswer(message: UiMessage, maxTurns?: number): AskRespon
 }
 
 export function formatCliStatusLine(event: Extract<CoreEvent, { type: 'banner' }>): string {
-  return `[статус] ${event.label}: ${event.reason} (правило: ${event.rule})`;
+  return `[status] ${event.label}: ${event.reason} (rule: ${event.rule})`;
 }
 
 function headlessUi(options: CliOptions): SessionUi {
@@ -937,7 +937,7 @@ export class LongCommandTimer {
       this.showed = true;
       this.ticks += 1;
       const elapsed = Date.now() - this.startedAt;
-      this.onTick(`⏱ выполняю \`${shortCmd}\` … ${(elapsed / 1000).toFixed(1)}s`, elapsed);
+      this.onTick(`⏱ running \`${shortCmd}\` … ${(elapsed / 1000).toFixed(1)}s`, elapsed);
     };
     this.delayTimer = setTimeout(() => {
       emit();
@@ -1059,12 +1059,12 @@ class InteractiveUi implements SessionUi {
     } else if (event.type === 'command_end') {
       const { durationMs, showedTimer } = this.cmdTimer.stop();
       if (showedTimer) {
-        out(dim(`⏱ команда завершилась за ${(durationMs / 1000).toFixed(1)}s`));
+        out(dim(`⏱ command finished in ${(durationMs / 1000).toFixed(1)}s`));
       }
     } else if (event.type === 'banner') {
       out(cyan(formatCliStatusLine(event)));
     } else if (event.type === 'request_end' && event.routeLine) {
-      out(dim(`[маршрут] ${event.routeLine}`));
+      out(dim(`[route] ${event.routeLine}`));
     }
   }
 
@@ -1260,7 +1260,7 @@ async function runHeadless(options: CliOptions): Promise<number> {
   if (options.outputFormat === 'text') {
     process.stdout.write(`${payload.result}\n`);
     if (result.worktreeCard) {
-      out(cyan(`[worktree ${result.worktreeCard.worktreeName}] файлов: ${result.worktreeCard.changedFiles.length} (+${result.worktreeCard.totalAdditions}/-${result.worktreeCard.totalDeletions}) · Применить: pcode worktree apply ${result.worktreeCard.worktreeName} · Отбросить: pcode worktree discard ${result.worktreeCard.worktreeName}`));
+      out(cyan(`[worktree ${result.worktreeCard.worktreeName}] files: ${result.worktreeCard.changedFiles.length} (+${result.worktreeCard.totalAdditions}/-${result.worktreeCard.totalDeletions}) · Apply: pcode worktree apply ${result.worktreeCard.worktreeName} · Discard: pcode worktree discard ${result.worktreeCard.worktreeName}`));
     }
     if (options.verbose) out(dim(`[${VERIFICATION_LABELS[result.verification.status]}] ${result.verification.detail} · session ${result.taskId}`));
   } else {
@@ -1347,7 +1347,7 @@ async function runInteractive(options: CliOptions): Promise<number> {
     if (line.startsWith('!')) {
       const bangCmd = line.slice(1).trim();
       if (!bangCmd) {
-        out(dim('usage: !<command> — выполнить локальную команду и добавить вывод в контекст сессии'));
+        out(dim('usage: !<command> — run a local command and add its output to the session context'));
         continue;
       }
       const bangTimer = new LongCommandTimer();
@@ -1359,7 +1359,7 @@ async function runInteractive(options: CliOptions): Promise<number> {
         const res = await bundle.session.runLocalBangCommand(bangCmd, { signal: bangAbort.signal });
         const { durationMs } = bangTimer.stop();
         const durTag = durationMs >= 1000 ? ` · ${(durationMs / 1000).toFixed(1)}s` : '';
-        out(`${res.exitCode === 0 ? green('●') : red('●')} ${bold('!')} ${bangCmd} ${dim(`(exit ${res.exitCode ?? '?'}${durTag} · добавлено в контекст)`)}`);
+        out(`${res.exitCode === 0 ? green('●') : red('●')} ${bold('!')} ${bangCmd} ${dim(`(exit ${res.exitCode ?? '?'}${durTag} · added to context)`)}`);
         if (res.output.trim()) {
           out(dim(res.output.trimEnd().split('\n').slice(-25).map((l) => `  ${l}`).join('\n')));
         }
@@ -1444,13 +1444,13 @@ async function runInteractive(options: CliOptions): Promise<number> {
           const [sub, itemId] = (arg || '').trim().split(/\s+/);
           if ((sub === 'exclude' || sub === 'include') && itemId) {
             if (!s.setContextItemExcluded(itemId, sub === 'exclude')) {
-              out(dim('нет активной сессии для инспекции контекста'));
+              out(dim('no active session to inspect'));
               break;
             }
           }
           const report = await s.inspectContext();
           if (!report) {
-            out(dim('нет активной сессии для инспекции контекста'));
+            out(dim('no active session to inspect'));
           } else {
             out(formatContextReportForCli(report));
           }
@@ -1460,7 +1460,7 @@ async function runInteractive(options: CliOptions): Promise<number> {
           const sub = (arg || 'status').trim().split(/\s+/)[0];
           const wt = s.worktreeHandle;
           if (!wt) {
-            out(dim('нет активного git worktree в этой сессии (запустите с --worktree)'));
+            out(dim('no active git worktree in this session (start with --worktree)'));
             break;
           }
           if (sub === 'apply') {
@@ -1472,7 +1472,7 @@ async function runInteractive(options: CliOptions): Promise<number> {
             out(yellow(`○ ${res.message}`));
           } else {
             const card = buildWorktreeResultCard(wt, s.verification());
-            out(`worktree ${bold(card.worktreeName)} (${card.worktreePath}) · база ${card.baseCommit.slice(0, 8)} · файлов ${card.changedFiles.length} (+${card.totalAdditions}/-${card.totalDeletions})`);
+            out(`worktree ${bold(card.worktreeName)} (${card.worktreePath}) · base ${card.baseCommit.slice(0, 8)} · files ${card.changedFiles.length} (+${card.totalAdditions}/-${card.totalDeletions})`);
             for (const f of card.changedFiles) out(dim(`  ${f.status.padEnd(8)} ${f.path} (+${f.additions}/-${f.deletions})`));
           }
           break;
@@ -1486,7 +1486,7 @@ async function runInteractive(options: CliOptions): Promise<number> {
           if (arg === 'list' || arg === 'ls') {
             const cps = s.listCheckpoints();
             if (cps.length === 0) {
-              out(dim('нет чекпоинтов в текущей сессии'));
+              out(dim('no checkpoints in the current session'));
             } else {
               for (const cp of cps) {
                 const iso = new Date(cp.ts).toISOString().slice(11, 19);
@@ -1506,7 +1506,7 @@ async function runInteractive(options: CliOptions): Promise<number> {
           }
           try {
             const r = await s.rewind(seqNum);
-            out(green(`✔ Откат к чекпоинту #${r.seq}: восстановлено файлов: ${r.restoredFiles}, сообщений в сессии: ${r.apiMessagesBefore} → ${r.apiMessagesAfter}.`));
+            out(green(`✔ Rewound to checkpoint #${r.seq}: files restored: ${r.restoredFiles}, session messages: ${r.apiMessagesBefore} → ${r.apiMessagesAfter}.`));
           } catch (err) {
             out(red(`✖ ${(err as Error).message}`));
           }
@@ -1796,7 +1796,7 @@ async function cmdMcp(options: CliOptions): Promise<number> {
           clientId: options.oauthClientId,
           scopes: options.oauthScopes.length > 0 ? options.oauthScopes : undefined,
           openAuthorizationUrl: (authUrl) => {
-            out(`Откройте ссылку в браузере для авторизации MCP-сервера '${server.name}':\n  ${authUrl}`);
+            out(`Open this link in a browser to authorize MCP server '${server.name}':\n  ${authUrl}`);
             if (process.env.PCODE_OAUTH_NO_OPEN === '1') {
               return;
             }
@@ -1814,7 +1814,7 @@ async function cmdMcp(options: CliOptions): Promise<number> {
           },
         });
         const expiryInfo = tokens.expiresAt ? ` (expires ${new Date(tokens.expiresAt).toISOString()})` : '';
-        out(`${green('✔')} OAuth токен для MCP-сервера '${server.name}' сохранён в системном хранилище ключей${expiryInfo}.`);
+        out(`${green('✔')} OAuth token for MCP server '${server.name}' saved to the system keychain${expiryInfo}.`);
         return 0;
       } catch (err) {
         out(red(`OAuth login failed for '${server.name}': ${(err as Error).message}`));
@@ -1835,10 +1835,10 @@ async function cmdMcp(options: CliOptions): Promise<number> {
       }
       const removed = await oauthStore.remove(server.name, server.url);
       if (!removed) {
-        out(dim(`Для MCP-сервера '${server.name}' сохранённых OAuth-токенов не найдено.`));
+        out(dim(`No saved OAuth tokens found for MCP server '${server.name}'.`));
         return 0;
       }
-      out(`${green('✔')} OAuth токены для MCP-сервера '${server.name}' удалены из хранилища ключей.`);
+      out(`${green('✔')} OAuth tokens for MCP server '${server.name}' removed from the keychain.`);
       return 0;
     }
     default:
@@ -1932,14 +1932,14 @@ async function cmdModels(options: CliOptions): Promise<number> {
     if (!res.updated) {
       out(
         red(
-          `✖ Не удалось обновить каталог моделей (${res.error || 'unknown error'}); используется встроенный запасной снимок (${res.modelCount} моделей).`
+          `✖ Could not update the model catalog (${res.error || 'unknown error'}); using the built-in fallback snapshot (${res.modelCount} models).`
         )
       );
       return PCODE_EXIT_CODES.RUNTIME_ERROR;
     }
     out(
       green(
-        `✔ Каталог моделей обновлён (${res.modelCount} моделей, снимок ${res.snapshotDate || 'remote'}, sha256 ${res.sha256?.slice(0, 12)}…).`
+        `✔ Model catalog updated (${res.modelCount} models, snapshot ${res.snapshotDate || 'remote'}, sha256 ${res.sha256?.slice(0, 12)}…).`
       )
     );
     return PCODE_EXIT_CODES.OK;
@@ -2145,14 +2145,14 @@ async function cmdDoctor(options: CliOptions): Promise<number> {
       events,
     });
     const json = serializeDiagnosticBundle(bundle);
-    out(cyan('--- Предпросмотр пакета диагностики (без cookie, заголовков, промптов, кода и вывода терминала) ---'));
+    out(cyan('--- Diagnostics bundle preview (no cookies, headers, prompts, code or terminal output) ---'));
     out(dim(json));
-    out(cyan('--- Конец предпросмотра ---'));
+    out(cyan('--- End of preview ---'));
     if (process.stdin.isTTY && !options.yes) {
       const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
       const answer = await new Promise<string>((resolve) => {
         rl.question(
-          `Экспортировать пакет диагностики${options.bundleOutput ? ` в ${options.bundleOutput}` : ' в stdout'}? [y/N] `,
+          `Export the diagnostics bundle${options.bundleOutput ? ` to ${options.bundleOutput}` : ' to stdout'}? [y/N] `,
           (ans) => {
             rl.close();
             resolve(ans.trim().toLowerCase());
@@ -2160,14 +2160,14 @@ async function cmdDoctor(options: CliOptions): Promise<number> {
         );
       });
       if (answer !== 'y' && answer !== 'yes' && answer !== 'д' && answer !== 'да') {
-        out(yellow('Экспорт диагностики отменён.'));
+        out(yellow('Diagnostics export cancelled.'));
         return 0;
       }
     }
     if (options.bundleOutput) {
       fs.mkdirSync(path.dirname(options.bundleOutput), { recursive: true });
       fs.writeFileSync(options.bundleOutput, `${json}\n`, { mode: 0o600 });
-      out(green(`Пакет диагностики сохранён: ${options.bundleOutput}`));
+      out(green(`Diagnostics bundle saved: ${options.bundleOutput}`));
     } else {
       process.stdout.write(`${json}\n`);
     }
@@ -2213,7 +2213,7 @@ async function cmdWorktree(options: CliOptions): Promise<number> {
   if (sub === 'list' || sub === 'ls') {
     const items = listManagedWorktrees(options.cwd);
     if (items.length === 0) {
-      out(dim('Нет активных изолированных git worktree.'));
+      out(dim('No active isolated git worktrees.'));
       return PCODE_EXIT_CODES.OK;
     }
     for (const wt of items) {
@@ -2230,7 +2230,7 @@ async function cmdWorktree(options: CliOptions): Promise<number> {
   }
   const handle = loadManagedWorktree(options.cwd, name);
   if (!handle) {
-    out(red(`Worktree '${name}' не найден.`));
+    out(red(`Worktree '${name}' not found.`));
     return PCODE_EXIT_CODES.USAGE_ERROR;
   }
 

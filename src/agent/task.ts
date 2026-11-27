@@ -256,10 +256,10 @@ export class AgentTask {
         if (message.command?.running || message.command?.unconfirmed) {
           message.command.running = false;
           message.command.unconfirmed = true;
-          if (!message.command.output?.includes('результат не подтверждён')) {
+          if (!message.command.output?.includes('outcome not confirmed') && !message.command.output?.includes('результат не подтверждён')) {
             message.command.output = message.command.output
-              ? `${message.command.output}\n[результат не подтверждён]`
-              : '[результат не подтверждён]';
+              ? `${message.command.output}\n[outcome not confirmed]`
+              : '[outcome not confirmed]';
           }
           if (message.command.command) {
             this.unconfirmedCommands.add(message.command.command.trim());
@@ -676,8 +676,8 @@ export class AgentTask {
         if (this.requestsSinceLimitPrompt >= settings.maxRequests) {
           this.setBanner(
             'needs_attention',
-            'нужно вмешательство',
-            `Достигнут лимит ${this.requestsSinceLimitPrompt} запросов подряд`,
+            'needs attention',
+            `Reached the limit of ${this.requestsSinceLimitPrompt} requests in a row`,
             `maxRequests=${settings.maxRequests}`
           );
           const answer = await this.ask('request_limit', {
@@ -802,8 +802,8 @@ export class AgentTask {
       mcpSection: rawMcp || undefined,
       repoMapBlock,
       repoMapReason: settings.repoMapEnabled
-        ? 'Автоматически подключено настройкой repoMapEnabled (приоритет активному файлу и текущему diff)'
-        : 'Подключено упоминанием @repo в сообщении',
+        ? 'Added automatically by repoMapEnabled (active file and current diff first)'
+        : 'Added by an @repo mention in the message',
       repoMapOmittedFiles,
       messages: this.apiMessages,
       maxPromptChars: settings.maxPromptChars,
@@ -853,7 +853,7 @@ export class AgentTask {
     this.emitEvent({ type: 'compacted', before: compacted.before, after: compacted.after });
     this.say({
       type: 'info',
-      text: `Авто-сжатие контекста (${compacted.before} → ${compacted.after} симв., сохранены последние ${compacted.keptSteps} шагов).`,
+      text: `Context auto-compacted (${compacted.before} → ${compacted.after} chars, last ${compacted.keptSteps} steps kept).`,
     });
     return true;
   }
@@ -934,7 +934,7 @@ export class AgentTask {
           onText,
           onInfo: (text) => this.say({ type: 'info', text }),
           onRetry: ({ reason, rule }) => {
-            this.setBanner('retrying', 'повторяю запрос', reason, rule);
+            this.setBanner('retrying', 'retrying request', reason, rule);
           },
           onAccount: (account, model) => {
             reqMessage.meta = { ...reqMessage.meta, account, model };
@@ -1011,8 +1011,8 @@ export class AgentTask {
           const retryDelayMs = computeBackoffWithJitterMs(this.apiRetries - 1);
           this.setBanner(
             'retrying',
-            'повторяю запрос',
-            `Ошибка запроса (${typed.message}), повтор ${this.apiRetries}/4`,
+            'retrying request',
+            `Request failed (${typed.message}), retry ${this.apiRetries}/4`,
             'autoApprove.retry'
           );
           this.say({ type: 'info', text: `Request failed: ${typed.message}. Retrying (${this.apiRetries}/4)…` });
@@ -1027,8 +1027,8 @@ export class AgentTask {
               : 'transport.api_failed');
         this.setBanner(
           'needs_attention',
-          'нужно вмешательство',
-          typed.message || 'Запрос к модели завершился ошибкой',
+          'needs attention',
+          typed.message || 'The model request failed',
           failRule
         );
         const answer = await this.ask('api_failed', { type: 'error', text: typed.message || 'Request failed.' });
@@ -1133,8 +1133,8 @@ export class AgentTask {
       }
       this.setBanner(
         'needs_attention',
-        'нужно вмешательство',
-        'Несколько вызовов инструментов подряд завершились с ошибкой',
+        'needs attention',
+        'Several tool calls in a row failed',
         `mistake_limit=${MAX_CONSECUTIVE_MISTAKES}`
       );
       const answer = await this.ask('mistake_limit', {
@@ -1227,7 +1227,7 @@ export class AgentTask {
       if (gate?.preToolUse) {
         const verdict = await gate.preToolUse(this.gateContext, { name: call.name, params: call.params });
         if (verdict.stopTask) {
-          this.setBanner('needs_attention', 'нужно вмешательство', verdict.reason || 'Остановлено хуком', verdict.source || 'hook.PreToolUse');
+          this.setBanner('needs_attention', 'needs attention', verdict.reason || 'Stopped by a hook', verdict.source || 'hook.PreToolUse');
           this.say({ type: 'info', text: `Stopped by hook: ${verdict.reason || 'continue=false'}` });
           this.setState('idle');
           return 'stop';
@@ -1350,7 +1350,7 @@ export class AgentTask {
     if (gate?.preToolUse && tool.name !== 'attempt_completion') {
       const verdict = await gate.preToolUse(this.gateContext, { name: tool.name, params: tool.params });
       if (verdict.stopTask) {
-        this.setBanner('needs_attention', 'нужно вмешательство', verdict.reason || 'Остановлено хуком', verdict.source || 'hook.PreToolUse');
+        this.setBanner('needs_attention', 'needs attention', verdict.reason || 'Stopped by a hook', verdict.source || 'hook.PreToolUse');
         this.say({ type: 'info', text: `Stopped by hook: ${verdict.reason || 'continue=false'}` });
         this.emitEvent({ type: 'denied', tool: tool.name, reason: verdict.reason || 'stopped', source: verdict.source || 'hook' });
         this.setState('idle');
@@ -1429,7 +1429,7 @@ export class AgentTask {
         const suggestions = parseFollowUpSuggestionsWithMode(params.follow_up);
         this.setBanner(
           'needs_attention',
-          'нужно вмешательство',
+          'needs attention',
           question.slice(0, 180),
           'ask_followup_question'
         );
@@ -1456,8 +1456,8 @@ export class AgentTask {
         if (this.options.gate?.stop) {
           this.setBanner(
             'verifying',
-            'проверяю результат',
-            'Выполняется проверка результата перед завершением задачи',
+            'verifying result',
+            'Verifying the result before completing the task',
             'verify.command / hooks.Stop'
           );
           let stop: Awaited<ReturnType<NonNullable<ToolGate['stop']>>>;
@@ -1487,8 +1487,8 @@ export class AgentTask {
           const selection = this.options.getSelection();
           this.setBanner(
             'verifying',
-            'проверяю результат',
-            'Кросс-модельное ревью diff и результата verify моделью другого семейства',
+            'verifying result',
+            'Cross-model review of the diff and verify result by a model from another family',
             'crossModelReview'
           );
           try {
@@ -1939,7 +1939,7 @@ export class AgentTask {
       info,
       protectedConfig
         ? {
-          reason: `Защищённый конфиг (${protectedConfig}) всегда требует явного подтверждения.`,
+          reason: `Protected config (${protectedConfig}) always requires explicit approval.`,
           rule: `protected-config: ${protectedConfig}`,
         }
         : undefined
@@ -1975,7 +1975,7 @@ export class AgentTask {
       this.consecutiveMistakes = 0;
       let problems = '';
       if (host.getDiagnostics) {
-        this.setBanner('verifying', 'проверяю результат', `Проверка диагностики IDE для ${displayPath}`, 'ide.diagnostics');
+        this.setBanner('verifying', 'verifying result', `Checking IDE diagnostics for ${displayPath}`, 'ide.diagnostics');
         try {
           problems = await host.getDiagnostics(absPath);
         } finally {
@@ -2010,18 +2010,18 @@ export class AgentTask {
     if (this.unconfirmedCommands.has(command)) {
       this.setBanner(
         'verifying',
-        'проверяю результат',
-        `Повторный запуск '${command.slice(0, 80)}' отложен: результат предыдущего запуска не подтверждён`,
+        'verifying result',
+        `Re-running '${command.slice(0, 80)}' is on hold: the outcome of the previous run is not confirmed`,
         'resume.unconfirmed_command'
       );
       this.say({
         type: 'info',
-        text: `Команда \`${command}\` помечена как «результат не подтверждён» после обрыва. Сначала проверьте фактическое состояние (read_file / list_files / search_files).`,
+        text: `Command \`${command}\` is marked "outcome not confirmed" after the interruption. Check the actual state first (read_file / list_files / search_files).`,
       });
       this.pushToolResult(
         tool.name,
         command,
-        `[результат не подтверждён] Command \`${command}\` was already started before the stream interruption and its outcome was not confirmed. Do NOT re-run it yet; inspect the actual workspace state first using read_file, list_files, or search_files.`
+        `[outcome not confirmed] Command \`${command}\` was already started before the stream interruption and its outcome was not confirmed. Do NOT re-run it yet; inspect the actual workspace state first using read_file, list_files, or search_files.`
       );
       return 'continue';
     }
@@ -2063,11 +2063,11 @@ export class AgentTask {
                   : 'allowedCommands');
       const cmdReason = this.gateVerdict?.reason
         || (protectedCmdHit
-          ? `Команда затрагивает защищённый конфиг (${protectedCmdHit})`
+          ? `The command touches a protected config (${protectedCmdHit})`
           : !shellParsed.valid
-            ? (shellParsed.reason || 'Неразборчивый синтаксис shell-команды требует подтверждения')
-            : `Запуск команды требует подтверждения: ${command.slice(0, 100)}`);
-      this.setBanner('waiting_approval', 'жду подтверждения', cmdReason, cmdRule);
+            ? (shellParsed.reason || 'Unparseable shell syntax requires approval')
+            : `Running this command requires approval: ${command.slice(0, 100)}`);
+      this.setBanner('waiting_approval', 'waiting for approval', cmdReason, cmdRule);
       commandMessage.ask = { kind: 'command', resolved: false };
       const answer = await this.waitAsk(commandMessage);
       if (answer.response === 'no' || this.abortController.signal.aborted) {
@@ -2407,8 +2407,8 @@ export class AgentTask {
                   : 'autoApprove.tool=false');
     const askReason = forceAsk?.reason
       || this.gateVerdict?.reason
-      || `Ожидание подтверждения: ${info.title}`;
-    this.setBanner('waiting_approval', 'жду подтверждения', askReason, askRule);
+      || `Waiting for approval: ${info.title}`;
+    this.setBanner('waiting_approval', 'waiting for approval', askReason, askRule);
     message.ask = { kind, resolved: false };
     const answer = await this.waitAsk(message);
     return { ...answer, message };
@@ -2532,10 +2532,10 @@ export class AgentTask {
         if (message.command && message.command.command.trim() === cmd && message.command.exitCode === undefined) {
           message.command.running = false;
           message.command.unconfirmed = true;
-          if (!message.command.output?.includes('результат не подтверждён')) {
+          if (!message.command.output?.includes('outcome not confirmed') && !message.command.output?.includes('результат не подтверждён')) {
             message.command.output = message.command.output
-              ? `${message.command.output}\n[результат не подтверждён]`
-              : '[результат не подтверждён]';
+              ? `${message.command.output}\n[outcome not confirmed]`
+              : '[outcome not confirmed]';
           }
         }
       }
@@ -2543,8 +2543,8 @@ export class AgentTask {
     if (this.unconfirmedCommands.size > 0) {
       this.setBanner(
         'verifying',
-        'проверяю результат',
-        `После обрыва результат не подтверждён для: ${[...this.unconfirmedCommands].join(', ').slice(0, 140)}`,
+        'verifying result',
+        `Outcome not confirmed after the interruption for: ${[...this.unconfirmedCommands].join(', ').slice(0, 140)}`,
         'resume.unconfirmed_command'
       );
     }

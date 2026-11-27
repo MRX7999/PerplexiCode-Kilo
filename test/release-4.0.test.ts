@@ -618,7 +618,7 @@ test('F28: `LongCommandTimer` emits live elapsed updates only when command excee
   const slowRes = slowTimer.stop();
   assert.ok(slowRes.durationMs >= 80);
   assert.equal(slowRes.showedTimer, true);
-  assert.ok(slowWrites.some((line) => line.includes('⏱ выполняю')), 'Long commands must emit live timer ticks');
+  assert.ok(slowWrites.some((line) => line.includes('⏱ running')), 'Long commands must emit live timer ticks');
 });
 
 // ---------------------------------------------------------------------------
@@ -1085,4 +1085,37 @@ test('4.0.2: network timeouts are surfaced and never disable the only account', 
   assert.equal(isNetworkErrorMessage('Connection failed: getaddrinfo ENOTFOUND www.perplexity.ai'), true);
   assert.equal(isNetworkErrorMessage('Connection failed: could not connect to www.perplexity.ai within 20 s'), true);
   assert.equal(isNetworkErrorMessage('HTTP 403: Forbidden'), false);
+});
+
+test('4.0.3: user-facing strings are English (Cyrillic only in allow-listed compatibility code)', () => {
+  const root = path.join(__dirname, '..', '..');
+  const files = [
+    'webview-ui/agent/main.ts',
+    'src/agent/controller.ts',
+    'src/agent/task.ts',
+    'src/agent/transport.ts',
+    'src/agent/types.ts',
+    'src/extension.ts',
+    'src/cli/index.ts',
+    'src/core/compaction.ts',
+    'src/core/contextInspector.ts',
+    'src/core/diagnostics.ts',
+    'src/core/journal.ts',
+    'src/core/mcpOAuth.ts',
+    'src/core/permissions.ts',
+    'src/core/types.ts',
+    'src/core/worktree.ts',
+  ];
+  // Reading data written by earlier versions, the Russian "unfinished reply" detector and the [y/N] answer.
+  const allowed = [/результат не подтверждён'\)\)/, /\(\?:Modified files\|Изменённые файлы\)|\(\?:Verified hypotheses\|Проверенные гипотезы\)|\(\?:Constraints\|Ограничения\)/, /item !== '\(нет |item !== '\(явных /, /\|сейчас\|теперь\|/, /answer !== 'д' && answer !== 'да'/];
+  const offenders: string[] = [];
+  for (const rel of files) {
+    const lines = fs.readFileSync(path.join(root, rel), 'utf8').split('\n');
+    lines.forEach((line, idx) => {
+      if (/[А-Яа-яЁё]/.test(line) && !allowed.some((re) => re.test(line))) {
+        offenders.push(`${rel}:${idx + 1}: ${line.trim().slice(0, 120)}`);
+      }
+    });
+  }
+  assert.deepEqual(offenders, []);
 });

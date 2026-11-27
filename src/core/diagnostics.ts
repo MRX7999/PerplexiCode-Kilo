@@ -3,7 +3,7 @@ import type { TimedCoreEvent } from './types';
 
 /**
  * Redacted diagnostics bundle for `pcode doctor --bundle` and the IDE
- * "Скопировать диагностику" action (F08).
+ * "Copy Diagnostics" action (F08).
  *
  * Security invariant:
  * - Strictly allowlisted fields only.
@@ -258,7 +258,7 @@ export function buildStagesFromEvents(events: TimedCoreEvent[]): DiagnosticStage
           elapsedMs,
           stage: 'command_unconfirmed',
           decision: 'unconfirmed',
-          reason: 'результат не подтверждён',
+          reason: 'outcome not confirmed',
           rule: 'journal.interrupted_command',
         });
         lastCommandStartTs = undefined;

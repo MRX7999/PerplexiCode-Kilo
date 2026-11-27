@@ -64,14 +64,14 @@ export class SessionJournal {
 
   /**
    * F02: Marks any interrupted commands without a `command_end` in the journal as
-   * `результат не подтверждён` before the resumed session begins.
+   * `outcome not confirmed` before the resumed session begins.
    */
   recordUnconfirmedCommands(commands: string[]): void {
     for (const command of commands) {
       this.append({
         type: 'command_unconfirmed',
         command,
-        status: 'результат не подтверждён',
+        status: 'outcome not confirmed',
       });
     }
   }
@@ -223,7 +223,7 @@ export function detectInterruptedWork(events: TimedCoreEvent[]): InterruptedWork
 export function resumeNote(work: InterruptedWork): string {
   const lines = ['[Session resumed after an interruption (crash, closed terminal or lost connection).'];
   if (work.unknownCommands.length > 0) {
-    lines.push(`Команды запущены до обрыва, но их результат не подтверждён: ${work.unknownCommands.map((command) => `\`${command}\``).join(', ')}. They may have partially or fully run. Do NOT re-run them blindly; first inspect the actual state (read_file, list_files, search_files) and only then decide.`);
+    lines.push(`Commands started before the interruption, outcome not confirmed: ${work.unknownCommands.map((command) => `\`${command}\``).join(', ')}. They may have partially or fully run. Do NOT re-run them blindly; first inspect the actual state (read_file, list_files, search_files) and only then decide.`);
   }
   if (work.unfinishedTools.length > 0) {
     lines.push(`Tool calls without a recorded result: ${work.unfinishedTools.join(', ')}. Re-read affected files before editing them.`);
