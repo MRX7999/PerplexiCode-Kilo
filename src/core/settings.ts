@@ -49,6 +49,8 @@ export interface CoreSettings {
   model?: string;
   /** 3.3: default Perplexity compute mode (search, light, standard, high, ultra, research, labs). */
   computeMode?: string;
+  /** 3.5 (F04): stop task instead of falling back to another model/compute mode. */
+  stopOnFallback?: boolean;
   env: Record<string, string>;
   /** Execute up to N read-only tool calls from one model answer. 1 disables batching. */
   readBatchSize: number;
@@ -168,6 +170,9 @@ export function mergeLayer(target: CoreSettings, raw: Record<string, unknown>, a
   }
   if (typeof raw.computeMode === 'string' && raw.computeMode.trim()) {
     target.computeMode = raw.computeMode.trim();
+  }
+  if (typeof raw.stopOnFallback === 'boolean') {
+    target.stopOnFallback = raw.stopOnFallback;
   }
   if (typeof raw.readBatchSize === 'number') {
     target.readBatchSize = Math.max(1, Math.min(10, Math.floor(raw.readBatchSize)));

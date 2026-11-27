@@ -206,104 +206,7 @@ export class PerplexityWebClient {
           return;
         }
 
-        let fullContent = '';
-        let responseMeta = { ...meta };
-        let buffer = '';
-        const decoder = new StringDecoder('utf8');
-        const markdownChunks: string[] = [];
-
-        const handleEventBlock = (event: string): boolean => {
-          const trimmed = event.trim();
-          if (!trimmed) {
-            return false;
-          }
-
-          if (trimmed.includes('event: end_of_stream') || trimmed === 'data: [DONE]') {
-            callbacks.onDone(fullContent, responseMeta);
-            return true;
-          }
-
-          const payload = this._extractEventPayload(trimmed);
-          if (payload === undefined) {
-            return false;
-          }
-
-          if (typeof payload === 'string') {
-            fullContent += payload;
-            callbacks.onChunk(payload);
-            return false;
-          }
-
-          const processed = this._processChunk(payload, fullContent, responseMeta, markdownChunks);
-          fullContent = processed.content;
-          responseMeta = processed.meta;
-
-          if (processed.metaChanged) {
-            callbacks.onMeta?.(processed.metaChanged);
-          }
-          if (processed.delta) {
-            callbacks.onChunk(processed.delta);
-          }
-          if (processed.citations.length > 0) {
-            callbacks.onCitations?.(processed.citations);
-          }
-          return false;
-        };
-
-        res.on('data', (chunk: Buffer) => {
-          if (abortController.signal.aborted) {
-            res.destroy();
-            return;
-          }
-
-          buffer += decoder.write(chunk);
-          const events = buffer.split(/\r?\n\r?\n/);
-          buffer = events.pop() || '';
-
-          for (const event of events) {
-            if (handleEventBlock(event)) {
-              return;
-            }
-          }
-        });
-
-        res.on('end', () => {
-          if (abortController.signal.aborted) {
-            return;
-          }
-
-          buffer += decoder.end();
-          const remainingEvents = buffer.split(/\r?\n\r?\n/);
-          const tail = remainingEvents.pop() || '';
-          for (const event of remainingEvents) {
-            if (handleEventBlock(event)) {
-              return;
-            }
-          }
-
-          const payload = this._extractTrailingPayload(tail);
-          if (payload && typeof payload !== 'string') {
-            const processed = this._processChunk(payload, fullContent, responseMeta, markdownChunks);
-            fullContent = processed.content;
-            responseMeta = processed.meta;
-            if (processed.metaChanged) {
-              callbacks.onMeta?.(processed.metaChanged);
-            }
-            if (processed.delta) {
-              callbacks.onChunk(processed.delta);
-            }
-            if (processed.citations.length > 0) {
-              callbacks.onCitations?.(processed.citations);
-            }
-          }
-
-          callbacks.onDone(fullContent, responseMeta);
-        });
-
-        res.on('error', (error: Error) => {
-          callbacks.onError(error);
-        });
-
+        this.consumeSseStream(res, meta, callbacks, abortController.signal);
         res.setTimeout(120_000, () => {
           res.destroy();
           callbacks.onError(new Error('Response timed out.'));
@@ -338,6 +241,169 @@ export class PerplexityWebClient {
 
     req.write(body);
     req.end();
+  }
+
+  /**
+   * Parses a raw SSE response stream into deduplicated chunks, metadata updates, and terminal
+   * `onDone` / `onError` callbacks. Exposed so SSE replay tests exercise the exact production parser.
+   */
+  consumeSseStream(
+    res: NodeJS.ReadableStream & { complete?: boolean; destroy?: () => void },
+    meta: StreamResponseMeta,
+    callbacks: StreamCallbacks,
+    abortSignal?: AbortSignal
+  ): void {
+    let fullContent = '';
+    let responseMeta: StreamResponseMeta = { ...meta };
+    let buffer = '';
+    let settled = false;
+    let sawEndOfStream = false;
+    let sawFinalStep = false;
+    let lastEventSignature = '';
+    const decoder = new StringDecoder('utf8');
+    const markdownChunks: string[] = [];
+
+    const finishDone = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      callbacks.onDone(fullContent, responseMeta);
+    };
+
+    const finishError = (error: Error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      callbacks.onError(error);
+    };
+
+    const handleEventBlock = (event: string): boolean => {
+      if (settled) {
+        return true;
+      }
+      const trimmed = event.trim();
+      if (!trimmed) {
+        return false;
+      }
+
+      if (trimmed.includes('event: end_of_stream') || trimmed === 'data: [DONE]') {
+        sawEndOfStream = true;
+        finishDone();
+        return true;
+      }
+
+      // Deduplicate consecutive identical SSE frames (e.g. replayed last chunk on proxy/CDN flush).
+      if (trimmed === lastEventSignature) {
+        return false;
+      }
+      lastEventSignature = trimmed;
+
+      const payload = this._extractEventPayload(trimmed);
+      if (payload === undefined) {
+        return false;
+      }
+
+      if (typeof payload === 'string') {
+        fullContent += payload;
+        callbacks.onChunk(payload);
+        return false;
+      }
+
+      if (payload?.final || payload?.text_completed || payload?.step_type === 'FINAL') {
+        sawFinalStep = true;
+      }
+
+      const processed = this._processChunk(payload, fullContent, responseMeta, markdownChunks);
+      fullContent = processed.content;
+      responseMeta = processed.meta;
+
+      if (processed.metaChanged) {
+        callbacks.onMeta?.(processed.metaChanged);
+      }
+      if (processed.delta) {
+        callbacks.onChunk(processed.delta);
+      }
+      if (processed.citations.length > 0) {
+        callbacks.onCitations?.(processed.citations);
+      }
+      return false;
+    };
+
+    res.on('data', (chunk: Buffer | string) => {
+      if (settled) {
+        return;
+      }
+      if (abortSignal?.aborted) {
+        res.destroy?.();
+        return;
+      }
+
+      buffer += typeof chunk === 'string' ? chunk : decoder.write(chunk);
+      const events = buffer.split(/\r?\n\r?\n/);
+      buffer = events.pop() || '';
+
+      for (const event of events) {
+        if (handleEventBlock(event)) {
+          return;
+        }
+      }
+    });
+
+    res.on('end', () => {
+      if (settled || abortSignal?.aborted) {
+        return;
+      }
+
+      buffer += decoder.end();
+      const remainingEvents = buffer.split(/\r?\n\r?\n/);
+      const tail = remainingEvents.pop() || '';
+      for (const event of remainingEvents) {
+        if (handleEventBlock(event)) {
+          return;
+        }
+      }
+
+      const trimmedTail = tail.trim();
+      if (trimmedTail && trimmedTail !== lastEventSignature) {
+        if (trimmedTail.includes('event: end_of_stream') || trimmedTail === 'data: [DONE]') {
+          sawEndOfStream = true;
+          finishDone();
+          return;
+        }
+        const payload = this._extractTrailingPayload(trimmedTail);
+        if (payload && typeof payload !== 'string') {
+          if (payload?.final || payload?.text_completed || payload?.step_type === 'FINAL') {
+            sawFinalStep = true;
+          }
+          const processed = this._processChunk(payload, fullContent, responseMeta, markdownChunks);
+          fullContent = processed.content;
+          responseMeta = processed.meta;
+          if (processed.metaChanged) {
+            callbacks.onMeta?.(processed.metaChanged);
+          }
+          if (processed.delta) {
+            callbacks.onChunk(processed.delta);
+          }
+          if (processed.citations.length > 0) {
+            callbacks.onCitations?.(processed.citations);
+          }
+        }
+      }
+
+      // If the HTTP response ended prematurely before chunked framing completed and without a final marker, surface an error.
+      if (res.complete === false && !sawEndOfStream && !sawFinalStep) {
+        finishError(new Error('SSE stream disconnected prematurely before completion.'));
+        return;
+      }
+
+      finishDone();
+    });
+
+    res.on('error', (error: Error) => {
+      finishError(error);
+    });
   }
 
   private _buildInitialMeta(modelId: string, options?: QueryRequestOptions): StreamResponseMeta {
@@ -395,6 +461,10 @@ export class PerplexityWebClient {
 
     if (displayModel) {
       const label = getModelLabel(displayModel);
+      if (label !== nextMeta.reportedModel) {
+        nextMeta.reportedModel = label;
+        metaChanged.reportedModel = label;
+      }
       if (label !== nextMeta.displayModel) {
         nextMeta.displayModel = label;
         metaChanged.displayModel = label;
@@ -627,7 +697,13 @@ export function extractMarkdownBlockText(blocks: any[], current: string, markdow
     if (typeof markdown.answer === 'string' && markdown.answer.length >= joined.length && markdown.answer.length >= current.length) {
       return markdown.answer;
     }
-    return joined.length >= current.length ? joined : current + joined;
+    if (joined.length === 0 || current.endsWith(joined)) {
+      return current;
+    }
+    if (joined.startsWith(current)) {
+      return joined;
+    }
+    return current.length === 0 ? joined : current + joined;
   }
   if (typeof markdown.answer === 'string' && markdown.answer.length >= current.length) {
     return markdown.answer;

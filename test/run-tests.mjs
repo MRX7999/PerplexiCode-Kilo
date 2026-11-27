@@ -50,6 +50,13 @@ const suites = [
     outfile: 'mcp-credentials.test.cjs',
     options: {},
   },
+  {
+    // 3.5 transport hardening, safe resume, task banners, route visibility, SSRF, shell parser, SHA256 installers, redacted diagnostics, protected configs.
+    entry: 'release-3.5.test.ts',
+    outfile: 'release-3.5.test.cjs',
+    prebuild: true,
+    options: { external: ['vscode', 'puppeteer-core', 'sql.js'] },
+  },
 ];
 
 const only = process.argv[2];

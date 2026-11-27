@@ -1,9 +1,12 @@
 import * as cp from 'child_process';
+import type * as dns from 'dns';
 import * as fs from 'fs';
 import * as http from 'http';
 import * as https from 'https';
 import * as path from 'path';
 import { extractSingleFunctionHeader, findFunctionBlockEnd, parseFunctionHeaderLine } from './diffEngine';
+import { analyzeShellCommand, commandTouchesProtectedConfig, hasFileOutputRedirection } from './shellParser';
+import { DnsLookupFn, validateSafeFetchUrl } from './ssrf';
 
 /**
  * Workspace tool implementations. Everything VS Code specific goes through AgentHost so the
@@ -847,27 +850,25 @@ function isSafeNavigationSegment(segment: string): boolean {
 }
 
 export function isCommandAutoApproved(command: string, allowed: string[], denied: string[]): boolean {
+  const analysis = analyzeShellCommand(command);
+  if (!analysis.valid || analysis.segments.length === 0) {
+    return false;
+  }
+  if (commandTouchesProtectedConfig(command)) {
+    return false;
+  }
+  const wildcardAllowed = allowed.some((p) => p.trim() === '*');
+  if (!wildcardAllowed && hasFileOutputRedirection(command)) {
+    return false;
+  }
+
   const shellPart = stripHeredocBodies(command);
-  const subs = extractCommandSubstitutions(shellPart);
-  if (!subs.valid) {
+  const rawSegments = splitCommandChain(shellPart);
+  const allSegments = Array.from(new Set([...analysis.segments, ...rawSegments]));
+  if (allSegments.length === 0) {
     return false;
   }
 
-  const mainSegments = splitCommandChain(shellPart);
-  if (mainSegments.length === 0) {
-    return false;
-  }
-
-  const subSegments: string[] = [];
-  for (const sub of subs.subcommands) {
-    const parts = splitCommandChain(sub);
-    if (parts.length === 0) {
-      return false;
-    }
-    subSegments.push(...parts);
-  }
-
-  const allSegments = [...mainSegments, ...subSegments];
   const explicitSudoAllowed = allowed.some((p) => {
     const t = p.trim();
     return t === 'sudo' || t.startsWith('sudo ');
@@ -894,12 +895,12 @@ export function isCommandAutoApproved(command: string, allowed: string[], denied
   }
 
   const effectiveAllowed = [...allowed, ...DEFAULT_SAFE_DEV_PREFIXES];
-  const hasActionMain = mainSegments.some((seg) => !isPureEnvAssignment(seg) && !isSafeNavigationSegment(seg));
-  if (!hasActionMain) {
-    return mainSegments.every((seg) => isSafeNavigationSegment(seg) || matchesCommandPrefix(seg, effectiveAllowed));
+  const hasActionSegment = analysis.segments.some((seg) => !isPureEnvAssignment(seg) && !isSafeNavigationSegment(seg));
+  if (!hasActionSegment) {
+    return analysis.segments.every((seg) => isSafeNavigationSegment(seg) || matchesCommandPrefix(seg, effectiveAllowed));
   }
 
-  return allSegments.every(
+  return analysis.segments.every(
     (segment) =>
       isPureEnvAssignment(segment)
       || isSafeNavigationSegment(segment)
@@ -1124,7 +1125,14 @@ export function searchAndReplaceContent(
  */
 export async function webFetchTool(
   rawUrl: string,
-  options: { maxChars?: number; signal?: AbortSignal; timeoutMs?: number } = {}
+  options: {
+    maxChars?: number;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+    lookup?: DnsLookupFn;
+    /** Unit-test transport override: dials this socket IP after `validateSafeFetchUrl` succeeds. */
+    _testSocketAddress?: string;
+  } = {}
 ): Promise<string> {
   const maxChars = options.maxChars || 30_000;
   const timeoutMs = options.timeoutMs || 20_000;
@@ -1137,17 +1145,34 @@ export async function webFetchTool(
   }
 
   for (let redirects = 0; redirects <= 5; redirects += 1) {
-    const parsedUrl = new URL(currentUrl);
+    const { url: parsedUrl, pinned } = await validateSafeFetchUrl(currentUrl, options.lookup);
     const result = await new Promise<{ statusCode: number; headers: http.IncomingHttpHeaders; body: string }>((resolve, reject) => {
       const client = parsedUrl.protocol === 'https:' ? https : http;
+      const dialAddress = options._testSocketAddress || pinned.address;
+      const dialFamily: 4 | 6 = options._testSocketAddress ? 4 : pinned.family;
+      const pinnedLookup = (
+        _hostname: string,
+        optsOrCb: dns.LookupOptions | ((err: NodeJS.ErrnoException | null, address: string | dns.LookupAddress[], family?: number) => void),
+        maybeCb?: (err: NodeJS.ErrnoException | null, address: string | dns.LookupAddress[], family?: number) => void
+      ) => {
+        const cb = typeof optsOrCb === 'function' ? optsOrCb : maybeCb!;
+        const opts = typeof optsOrCb === 'object' && optsOrCb !== null ? optsOrCb : undefined;
+        if (opts && opts.all) {
+          cb(null, [{ address: dialAddress, family: dialFamily }]);
+        } else {
+          cb(null, dialAddress, dialFamily);
+        }
+      };
       const req = client.request(
         {
           method: 'GET',
           hostname: parsedUrl.hostname,
           port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
           path: `${parsedUrl.pathname}${parsedUrl.search}`,
+          servername: parsedUrl.protocol === 'https:' ? parsedUrl.hostname.replace(/^\[|\]$/g, '') : undefined,
+          lookup: pinnedLookup as any,
           headers: {
-            'User-Agent': 'PerplexiCode-Kilo/3.3 (+https://github.com/MRX7999/PerplexiCode-Kilo)',
+            'User-Agent': 'PerplexiCode-Kilo/3.5 (+https://github.com/MRX7999/PerplexiCode-Kilo)',
             'Accept': 'text/markdown, text/html, application/json, text/plain;q=0.9, */*;q=0.8',
           },
           timeout: timeoutMs,

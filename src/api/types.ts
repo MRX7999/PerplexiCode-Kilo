@@ -128,6 +128,8 @@ export interface StreamResponseMeta {
   requestedModel: string;
   resolvedModel: string;
   displayModel: string;
+  /** Actual model explicitly reported by the upstream stream (`display_model`), undefined when omitted. */
+  reportedModel?: string;
   searchMode: PerplexitySearchMode;
   mode: PerplexityRequestMode;
   /** Thread identifiers returned by Perplexity; used for follow-up turns. */

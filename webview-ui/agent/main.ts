@@ -18,11 +18,11 @@ interface UiMessage {
   text?: string;
   partial?: boolean;
   tool?: { name: string; path?: string; title: string; content?: string; diff?: DiffLine[]; added?: number; removed?: number; isNewFile?: boolean; mode?: string; reason?: string; outsideWorkspace?: boolean; server?: string; url?: string };
-  command?: { command: string; cwd?: string; output?: string; exitCode?: number | null; running?: boolean };
+  command?: { command: string; cwd?: string; output?: string; exitCode?: number | null; running?: boolean; unconfirmed?: boolean };
   suggestions?: Array<{ text: string; mode?: string }>;
   ask?: { kind: AskKind; resolved: boolean; response?: string; autoApproved?: boolean };
   status?: 'pending' | 'approved' | 'rejected' | 'done' | 'error' | 'running';
-  meta?: { model?: string; account?: string; citations?: string[]; promptChars?: number; followUp?: boolean; durationMs?: number };
+  meta?: { model?: string; account?: string; citations?: string[]; promptChars?: number; followUp?: boolean; durationMs?: number; routeLine?: string };
   checkpoint?: { seq: number; restored?: boolean };
 }
 
@@ -33,11 +33,18 @@ interface ModelEntry {
   requiredPlan: string; isNew: boolean; surfaced: boolean; selectable: boolean; provider: string | null;
 }
 
+interface TaskBanner {
+  phase: 'waiting_approval' | 'retrying' | 'verifying' | 'needs_attention';
+  label: string;
+  reason: string;
+  rule: string;
+}
+
 interface AppState {
   version: string;
   task: null | {
     id: string; parentId?: string; title: string; mode: string; busy: boolean; todos: TodoItem[];
-    status: { state: string; askId?: string; askKind?: AskKind; requestCount: number };
+    status: { state: string; askId?: string; askKind?: AskKind; requestCount: number; banner?: TaskBanner; routeLine?: string };
     messages?: UiMessage[]; depth: number; parentTitle?: string; agent?: string;
   };
   mode: string;
@@ -170,6 +177,7 @@ let stickToBottom = true;
 let mentionState: { start: number; query: string; items: Array<{ label: string; value: string; kind: string }>; index: number } | undefined;
 let slashState: { items: Array<{ label: string; value: string; description: string }>; index: number } | undefined;
 let enhancing = false;
+let diagnosticsPreviewJson: string | undefined;
 const expanded = new Set<string>();
 const collapsed = new Set<string>();
 
@@ -213,6 +221,7 @@ root.innerHTML = `
     <div id="view-history" class="view hidden"></div>
     <div id="view-settings" class="view hidden"></div>
     <div id="view-library" class="view hidden"></div>
+    <div id="diag-modal" class="diag-modal hidden"></div>
   </div>`;
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -286,6 +295,10 @@ window.addEventListener('message', (event) => {
       for (const key of Object.keys(formValues)) delete formValues[key];
       showToast(`${message.kind === 'skill' ? 'Skill' : 'Subagent'} "${message.name}" created`);
       renderLibrary();
+      break;
+    case 'diagnosticsPreview':
+      diagnosticsPreviewJson = String(message.json || '');
+      renderDiagnosticsModal();
       break;
     default:
       break;
@@ -427,9 +440,10 @@ function messageHtml(message: UiMessage): string {
         meta.promptChars ? `${formatNumber(meta.promptChars)} chars` : '',
         meta.followUp ? 'thread' : '',
       ].filter(Boolean).join(' · ');
-      return `<div class="api-req">${message.partial ? icons.spinner : message.status === 'error' ? `<span class="error-text">${icons.warning}</span>` : icons.api}
+      return `<div class="api-req-wrap"><div class="api-req">${message.partial ? icons.spinner : message.status === 'error' ? `<span class="error-text">${icons.warning}</span>` : icons.api}
         <span class="api-title">${message.partial ? 'API Request…' : message.status === 'error' ? 'API Request Failed' : 'API Request'}</span>
-        <span class="api-model">${escapeHtml(message.text || '')}</span><span class="muted">${detail}</span></div>`;
+        <span class="api-model">${escapeHtml(message.text || '')}</span><span class="muted">${detail}</span></div>
+        ${meta.routeLine ? `<div class="api-route muted small">${escapeHtml(meta.routeLine)}</div>` : ''}</div>`;
     }
     case 'tool':
       return toolHtml(message);
@@ -548,10 +562,11 @@ function toolVerb(tool: NonNullable<UiMessage['tool']>, message: UiMessage): str
 
 function commandHtml(message: UiMessage): string {
   const command = message.command!;
-  const open = command.running || message.status === 'pending' || expanded.has(message.id) || (command.exitCode !== undefined && command.exitCode !== 0 && !collapsed.has(message.id));
+  const open = command.running || command.unconfirmed || message.status === 'pending' || expanded.has(message.id) || (command.exitCode !== undefined && command.exitCode !== 0 && !collapsed.has(message.id));
   return `<div class="tool-card command">
     <div class="tool-head" data-toggle-tool="${message.id}">${icons.terminal}<span class="tool-title">${message.status === 'pending' ? 'PerplexiCode wants to run' : 'Command'}</span>
       ${command.cwd ? `<span class="muted">in ${escapeHtml(command.cwd)}</span>` : ''}<span class="spacer"></span>
+      ${command.unconfirmed ? '<span class="badge warn">результат не подтверждён</span>' : ''}
       ${command.exitCode !== undefined && command.exitCode !== null && !command.running ? `<span class="exit ${command.exitCode === 0 ? 'ok' : 'fail'}">exit ${command.exitCode}</span>` : ''}
       ${statusIcon(message)}${command.output ? (open ? icons.chevronDown : icons.chevronRight) : ''}</div>
     <pre class="command-line"><code>$ ${escapeHtml(command.command)}</code></pre>
@@ -587,10 +602,21 @@ function renderTaskHeader(): void {
   const done = todos.filter((todo) => todo.status === 'completed').length;
   const current = todos.find((todo) => todo.status === 'in_progress');
   const modeName = state!.modes.find((mode) => mode.slug === task.mode)?.name || task.mode;
+  const banner = task.status.banner;
+  const bannerIcon = banner
+    ? banner.phase === 'retrying'
+      ? icons.spinner
+      : banner.phase === 'verifying'
+        ? icons.check
+        : banner.phase === 'needs_attention'
+          ? icons.warning
+          : icons.dot
+    : '';
   el.innerHTML = `
     ${task.depth > 0 ? `<div class="subtask-banner">${icons.subtask}<span>Subtask of: ${escapeHtml(task.parentTitle || 'parent task')}</span></div>` : ''}
     <div class="task-title-row">
       <button class="task-title ${titleExpanded ? 'expanded' : ''}" id="task-title-toggle"><span class="task-label">Task:</span> ${escapeHtml(task.title || 'New task')}</button>
+      <button class="icon-btn" id="task-diagnostics" data-action="copyDiagnostics" title="Скопировать диагностику">${icons.info}</button>
       <button class="icon-btn" id="task-export" title="Export task as Markdown">${icons.export}</button>
       <button class="icon-btn" id="task-close" title="Close task (start new)">${icons.x}</button>
     </div>
@@ -600,6 +626,11 @@ function renderTaskHeader(): void {
       <span class="chip">${task.status.requestCount} requests</span>
       <span class="chip state-${task.status.state}">${escapeHtml(stateLabel(task.status.state, task.busy))}</span>
     </div>
+    ${task.status.routeLine ? `<div class="task-route-line" title="Запрошенный режим → фактический, причина">${escapeHtml(task.status.routeLine)}</div>` : ''}
+    ${banner ? `<div class="task-state-card phase-${escapeHtml(banner.phase)}">
+      <div class="task-state-head">${bannerIcon}<b>${escapeHtml(banner.label)}</b><span class="badge">правило: ${escapeHtml(banner.rule)}</span></div>
+      <div class="task-state-reason">${escapeHtml(banner.reason)}</div>
+    </div>` : ''}
     ${todos.length > 0 ? `
       <div class="todos ${todosOpen ? 'open' : ''}">
         <button class="todos-head" id="todos-toggle">${icons.todo}<span>${current ? escapeHtml(current.text) : `Todo list`}</span><span class="spacer"></span><span class="muted">${done}/${todos.length}</span>${todosOpen ? icons.chevronDown : icons.chevronRight}</button>
@@ -1141,6 +1172,7 @@ function renderSettings(): void {
     case 'models':
       body = `
         ${field('root.subscriptionPlan', 'Subscription plan', 'Auto-detect from the account, or force Max to unlock Max-only models when detection fails', select('root.subscriptionPlan', state.general.subscriptionPlan, [['auto', 'Auto-detect'], ['pro', 'Pro'], ['max', 'Max']]))}
+        ${field('stopOnFallback', 'Остановиться вместо fallback', 'Останавливать задачу вместо переключения на другой режим, модель или аккаунт при недоступности запрошенного маршрута', checkbox('stopOnFallback', Boolean(s.stopOnFallback)))}
         ${field('webSearch', 'Web search', 'Auto: on for Ask/Architect, off for coding modes. The globe button overrides it per session.', select('webSearch', s.webSearch, [['auto', 'Auto (per mode)'], ['always', 'Always'], ['never', 'Never']]))}
         <div class="section-title">Available models (${state.models.length})</div>
         <div class="model-table">${state.models.map((model) => `<div class="model-row ${model.selectable ? '' : 'locked'}">${providerIcon(model.provider, model.id)}<span>${escapeHtml(model.label)}</span>${model.requiredPlan === 'max' ? '<span class="badge max">Max</span>' : ''}${model.supportsThinking ? '<span class="badge">Thinking</span>' : ''}<span class="spacer"></span><code class="muted">${escapeHtml(model.id)}</code></div>`).join('')}</div>`;
@@ -1184,7 +1216,10 @@ function renderSettings(): void {
         <div class="about"><div class="logo">${BRAND_MARK}</div><h3>PerplexiCode Kilo ${escapeHtml(state.version)}</h3>
         <p class="muted">Kilo Code-style agent for Perplexity. Fork of yuki-20/PerplexiCode.</p>
         <p class="muted small">Model snapshot: ${escapeHtml(state.general.modelsSnapshot)} · ${state.models.length} models</p>
-        <button class="btn ghost small" data-action="openSettingsJson">${icons.gear} Open all settings</button></div>`;
+        <div class="about-actions">
+          <button class="btn secondary small" data-action="copyDiagnostics">${icons.copy} Скопировать диагностику</button>
+          <button class="btn ghost small" data-action="openSettingsJson">${icons.gear} Open all settings</button>
+        </div></div>`;
   }
   el.innerHTML = `
     <div class="view-header"><button class="icon-btn" data-action="chat">${icons.chevronLeft}</button><h3>Settings</h3><span class="spacer"></span><button class="btn primary small" data-action="chat">Done</button></div>
@@ -1710,6 +1745,19 @@ document.addEventListener('click', (event) => {
     case 'clearTask': post({ type: 'clearTask' }); break;
     case 'resume': post({ type: 'sendMessage', text: input.value.trim() || 'Continue the task from where you left off.' }); input.value = ''; saveDraft(); break;
     case 'openSettingsJson': post({ type: 'openSettingsJson' }); break;
+    case 'copyDiagnostics': post({ type: 'requestDiagnosticsPreview', taskId: state?.task?.id }); break;
+    case 'diag-close':
+      diagnosticsPreviewJson = undefined;
+      renderDiagnosticsModal();
+      break;
+    case 'diag-copy':
+      if (diagnosticsPreviewJson) {
+        post({ type: 'copy', text: diagnosticsPreviewJson });
+        showToast('Диагностика скопирована');
+      }
+      diagnosticsPreviewJson = undefined;
+      renderDiagnosticsModal();
+      break;
     case 'library-presets': libraryTab = 'presets'; setView('library'); break;
     case 'library-agents': libraryTab = 'agents'; modeMenuOpen = false; setView('library'); break;
     case 'lib-cancel': libraryForm = undefined; renderLibrary(); break;
@@ -1875,6 +1923,11 @@ document.addEventListener('keydown', (event) => {
     post({ type: 'setMode', mode: next.slug });
     showToast(`${next.name} mode`);
   }
+  if (event.key === 'Escape' && diagnosticsPreviewJson !== undefined) {
+    diagnosticsPreviewJson = undefined;
+    renderDiagnosticsModal();
+    return;
+  }
   if (event.key === 'Escape' && (modelMenuOpen || modeMenuOpen || computeMenuOpen)) {
     computeMenuOpen = false;
     modelMenuOpen = false;
@@ -1891,6 +1944,30 @@ function autoResize(): void {
 function saveDraft(): void {
   draft = input.value;
   vscode.setState({ draft });
+}
+
+function renderDiagnosticsModal(): void {
+  const modal = $('diag-modal');
+  if (diagnosticsPreviewJson === undefined) {
+    modal.innerHTML = '';
+    modal.classList.add('hidden');
+    return;
+  }
+  modal.classList.remove('hidden');
+  modal.innerHTML = `
+    <div class="diag-dialog" role="dialog" aria-modal="true" aria-label="Предпросмотр диагностики">
+      <div class="diag-head">
+        <b>Предпросмотр диагностики</b>
+        <span class="spacer"></span>
+        <button class="icon-btn" data-action="diag-close" title="Закрыть">${icons.x}</button>
+      </div>
+      <div class="muted small">Без cookie, заголовков, промптов, кода и вывода терминала. Проверьте пакет перед копированием.</div>
+      <pre class="diag-preview"><code>${escapeHtml(diagnosticsPreviewJson)}</code></pre>
+      <div class="diag-actions">
+        <button class="btn ghost small" data-action="diag-close">Отмена</button>
+        <button class="btn primary small" data-action="diag-copy">${icons.copy} Скопировать диагностику</button>
+      </div>
+    </div>`;
 }
 
 let toastTimer: number | undefined;
