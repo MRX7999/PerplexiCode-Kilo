@@ -2,6 +2,15 @@
 
 All notable changes to PerplexiCode Kilo. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [4.0.1] - 2026-11-27
+
+Documentation-only release so the Marketplace and Open VSX pages show the 4.0 README. No code or behaviour changes.
+
+### Documentation
+- New diagrams in `docs/visuals`: road to 4.0 (`whats-new-4`), remote core security boundary (`remote-core`), worktree Apply / Discard / Conflict flow (`worktree-flow`) and the `@repo` benchmark chart (`repo-map-benchmark`), each with an SVG source.
+- "Migrating to 4.0" is now in English, as a table of all eleven behaviour changes with what to do for each; the old `#миграция-на-40` anchor still works.
+- Remaining Russian UI strings in feature descriptions replaced with English wording; removed a reference to a non-existent `pcode trust` command.
+
 ## [4.0.0] - 2026-11-27
 
 ### Added

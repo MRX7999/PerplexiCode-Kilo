@@ -920,7 +920,7 @@ test('F31: `QuickEditStreamAssembler` & `runInlineQuickEdit` stream live diffs a
 
   // Verify package.json 4.0.0, Cmd/Ctrl+I keybinding, preserved settings, and README Migration section
   const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'));
-  assert.equal(pkg.version, '4.0.0');
+  assert.match(pkg.version, /^4\.0\.\d+$/);
   const quickEditCmd = pkg.contributes.commands.find((c: any) => c.command === 'perplexicodeKilo.quickEditSelection');
   assert.ok(quickEditCmd, 'perplexicodeKilo.quickEditSelection command must be registered');
   const quickEditKey = pkg.contributes.keybindings.find((k: any) => k.command === 'perplexicodeKilo.quickEditSelection');
@@ -928,7 +928,7 @@ test('F31: `QuickEditStreamAssembler` & `runInlineQuickEdit` stream live diffs a
   assert.equal(quickEditKey?.mac, 'cmd+i');
 
   const readme = fs.readFileSync(path.join(process.cwd(), 'README.md'), 'utf8');
-  assert.match(readme, /## Миграция на 4\.0/, 'README.md must include the "Миграция на 4.0" section');
+  assert.match(readme, /## Migrating to 4\.0/, 'README.md must include the "Migrating to 4.0" section');
   assert.match(readme, /pcode serve/);
   assert.match(readme, /stopOnFallback/);
   assert.match(readme, /worktree/);
