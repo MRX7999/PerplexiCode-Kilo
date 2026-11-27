@@ -3,6 +3,7 @@ import type * as dns from 'dns';
 import * as fs from 'fs';
 import * as http from 'http';
 import * as https from 'https';
+import * as os from 'os';
 import * as path from 'path';
 import { extractSingleFunctionHeader, findFunctionBlockEnd, parseFunctionHeaderLine } from './diffEngine';
 import { analyzeShellCommand, commandTouchesProtectedConfig, hasFileOutputRedirection } from './shellParser';
@@ -57,6 +58,20 @@ export const IGNORED_DIRS = new Set([
   '__pycache__', '.venv', 'venv', '.idea', '.gradle', 'target', 'Pods', 'DerivedData', '.parcel-cache',
   'coverage', '.pytest_cache', '.mypy_cache', 'vendor',
 ]);
+
+/**
+ * True when `dir` is the user's home directory or a filesystem root. With no folder open the agent
+ * runs in the home directory; recursive scans there walk ~/Library, iCloud and other protected
+ * folders, which can stall on macOS permission prompts, so callers skip automatic scans.
+ */
+export function isBroadScanRoot(dir: string, homeDir: string = os.homedir()): boolean {
+  const resolved = path.resolve(dir);
+  const normalize = (value: string) => (process.platform === 'win32' ? value.toLowerCase() : value);
+  if (homeDir && normalize(resolved) === normalize(path.resolve(homeDir))) {
+    return true;
+  }
+  return normalize(resolved) === normalize(path.parse(resolved).root);
+}
 
 const BINARY_EXTENSIONS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.bmp', '.tiff', '.pdf', '.zip', '.gz', '.tgz', '.rar', '.7z',

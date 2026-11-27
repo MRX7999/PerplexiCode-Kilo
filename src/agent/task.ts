@@ -27,6 +27,7 @@ import {
   CommandResult,
   globFilesTool,
   insertContent,
+  isBroadScanRoot,
   isCommandAutoApproved,
   isInsideWorkspace,
   listCodeDefinitionsTool,
@@ -778,7 +779,7 @@ export class AgentTask {
     let repoMapBlock: string | undefined;
     let repoMapOmittedFiles: number | undefined;
     const hasInlineRepoMap = this.apiMessages.some((m) => m.content.includes('<repo_map>'));
-    if (settings.repoMapEnabled && !hasInlineRepoMap) {
+    if (settings.repoMapEnabled && !hasInlineRepoMap && !isBroadScanRoot(this.options.host.cwd)) {
       const host = this.options.host;
       const editedInTask = [...new Set(this.checkpoints.map((cp) => toPosixRelative(host.cwd, cp.path)))];
       const latestQuery = this.apiMessages[0]?.content || this.title;
@@ -2582,7 +2583,7 @@ export class AgentTask {
     const host = this.options.host;
     const selection = this.options.getSelection();
     let fileList: string | undefined;
-    if (includeFiles) {
+    if (includeFiles && !isBroadScanRoot(host.cwd)) {
       fileList = await listFilesTool(host, host.cwd, true, 200).catch(() => undefined);
     }
     return formatEnvironmentDetails({
