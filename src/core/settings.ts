@@ -82,6 +82,10 @@ export interface CoreSettings {
   maxRequestsPerMinute?: number;
   /** 3.7 (F18): maximum concurrent subtasks run in parallel by Orchestrator (default 3). */
   maxParallelSubtasks?: number;
+  /** 3.8 (F24): run cross-family model review on diff + verify before attempt_completion (default false). */
+  crossModelReview?: boolean;
+  /** 3.8 (F24): optional preferred reviewer model ID (must differ in family from author, else auto-selected). */
+  crossModelReviewModel?: string;
   env: Record<string, string>;
   /** Execute up to N read-only tool calls from one model answer. 1 disables batching. */
   readBatchSize: number;
@@ -94,6 +98,7 @@ export function defaultSettings(): CoreSettings {
     permissions: { allow: [], ask: [], deny: [], defaultMode: 'default', protectSecrets: true, additionalDirectories: [] },
     hooks: {},
     verify: { maxAttempts: 2, timeoutSec: 600 },
+    crossModelReview: false,
     env: {},
     readBatchSize: 5,
     sources: [],
@@ -224,6 +229,12 @@ export function mergeLayer(target: CoreSettings, raw: Record<string, unknown>, a
   }
   if (typeof raw.maxParallelSubtasks === 'number' && Number.isFinite(raw.maxParallelSubtasks)) {
     target.maxParallelSubtasks = Math.max(1, Math.min(8, Math.floor(raw.maxParallelSubtasks)));
+  }
+  if (typeof raw.crossModelReview === 'boolean') {
+    target.crossModelReview = raw.crossModelReview;
+  }
+  if (typeof raw.crossModelReviewModel === 'string' && raw.crossModelReviewModel.trim()) {
+    target.crossModelReviewModel = raw.crossModelReviewModel.trim();
   }
   if (typeof raw.readBatchSize === 'number') {
     target.readBatchSize = Math.max(1, Math.min(10, Math.floor(raw.readBatchSize)));

@@ -404,6 +404,14 @@ REPL commands: `/help`, `/mode`, `/permissions`, `/model`, `/compute`, `/mcp`, `
 - `pcode worktree list`, `pcode worktree apply <name>`, and `pcode worktree discard <name>` inspect, non-mergingly apply (stopping with exit code `6` and the conflicting file list on collision), or remove isolated worktrees.
 - Hooks `WorktreeCreate` and `WorktreeRemove` receive `{ session_id, cwd, hook_event_name, worktree_name, worktree_path, base_commit, reason? }` on stdin; `WorktreeCreate` can block with exit `2` or override `{ "worktreePath": "..." }`.
 
+### MCP OAuth, `/server:skill` Prompts, Argument Rules & Cross-Model Review (3.8 — F21–F25)
+
+- `pcode mcp login <server>` / `pcode mcp logout <server>` authenticate HTTP/SSE MCP servers via OAuth 2.0 + PKCE loopback redirect (`127.0.0.1`), storing credentials in VS Code `SecretStorage` (IDE) or the OS keychain (CLI) without argv/log exposure and refreshing automatically on HTTP `401`.
+- Connected MCP prompts appear in the IDE `/` popup and CLI REPL as `/<server>:<skill> [arg="value"]`.
+- `permissions.allow` / `ask` / `deny` support argument-level MCP matchers (`mcp__server__tool(key:glob)`, nested JSON patterns, and `mcp__server__read_resource(uri:glob)`), with `deny` taking precedence even when `autoApprove.mcp` is enabled.
+- `crossModelReview` (`--cross-review` / `--no-cross-review` / `--cross-review-model <id>`, default `false`) verifies the git diff and `verify` output with a model from another family (`anthropic` ↔ `openai` ↔ `google` ↔ `xai`) before `attempt_completion`.
+- Compute mode `council` (F25) is intentionally omitted because `src/api/bundledModelsConfig.json` contains no `council` mode identifier or wire invocation contract.
+
 Prompts in the REPL:
 
 - `y`: allow once

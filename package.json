@@ -2,7 +2,7 @@
   "name": "perplexicode-kilo",
   "displayName": "PerplexiCode Kilo",
   "description": "Kilo Code-style autonomous coding agent (Code / Architect / Ask / Debug / Orchestrator / Review modes, tools, diffs, checkpoints, auto-approve) powered by your Perplexity Pro/Max subscription and its latest models.",
-  "version": "3.7.0",
+  "version": "3.8.0",
   "publisher": "MRX7999",
   "engines": {
     "vscode": "^1.85.0"
@@ -135,6 +135,18 @@
         "title": "MCP: Reconnect Servers",
         "category": "PerplexiCode",
         "icon": "$(plug)"
+      },
+      {
+        "command": "perplexicodeKilo.mcp.login",
+        "title": "MCP: OAuth Login to Server…",
+        "category": "PerplexiCode",
+        "icon": "$(key)"
+      },
+      {
+        "command": "perplexicodeKilo.mcp.logout",
+        "title": "MCP: OAuth Logout from Server…",
+        "category": "PerplexiCode",
+        "icon": "$(sign-out)"
       },
       {
         "command": "perplexicodeKilo.cycleMode",
@@ -671,6 +683,16 @@
           "minimum": 1,
           "maximum": 16,
           "description": "Maximum concurrent subtasks executed in parallel by Orchestrator (read-only modes in main tree, writing modes in isolated git worktrees)."
+        },
+        "perplexicodeKilo.agent.crossModelReview": {
+          "type": "boolean",
+          "default": false,
+          "description": "Before attempt_completion, run an independent review of git diff and verify results using a model from a different family than the authoring model."
+        },
+        "perplexicodeKilo.agent.crossModelReviewModel": {
+          "type": "string",
+          "default": "",
+          "description": "Optional explicit model ID for cross-model review (leave empty to automatically pick a model from a different family)."
         },
         "perplexicodeKilo.rotation.maxRequestsPerMinute": {
           "type": "number",

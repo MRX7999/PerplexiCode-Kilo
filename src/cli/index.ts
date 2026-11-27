@@ -13,7 +13,22 @@ import { buildDiagnosticBundle, serializeDiagnosticBundle } from '../core/diagno
 import { formatContextReportForCli } from '../core/contextInspector';
 import { applyPresetPrompt, installAgentPreset, installSkillPreset, librarySnapshot, loadTaskPresets } from '../core/library';
 import { listSessions, perplexicodeHome, SessionJournal, sessionsDir } from '../core/journal';
-import { loadMcpServers, McpRegistry, McpServerState, McpTransportType, projectDefinesStdioMcpServers, removeMcpServerConfig, saveMcpServerConfig } from '../core/mcp';
+import {
+  formatMcpPromptSlashCommand,
+  loadMcpServers,
+  McpRegistry,
+  McpServerState,
+  McpTransportType,
+  projectDefinesStdioMcpServers,
+  removeMcpServerConfig,
+  resolveMcpPromptSlashCommand,
+  saveMcpServerConfig,
+} from '../core/mcp';
+import {
+  createMcpOAuthRuntimeProvider,
+  performMcpOAuthLogin,
+  SystemKeychainMcpOAuthStore,
+} from '../core/mcpOAuth';
 import { findMcpCatalogEntry, installMcpCatalogEntry, MCP_CATALOG } from '../core/mcpCatalog';
 import { cliStores, parseCookieInput } from '../core/nodeStores';
 import { OpenAICompatibleProvider, openAIOptionsFromEnv } from '../core/openaiProvider';
@@ -104,6 +119,12 @@ export interface CliOptions {
   worktree?: boolean | string;
   /** F18: Max concurrent subagents in Orchestrator mode. */
   maxParallelSubtasks?: number;
+  /** F21: Optional OAuth client ID and scopes for `pcode mcp login <server>`. */
+  oauthClientId?: string;
+  oauthScopes: string[];
+  /** F24: Enable/disable cross-model review before attempt_completion, and optional reviewer model ID. */
+  crossModelReview?: boolean;
+  crossModelReviewModel?: string;
 }
 
 /**
@@ -171,6 +192,7 @@ export function parseArgs(argv: string[]): CliOptions {
     mcpHeaders: [],
     bundle: false,
     yes: false,
+    oauthScopes: [],
   };
   const positional: string[] = [];
   for (let i = 0; i < argv.length; i++) {
@@ -313,6 +335,11 @@ export function parseArgs(argv: string[]): CliOptions {
         options.maxParallelSubtasks = n;
         break;
       }
+      case '--client-id': options.oauthClientId = value(); break;
+      case '--oauth-scope': options.oauthScopes.push(...value().split(/[,\s]+/).filter(Boolean)); break;
+      case '--cross-review': case '--cross-model-review': options.crossModelReview = true; break;
+      case '--no-cross-review': case '--no-cross-model-review': options.crossModelReview = false; break;
+      case '--cross-review-model': options.crossModelReviewModel = value(); break;
       case '-h': case '--help': options.help = true; break;
       case '--version': options.version = true; break;
       default:
@@ -386,6 +413,8 @@ Commands:
   pcode mcp remove <name> [-s scope]       delete a server from the config files
   pcode mcp get <name>                     show one server, connect and list its tools
   pcode mcp test [name]                    connect to the servers and report tools/resources
+  pcode mcp login <name> [--client-id id]  OAuth 2.0 + PKCE login (127.0.0.1 loopback; tokens in OS keychain)
+  pcode mcp logout <name>                  remove stored MCP OAuth tokens from OS keychain
   pcode worktree list                      list active isolated git worktrees created by PerplexiCode
   pcode worktree apply <name>              apply worktree diff onto main checkout (no auto-merge/push; stops on conflict)
   pcode worktree discard <name>            discard worktree changes and remove isolated tree
@@ -598,11 +627,13 @@ function createMcpRegistry(options: CliOptions, trusted: boolean, log: (line: st
   if (options.noMcp) {
     return undefined;
   }
+  const oauthStore = new SystemKeychainMcpOAuthStore();
   const registry = new McpRegistry({
     cwd: options.cwd,
     trustProject: trusted,
     extraConfigs: options.mcpConfigs,
     strict: options.strictMcpConfig,
+    oauthProvider: createMcpOAuthRuntimeProvider(oauthStore),
     log,
   });
   return registry.hasServers() ? registry : undefined;
@@ -649,6 +680,8 @@ async function buildSession(options: CliOptions, ui: SessionUi): Promise<Session
     autoCompactKeepSteps: settings.autoCompactKeepSteps ?? 4,
     worktreeEnabled: Boolean(options.worktree),
     maxParallelSubtasks: options.maxParallelSubtasks ?? settings.maxParallelSubtasks ?? 3,
+    crossModelReview: options.crossModelReview ?? settings.crossModelReview ?? false,
+    crossModelReviewModel: options.crossModelReviewModel ?? settings.crossModelReviewModel,
   };
   let sessionRef: CoreSession | undefined;
   const session = new CoreSession({
@@ -815,15 +848,73 @@ class InteractiveUi implements SessionUi {
   readonly rl: readline.Interface;
   private readonly printer: Printer;
   private queue: Promise<unknown> = Promise.resolve();
+  private readonly pipedLines: string[] = [];
+  private readonly pipedWaiters: Array<{ resolve: (line: string) => void; reject: (err: Error) => void }> = [];
+  private pipedClosed = false;
+  private readonly isPiped: boolean;
   permissionModeRef: { set?: (mode: PermissionMode) => void } = {};
+  slashCandidatesRef: () => string[] = () => [];
 
   constructor(verbose: boolean) {
-    this.rl = readline.createInterface({ input: process.stdin, output: process.stderr, terminal: true, historySize: 200 });
+    this.isPiped = !process.stdin.isTTY;
+    this.rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stderr,
+      terminal: !this.isPiped,
+      historySize: 200,
+      completer: (line: string): [string[], string] => {
+        if (!line.startsWith('/')) return [[], line];
+        const builtins = [
+          '/help', '/mode', '/permissions', '/model', '/compute', '/mcp',
+          '/context', '/worktree', '/compact', '/clear', '/agents', '/skills',
+          '/status', '/todos', '/resume', '/exit',
+        ];
+        const candidates = [...new Set([...builtins, ...this.slashCandidatesRef()])];
+        const hits = candidates.filter((c) => c.startsWith(line));
+        return [hits.length > 0 ? hits : candidates, line];
+      },
+    });
+    if (this.isPiped) {
+      this.rl.on('line', (line) => {
+        const waiter = this.pipedWaiters.shift();
+        if (waiter) waiter.resolve(line);
+        else this.pipedLines.push(line);
+      });
+      this.rl.on('close', () => {
+        this.pipedClosed = true;
+        while (this.pipedWaiters.length > 0) {
+          this.pipedWaiters.shift()!.reject(new Error('EOF'));
+        }
+      });
+    }
     this.printer = new Printer(() => true, verbose);
   }
 
   question(text: string): Promise<string> {
-    const next = this.queue.then(() => new Promise<string>((resolve) => this.rl.question(text, resolve)));
+    if (this.isPiped) {
+      const next = this.queue.then(() => {
+        process.stderr.write(text);
+        if (this.pipedLines.length > 0) {
+          return Promise.resolve(this.pipedLines.shift()!);
+        }
+        if (this.pipedClosed) {
+          return Promise.reject(new Error('EOF'));
+        }
+        return new Promise<string>((resolve, reject) => {
+          this.pipedWaiters.push({ resolve, reject });
+        });
+      });
+      this.queue = next.catch(() => undefined);
+      return next;
+    }
+    const next = this.queue.then(() => new Promise<string>((resolve, reject) => {
+      const onClose = () => reject(new Error('EOF'));
+      this.rl.once('close', onClose);
+      this.rl.question(text, (answer) => {
+        this.rl.removeListener('close', onClose);
+        resolve(answer);
+      });
+    }));
     this.queue = next.catch(() => undefined);
     return next;
   }
@@ -1055,7 +1146,8 @@ const SLASH_HELP = `/help              this help
 /worktree [status|apply|discard] inspect, apply, or discard isolated git worktree changes
 /compact [focus]   summarise the conversation to save context
 /clear             start a new session
-/agents  /skills   list subagents / skills
+/agents  /skills   list subagents, skills and MCP server:skill prompts
+/<server>:<skill>  run an MCP prompt from a connected server (e.g. /github:review_pr pr=42)
 /status            session, model, verification
 /todos             current todo list
 /resume [id]       resume a saved session (default: latest)
@@ -1064,6 +1156,11 @@ const SLASH_HELP = `/help              this help
 async function runInteractive(options: CliOptions): Promise<number> {
   const ui = new InteractiveUi(options.verbose);
   let bundle = await buildSession(options, ui);
+  ui.slashCandidatesRef = () =>
+    (bundle.mcp?.getAllPrompts() || []).map((p) => formatMcpPromptSlashCommand(p.server, p.name));
+  if (bundle.mcp) {
+    void bundle.mcp.ensureConnected().catch(() => undefined);
+  }
   ui.permissionModeRef.set = (mode) => {
     bundle.session.permissionMode = mode;
     out(dim(`permission mode → ${mode}`));
@@ -1230,7 +1327,18 @@ async function runInteractive(options: CliOptions): Promise<number> {
         case 'skills': {
           const skills = loadSkills(options.cwd);
           for (const k of skills) out(`${bold(k.name)} ${dim(`[${k.scope}]`)} ${k.description}`);
-          if (skills.length === 0) out(dim('no skills (.perplexicode/skills/<name>/SKILL.md or .claude/skills)'));
+          if (bundle.mcp) {
+            await bundle.mcp.ensureConnected().catch(() => undefined);
+            for (const p of bundle.mcp.getAllPrompts()) {
+              const argsHint = p.arguments?.length
+                ? ` (${p.arguments.map((a) => (a.required ? `${a.name}*` : a.name)).join(', ')})`
+                : '';
+              out(`${bold(formatMcpPromptSlashCommand(p.server, p.name))} ${dim('[mcp]')} ${p.description || ''}${dim(argsHint)}`);
+            }
+          }
+          if (skills.length === 0 && !(bundle.mcp?.getAllPrompts().length)) {
+            out(dim('no skills (.perplexicode/skills/<name>/SKILL.md, .claude/skills, or connected MCP prompts)'));
+          }
           break;
         }
         case 'status': {
@@ -1251,8 +1359,23 @@ async function runInteractive(options: CliOptions): Promise<number> {
           bundle = await buildSession(options, ui);
           await exec(() => bundle.session.resume(arg || 'latest'));
           break;
-        default:
+        default: {
+          if (cmd.includes(':') && bundle.mcp) {
+            await bundle.mcp.ensureConnected().catch(() => undefined);
+            const matched = resolveMcpPromptSlashCommand(line, bundle.mcp.getAllPrompts());
+            if (matched) {
+              try {
+                const expanded = await bundle.mcp.getPrompt(matched.prompt.server, matched.prompt.name, matched.args);
+                out(dim(`[mcp ${matched.prompt.server}:${matched.prompt.name}]`));
+                await exec(() => bundle.session.run(expanded));
+              } catch (err) {
+                out(red(`MCP prompt error: ${(err as Error).message}`));
+              }
+              break;
+            }
+          }
           out(red(`unknown command /${cmd} — /help`));
+        }
       }
       continue;
     }
@@ -1318,7 +1441,15 @@ function parseCatalogValues(items: string[]): Record<string, string> {
 async function cmdMcp(options: CliOptions): Promise<number> {
   const sub = options.args[0] || 'list';
   const trusted = options.trustProject || isTrusted(options.cwd);
-  const makeRegistry = () => new McpRegistry({ cwd: options.cwd, trustProject: trusted, extraConfigs: options.mcpConfigs, strict: options.strictMcpConfig, log: (line) => { if (options.verbose) out(dim(line)); } });
+  const oauthStore = new SystemKeychainMcpOAuthStore();
+  const makeRegistry = () => new McpRegistry({
+    cwd: options.cwd,
+    trustProject: trusted,
+    extraConfigs: options.mcpConfigs,
+    strict: options.strictMcpConfig,
+    oauthProvider: createMcpOAuthRuntimeProvider(oauthStore),
+    log: (line) => { if (options.verbose) out(dim(line)); },
+  });
 
   switch (sub) {
     case 'catalog': {
@@ -1448,8 +1579,78 @@ async function cmdMcp(options: CliOptions): Promise<number> {
         await registry.closeAll().catch(() => undefined);
       }
     }
+    case 'login': {
+      const name = options.args[1];
+      if (!name) {
+        out('usage: pcode mcp login <server> [--client-id <id>] [--oauth-scope <scope1,scope2>]');
+        return 64;
+      }
+      const servers = loadMcpServers(options.cwd, { extraConfigs: options.mcpConfigs, strict: options.strictMcpConfig });
+      const server = servers.find((s) => s.name === name);
+      if (!server) {
+        out(red(`Unknown MCP server '${name}'. Configured: ${servers.map((s) => s.name).join(', ') || 'none'}.`));
+        return 1;
+      }
+      if (!server.url || server.type === 'stdio') {
+        out(red(`MCP server '${name}' uses stdio transport; OAuth login applies to HTTP/SSE servers with a URL.`));
+        return 64;
+      }
+      try {
+        const tokens = await performMcpOAuthLogin({
+          serverName: server.name,
+          serverUrl: server.url,
+          store: oauthStore,
+          oauthConfig: server.oauth,
+          clientId: options.oauthClientId,
+          scopes: options.oauthScopes.length > 0 ? options.oauthScopes : undefined,
+          openAuthorizationUrl: (authUrl) => {
+            out(`Откройте ссылку в браузере для авторизации MCP-сервера '${server.name}':\n  ${authUrl}`);
+            if (process.env.PCODE_OAUTH_NO_OPEN === '1') {
+              return;
+            }
+            try {
+              if (process.platform === 'darwin') {
+                spawnSync('open', [authUrl], { stdio: 'ignore' });
+              } else if (process.platform === 'win32') {
+                spawnSync('cmd', ['/c', 'start', '', authUrl], { stdio: 'ignore' });
+              } else {
+                spawnSync('xdg-open', [authUrl], { stdio: 'ignore' });
+              }
+            } catch {
+              // headless environment: user opens the printed URL
+            }
+          },
+        });
+        const expiryInfo = tokens.expiresAt ? ` (expires ${new Date(tokens.expiresAt).toISOString()})` : '';
+        out(`${green('✔')} OAuth токен для MCP-сервера '${server.name}' сохранён в системном хранилище ключей${expiryInfo}.`);
+        return 0;
+      } catch (err) {
+        out(red(`OAuth login failed for '${server.name}': ${(err as Error).message}`));
+        return 1;
+      }
+    }
+    case 'logout': {
+      const name = options.args[1];
+      if (!name) {
+        out('usage: pcode mcp logout <server>');
+        return 64;
+      }
+      const servers = loadMcpServers(options.cwd, { extraConfigs: options.mcpConfigs, strict: options.strictMcpConfig });
+      const server = servers.find((s) => s.name === name);
+      if (!server || !server.url) {
+        out(yellow(`No HTTP/SSE MCP server '${name}' configured.`));
+        return 1;
+      }
+      const removed = await oauthStore.remove(server.name, server.url);
+      if (!removed) {
+        out(dim(`Для MCP-сервера '${server.name}' сохранённых OAuth-токенов не найдено.`));
+        return 0;
+      }
+      out(`${green('✔')} OAuth токены для MCP-сервера '${server.name}' удалены из хранилища ключей.`);
+      return 0;
+    }
     default:
-      out(red(`unknown mcp command '${sub}' (catalog, install, list, add, remove, get, test)`));
+      out(red(`unknown mcp command '${sub}' (catalog, install, list, add, remove, get, test, login, logout)`));
       return 64;
   }
 }
@@ -1810,7 +2011,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       case 'doctor': return await cmdDoctor(options);
       default:
         applyPresetOption(options);
-        if (options.print || !process.stdin.isTTY || !process.stderr.isTTY) {
+        const forceRepl = process.env.PCODE_FORCE_REPL === '1';
+        if (options.print || (!forceRepl && (!process.stdin.isTTY || !process.stderr.isTTY))) {
           options.print = true;
           return await runHeadless(options);
         }

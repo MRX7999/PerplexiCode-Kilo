@@ -47,6 +47,9 @@ import { getComputeModeOption } from '../api/modelCatalog';
 import { computeBackoffWithJitterMs } from '../api/rotationEngine';
 import { checkAutoCompactThreshold, structuredAutoCompact } from '../core/compaction';
 import { assembleAndInspectPrompt, ContextInspectionReport } from '../core/contextInspector';
+import { collectWorkspaceReviewDiff, runCrossModelReview } from '../core/crossReview';
+import { evaluatePermission } from '../core/permissions';
+import { loadSettings } from '../core/settings';
 import { enforceWorktreeToolCall, runWithConcurrencyLimit } from '../core/worktree';
 import type { CoreEvent, GateContext, GateVerdict, ToolGate } from '../core/types';
 import { EDIT_TOOLS, READ_TOOLS } from '../core/types';
@@ -196,6 +199,11 @@ export class AgentTask {
   private readonly excludedContextIds = new Set<string>();
   /** F13: Statistics of the latest auto/manual compaction run, surfaced in Context Inspector. */
   private lastCompactionStats?: { before: number; after: number; compactedMessages: number };
+  /** F24: Edited relative file paths, edit generation counter, and latest verify/command summary for cross-model review. */
+  private readonly editedFilesSet = new Set<string>();
+  private editGeneration = 0;
+  private crossReviewedGeneration = 0;
+  private lastCommandSummary = '';
 
   constructor(private readonly options: TaskOptions) {
     const restore = options.restore;
@@ -1335,6 +1343,64 @@ export class AgentTask {
             return 'continue';
           }
         }
+        // F24: Cross-model review before attempt_completion (opt-in, default false).
+        if (
+          settings.crossModelReview === true
+          && !this.parentId
+          && this.didEditFile
+          && this.crossReviewedGeneration < this.editGeneration
+          && !this.abortController.signal.aborted
+        ) {
+          this.crossReviewedGeneration = this.editGeneration;
+          const selection = this.options.getSelection();
+          this.setBanner(
+            'verifying',
+            'проверяю результат',
+            'Кросс-модельное ревью diff и результата verify моделью другого семейства',
+            'crossModelReview'
+          );
+          try {
+            const diff = await collectWorkspaceReviewDiff(this.options.host.cwd, this.editedFilesSet);
+            const verifySummary = [
+              this.options.gate?.stop ? 'Stop/verify gate: PASSED' : 'Stop/verify gate: not configured',
+              this.lastCommandSummary,
+            ].filter(Boolean).join('\n\n');
+            const review = await runCrossModelReview({
+              provider: this.options.provider,
+              authorModelId: selection.baseModelId,
+              preferredReviewerModelId: settings.crossModelReviewModel,
+              diff,
+              verifySummary,
+              completionSummary: resultText,
+              signal: this.abortController.signal,
+            });
+            if (!this.abortController.signal.aborted) {
+              const header = `Cross-model review (${review.authorModelId} [${review.authorFamily}] → ${review.reviewerModelId} [${review.reviewerFamily}]): ${review.approved ? 'APPROVE' : 'REQUEST_CHANGES'}`;
+              this.say({ type: 'info', text: `${header} — ${review.summary}` });
+              if (!review.approved) {
+                this.stopAttempts += 1;
+                const bullets = review.findings.map((f) => `- ${f}`).join('\n');
+                this.pushToolResult(
+                  tool.name,
+                  undefined,
+                  `[NOT ACCEPTED — ${header}]\n${bullets || review.summary}\n\nAddress the blocking defects above and then call attempt_completion again.`
+                );
+                return 'continue';
+              }
+            }
+          } catch (reviewErr) {
+            if (!this.abortController.signal.aborted) {
+              this.say({
+                type: 'info',
+                text: `Cross-model review skipped due to error: ${(reviewErr as Error).message || String(reviewErr)}`,
+              });
+            }
+          } finally {
+            if (this.status.banner?.rule === 'crossModelReview') {
+              this.clearBanner();
+            }
+          }
+        }
         if (this.parentId) {
           this.say({ type: 'completion', text: resultText });
           this.finishCompletion(resultText);
@@ -1670,6 +1736,8 @@ export class AgentTask {
       await fs.promises.mkdir(path.dirname(absPath), { recursive: true });
       await host.writeFile(absPath, next);
       this.didEditFile = true;
+      this.editedFilesSet.add(displayPath);
+      this.editGeneration += 1;
       this.options.callbacks.onFileEdited?.(absPath);
       message.status = 'done';
       this.emit(message);
@@ -1810,6 +1878,7 @@ export class AgentTask {
     const status = result.timedOut
       ? `The command timed out after ${settings.commandTimeoutSec}s and was terminated.`
       : `Exit code: ${result.exitCode}`;
+    this.lastCommandSummary = `Command: ${command}\n${status}\nOutput:\n${output.slice(0, 2000)}`;
     this.consecutiveMistakes = 0;
     this.pushToolResult(tool.name, command, `Command executed in ${toPosixRelative(host.cwd, cwd)}.\n${status}\nOutput:\n${output}${feedback ? `\n\n<feedback>\n${feedback}\n</feedback>` : ''}`);
     return 'continue';
@@ -1866,6 +1935,46 @@ export class AgentTask {
     const server = (params.server_name || '').trim();
     if (tool.name !== 'list_mcp_resources' && !server) {
       return missing('server_name');
+    }
+
+    // F23: Ensure layered permissions.deny / ask rules apply to MCP calls even when no external gate
+    // was wired and even when settings.autoApprove.mcp === true.
+    let standaloneMcpVerdict: GateVerdict | undefined;
+    if (!this.options.gate) {
+      const layered = loadSettings(this.options.host.cwd);
+      standaloneMcpVerdict = evaluatePermission(
+        {
+          allow: layered.permissions.allow,
+          ask: layered.permissions.ask,
+          deny: layered.permissions.deny,
+          mode: layered.permissions.defaultMode,
+          protectSecrets: layered.permissions.protectSecrets,
+          additionalDirectories: layered.permissions.additionalDirectories,
+        },
+        { name: tool.name, params: tool.params },
+        this.options.host.cwd
+      );
+    }
+    const effectiveMcpVerdict = this.gateVerdict || standaloneMcpVerdict;
+    if (effectiveMcpVerdict?.decision === 'deny') {
+      const reason = effectiveMcpVerdict.reason || 'Denied by MCP permission policy.';
+      this.consecutiveMistakes += 1;
+      this.say({
+        type: 'tool',
+        tool: {
+          name: tool.name,
+          server: server || undefined,
+          title: `Blocked: ${toolActivityLabel(tool.name)}${server ? ` ${server}` : ''}${params.tool_name ? `/${params.tool_name}` : ''}`,
+          content: `${reason}${effectiveMcpVerdict.source ? `\n(${effectiveMcpVerdict.source})` : ''}`,
+        },
+        status: 'rejected',
+      });
+      this.emitEvent({ type: 'denied', tool: tool.name, reason, source: effectiveMcpVerdict.source || 'permissions.deny' });
+      this.pushToolResult(tool.name, server || undefined, `[DENIED] ${reason}`);
+      return 'continue';
+    }
+    if (standaloneMcpVerdict && !this.gateVerdict) {
+      this.gateVerdict = standaloneMcpVerdict;
     }
 
     if (tool.name === 'list_mcp_resources') {

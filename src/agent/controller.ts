@@ -17,9 +17,10 @@ import {
 import { ModelFetcher } from '../api/modelFetcher';
 import { RotationEngine } from '../api/rotationEngine';
 import { AccountPlan, ComputeMode, RotationStrategy } from '../api/types';
-import { loadMcpServers, McpRegistry, McpServerState, removeMcpServerConfig, saveMcpServerConfig } from '../core/mcp';
+import { loadMcpServers, McpRegistry, McpServerState, parseMcpPromptArgs, removeMcpServerConfig, saveMcpServerConfig } from '../core/mcp';
 import { buildMcpCatalogConfig, findMcpCatalogEntry, installMcpCatalogEntry, MCP_CATALOG } from '../core/mcpCatalog';
 import { McpCredentialCache } from '../core/mcpCredentials';
+import { createMcpOAuthRuntimeProvider, performMcpOAuthLogin, SecretStorageMcpOAuthStore } from '../core/mcpOAuth';
 import { AccountManager } from '../storage/accountManager';
 import { DEFAULT_MODE_SLUG, getModeBySlug, MODES } from './modes';
 import { AgentTask, AskResponse } from './task';
@@ -103,6 +104,8 @@ export class AgentController implements vscode.Disposable {
   private readonly mcpRegistries = new Map<string, McpRegistry>();
   private mcpTimer?: NodeJS.Timeout;
   private readonly mcpCredentials: McpCredentialCache;
+  private readonly mcpOAuthStore: SecretStorageMcpOAuthStore;
+  private readonly mcpOAuthAuthenticated = new Set<string>();
   private mcpCatalogInstalling = false;
 
   constructor(
@@ -116,6 +119,7 @@ export class AgentController implements vscode.Disposable {
   ) {
     this.output = output;
     this.mcpCredentials = new McpCredentialCache(context.secrets);
+    this.mcpOAuthStore = new SecretStorageMcpOAuthStore(context.secrets);
     this.core = new CoreBridge((line) => this.output.appendLine(line));
     const stored = context.globalState.get<StoredSelection>(SELECTION_KEY);
     const configuredDefault = readSetting<string>('perplexicodeKilo.defaultModel', 'turbo');
@@ -202,6 +206,7 @@ export class AgentController implements vscode.Disposable {
         trustProject: vscode.workspace.isTrusted,
         extraConfigs: readSetting<string[]>('perplexicodeKilo.mcp.extraConfigs', []),
         serverEnv: (name, _scope, file, raw) => this.mcpCredentials.env(file, name, raw),
+        oauthProvider: createMcpOAuthRuntimeProvider(this.mcpOAuthStore),
         log: (line) => this.output.appendLine(line),
       });
       this.mcpRegistries.set(key, registry);
@@ -236,7 +241,132 @@ export class AgentController implements vscode.Disposable {
       return [];
     }
     registry.reloadConfigs();
-    return registry.getStates();
+    const states = registry.getStates();
+    void this.refreshMcpOAuthFlags(states);
+    return states;
+  }
+
+  private async refreshMcpOAuthFlags(states: McpServerState[]): Promise<void> {
+    let changed = false;
+    for (const s of states) {
+      if (s.config.type === 'stdio' || !s.config.url) continue;
+      const key = `${s.config.name}::${s.config.url}`;
+      const existing = await this.mcpOAuthStore.get(s.config.name, s.config.url).catch(() => undefined);
+      const hasToken = Boolean(existing?.accessToken);
+      if (hasToken !== this.mcpOAuthAuthenticated.has(key)) {
+        if (hasToken) this.mcpOAuthAuthenticated.add(key);
+        else this.mcpOAuthAuthenticated.delete(key);
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.postState();
+    }
+  }
+
+  /** F21: OAuth 2.0 + PKCE login for an HTTP/SSE MCP server, storing tokens in VS Code SecretStorage. */
+  async mcpOAuthLogin(name?: string): Promise<void> {
+    const cwd = this.currentTask?.toJSON().workspace || this.workspaceRoot() || os.homedir();
+    const extraConfigs = readSetting<string[]>('perplexicodeKilo.mcp.extraConfigs', []);
+    const servers = loadMcpServers(cwd, { extraConfigs }).filter((s) => s.type !== 'stdio' && Boolean(s.url));
+    if (servers.length === 0) {
+      void vscode.window.showInformationMessage('PerplexiCode: нет настроенных HTTP/SSE MCP-серверов для OAuth входа.');
+      return;
+    }
+    let targetName = name;
+    if (!targetName) {
+      const picked = await vscode.window.showQuickPick(
+        servers.map((s) => ({ label: s.name, description: s.url, detail: `${s.type} · ${s.scope}` })),
+        { placeHolder: 'Выберите HTTP/SSE MCP-сервер для OAuth входа' }
+      );
+      if (!picked) return;
+      targetName = picked.label;
+    }
+    const server = servers.find((s) => s.name === targetName);
+    if (!server || !server.url) {
+      void vscode.window.showErrorMessage(`PerplexiCode: HTTP/SSE MCP-сервер '${targetName}' не найден.`);
+      return;
+    }
+    try {
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `PerplexiCode: OAuth вход в MCP '${server.name}' (ожидание браузера)…`,
+          cancellable: true,
+        },
+        async (_progress, cancellationToken) => {
+          const abort = new AbortController();
+          cancellationToken.onCancellationRequested(() => abort.abort());
+          await performMcpOAuthLogin({
+            serverName: server.name,
+            serverUrl: server.url!,
+            store: this.mcpOAuthStore,
+            oauthConfig: server.oauth,
+            signal: abort.signal,
+            openAuthorizationUrl: async (authUrl) => {
+              await vscode.env.openExternal(vscode.Uri.parse(authUrl));
+            },
+          });
+        }
+      );
+      this.mcpOAuthAuthenticated.add(`${server.name}::${server.url}`);
+      void vscode.window.showInformationMessage(`PerplexiCode: OAuth токен для MCP '${server.name}' сохранён в SecretStorage.`);
+      await this.mcpConnect(server.name);
+    } catch (error) {
+      const msg = (error as Error).message || String(error);
+      this.output.appendLine(`[mcp-oauth] login error (${server.name}): ${msg}`);
+      void vscode.window.showErrorMessage(`PerplexiCode: OAuth вход в '${server.name}' не удался: ${msg}`);
+    } finally {
+      this.postState();
+    }
+  }
+
+  /** F21: Removes stored MCP OAuth tokens from VS Code SecretStorage. */
+  async mcpOAuthLogout(name?: string): Promise<void> {
+    const cwd = this.currentTask?.toJSON().workspace || this.workspaceRoot() || os.homedir();
+    const extraConfigs = readSetting<string[]>('perplexicodeKilo.mcp.extraConfigs', []);
+    const servers = loadMcpServers(cwd, { extraConfigs }).filter((s) => s.type !== 'stdio' && Boolean(s.url));
+    if (servers.length === 0) {
+      void vscode.window.showInformationMessage('PerplexiCode: нет настроенных HTTP/SSE MCP-серверов.');
+      return;
+    }
+    let targetName = name;
+    if (!targetName) {
+      const picked = await vscode.window.showQuickPick(
+        servers.map((s) => ({ label: s.name, description: s.url, detail: `${s.type} · ${s.scope}` })),
+        { placeHolder: 'Выберите HTTP/SSE MCP-сервер для удаления OAuth токена' }
+      );
+      if (!picked) return;
+      targetName = picked.label;
+    }
+    const server = servers.find((s) => s.name === targetName);
+    if (!server || !server.url) return;
+    await this.mcpOAuthStore.remove(server.name, server.url);
+    this.mcpOAuthAuthenticated.delete(`${server.name}::${server.url}`);
+    void vscode.window.showInformationMessage(`PerplexiCode: OAuth токен для MCP '${server.name}' удалён из SecretStorage.`);
+    this.postState();
+  }
+
+  /** F22: Resolves an MCP prompt (`/server:skill`) and dispatches its expanded text to the agent. */
+  private async runMcpPrompt(serverName: string, promptName: string, rawArgs: string): Promise<void> {
+    const cwd = this.currentTask?.toJSON().workspace || this.workspaceRoot() || os.homedir();
+    await this.restoreMcpCredentials(cwd);
+    const registry = this.mcpFor(cwd);
+    if (!registry) {
+      void vscode.window.showErrorMessage('PerplexiCode: MCP отключён (perplexicodeKilo.mcp.enabled).');
+      return;
+    }
+    try {
+      await registry.ensureConnected();
+      const promptDef = registry.getAllPrompts().find((p) => p.server === serverName && p.name === promptName);
+      const parsedArgs = parseMcpPromptArgs(rawArgs || '', promptDef?.arguments);
+      const expanded = await registry.getPrompt(serverName, promptName, parsedArgs);
+      await this.sendMessage(expanded, []);
+    } catch (error) {
+      const msg = (error as Error).message || String(error);
+      this.output.appendLine(`[mcp-prompt] ${serverName}:${promptName} failed: ${msg}`);
+      void vscode.window.showErrorMessage(`PerplexiCode: ошибка MCP-промпта ${serverName}:${promptName}: ${msg}`);
+    }
   }
 
   /** Connects every configured server (or one) and republishes the state. */
@@ -529,6 +659,8 @@ export class AgentController implements vscode.Disposable {
       autoCompactKeepSteps: clamp(config.get<number>('autoCompactKeepSteps', 4), 1, 20),
       worktreeEnabled: config.get<boolean>('worktreeEnabled', false),
       maxParallelSubtasks: clamp(config.get<number>('maxParallelSubtasks', 3), 1, 16),
+      crossModelReview: config.get<boolean>('crossModelReview', false),
+      crossModelReviewModel: config.get<string>('crossModelReviewModel', '').trim() || undefined,
     };
   }
 
@@ -1201,6 +1333,15 @@ export class AgentController implements vscode.Disposable {
       case 'mcpConnect':
         await this.mcpConnect(typeof message.name === 'string' && message.name ? message.name : undefined);
         break;
+      case 'mcpOAuthLogin':
+        await this.mcpOAuthLogin(typeof message.name === 'string' && message.name ? message.name : undefined);
+        break;
+      case 'mcpOAuthLogout':
+        await this.mcpOAuthLogout(typeof message.name === 'string' && message.name ? message.name : undefined);
+        break;
+      case 'runMcpPrompt':
+        await this.runMcpPrompt(String(message.server || ''), String(message.name || ''), String(message.rawArgs || ''));
+        break;
       case 'mcpAdd':
         await this.mcpAdd({ name: message.name, target: message.target, scope: message.scope, transport: message.transport, env: message.env, headers: message.headers });
         break;
@@ -1656,9 +1797,16 @@ export class AgentController implements vscode.Disposable {
           status: entry.status,
           error: entry.error,
           serverInfo: entry.serverInfo,
+          oauthAuthenticated: entry.config.type !== 'stdio' && Boolean(entry.config.url)
+            ? this.mcpOAuthAuthenticated.has(`${entry.config.name}::${entry.config.url}`)
+            : false,
           tools: entry.tools.map((tool) => ({ name: tool.name, qualifiedName: tool.qualifiedName, description: tool.description || '' })),
           resources: entry.resources.map((resource) => ({ uri: resource.uri, name: resource.name, description: resource.description || '' })),
-          prompts: entry.prompts.map((prompt) => ({ name: prompt.name, description: prompt.description || '' })),
+          prompts: entry.prompts.map((prompt) => ({
+            name: prompt.name,
+            description: prompt.description || '',
+            arguments: prompt.arguments,
+          })),
         })),
       },
       settings: this.getSettings(),
