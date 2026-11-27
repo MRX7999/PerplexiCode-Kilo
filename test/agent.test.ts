@@ -295,7 +295,7 @@ test('models: bundled Perplexity catalog has the current Max picker', () => {
   const catalog = getFallbackModelCatalog();
   assert.ok(catalog.length >= 80, `catalog has ${catalog.length} models`);
   const ids = new Set(catalog.map((model) => model.id));
-  for (const id of ['turbo', 'gpt6_1_sol', 'gpt6_astra', 'gemini4argon', 'gemini38flash', 'claude55sonnet', 'claude55opus', 'claudefable51', 'grok47']) {
+  for (const id of ['turbo', 'gpt6_2_sol', 'gpt6_2_astra', 'gemini4carbon', 'geminineon', 'claude55sonnet', 'claude55opus', 'claudefable52', 'grok47', 'gpt6_1_sol', 'gpt6_astra', 'gemini4argon', 'claudefable51']) {
     assert.ok(ids.has(id), `missing ${id}`);
   }
   const surfaced = catalog.filter((model) => model.surfaced !== false).map((model) => model.label);
@@ -794,9 +794,9 @@ test('compute modes: resolveComputeRoute picks the Computer/Research/Labs model 
   assert.equal(thinkingComputer.fallbackSearchModelId, getResolvedModelId('claude55sonnet', true), 'thinking is preserved on the fallback');
 
   // Harness presets map to the bundled computer_harness orchestrator models.
-  assert.equal(resolveComputeRoute('turbo', false, 'light').modelId, 'pplx_asi_gpt_6_1_sol');
+  assert.equal(resolveComputeRoute('turbo', false, 'light').modelId, 'pplx_asi_sonnet');
   assert.equal(resolveComputeRoute('turbo', false, 'standard').modelId, 'pplx_asi_opus');
-  assert.equal(resolveComputeRoute('turbo', false, 'high').modelId, 'pplx_asi_astra');
+  assert.equal(resolveComputeRoute('turbo', false, 'high').modelId, 'pplx_asi_gpt_6_2_astra');
   assert.equal(resolveComputeRoute('turbo', false, 'ultra').modelId, 'pplx_asi_fable_5');
   for (const preset of ['light', 'standard', 'high', 'ultra']) {
     const route = resolveComputeRoute('claude55sonnet', false, preset);
