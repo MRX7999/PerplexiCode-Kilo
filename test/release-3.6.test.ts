@@ -499,11 +499,12 @@ test('F15: RotationEngine enforces conservative per-account RPM window, rotates 
   assert.ok(accA.cooldownUntil && new Date(accA.cooldownUntil).getTime() > nowMs);
 });
 
-test('CLI 3.6: --version is 3.6.0 and --help documents @repo and --max-rpm flags', () => {
+test('CLI 3.6: --version matches package.json and --help documents @repo and --max-rpm flags', () => {
+  const pkgVersion = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')).version as string;
   const cliPath = path.join(process.cwd(), 'out', 'cli.js');
   const ver = spawnSync(process.execPath, [cliPath, '--version'], { encoding: 'utf8' });
   assert.equal(ver.status, 0);
-  assert.match(ver.stdout.trim(), /3\.6\.0/);
+  assert.equal(ver.stdout.trim(), pkgVersion);
 
   const help = spawnSync(process.execPath, [cliPath, '--help'], { encoding: 'utf8' });
   assert.equal(help.status, 0);

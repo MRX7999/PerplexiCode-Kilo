@@ -40,11 +40,29 @@ interface TaskBanner {
   rule: string;
 }
 
+interface WorktreeCardView {
+  worktreeName: string;
+  worktreePath: string;
+  mainRepoRoot: string;
+  baseCommit: string;
+  changedFiles: Array<{ path: string; status: string; additions: number; deletions: number }>;
+  totalAdditions: number;
+  totalDeletions: number;
+  unifiedDiff: string;
+  verify: { status: string; detail: string; editedFiles: string[] };
+  state: 'pending' | 'applied' | 'discarded' | 'conflict';
+  conflictFiles: string[];
+  statusMessage?: string;
+}
+
 interface AppState {
   version: string;
   task: null | {
     id: string; parentId?: string; title: string; mode: string; busy: boolean; todos: TodoItem[];
-    status: { state: string; askId?: string; askKind?: AskKind; requestCount: number; banner?: TaskBanner; routeLine?: string };
+    status: {
+      state: string; askId?: string; askKind?: AskKind; requestCount: number; banner?: TaskBanner; routeLine?: string;
+      worktreeName?: string; worktreeWarning?: string; worktreeCard?: WorktreeCardView;
+    };
     messages?: UiMessage[]; depth: number; parentTitle?: string; agent?: string;
   };
   mode: string;
@@ -63,6 +81,7 @@ interface AppState {
   workspace: string | null;
   library?: LibraryState;
   permissionMode?: string;
+  worktree?: { enabled: boolean; preStartWarning?: string };
 }
 
 interface McpServerEntry {
@@ -204,6 +223,7 @@ interface ContextInspectionReport {
 let enhancing = false;
 let diagnosticsPreviewJson: string | undefined;
 let contextInspectionReport: ContextInspectionReport | null | undefined;
+let worktreeDiffOpen = false;
 const expanded = new Set<string>();
 const collapsed = new Set<string>();
 
@@ -218,6 +238,7 @@ root.innerHTML = `
       <div id="messages" class="messages"></div>
       <div id="welcome" class="welcome"></div>
       <div id="bottom" class="bottom">
+        <div id="worktree-card" class="worktree-card-wrap hidden"></div>
         <div id="ask-bar" class="ask-bar"></div>
         <div id="auto-approve" class="auto-approve"></div>
         <div class="composer" id="composer">
@@ -237,6 +258,7 @@ root.innerHTML = `
               <button id="compute-btn" class="pill compute-pill" title="Compute mode"></button>
               <div id="compute-menu" class="menu compute-menu hidden"></div>
             </div>
+            <button id="worktree-btn" class="pill wt-pill" data-action="toggle-worktree" title="Изоляция задачи в отдельном git worktree от HEAD"></button>
             <button id="web-btn" class="icon-btn toggle" title="Web search"></button>
             <button id="enhance-btn" class="icon-btn" title="Enhance prompt">${icons.sparkle}</button>
             <button id="send-btn" class="icon-btn send" title="Send (Enter)">${icons.send}</button>
@@ -351,6 +373,7 @@ function applyState(next: AppState & { includeMessages: boolean }): void {
   }
   renderTaskHeader();
   renderWelcome();
+  renderWorktreeCard();
   renderAskBar();
   renderAutoApprove();
   renderComposer();
@@ -779,6 +802,83 @@ function renderAskBar(): void {
   el.classList.toggle('hidden', !buttons);
 }
 
+function renderWorktreeCard(): void {
+  const el = $('worktree-card');
+  const card = state?.task?.status?.worktreeCard;
+  if (!card) {
+    el.innerHTML = '';
+    el.classList.add('hidden');
+    return;
+  }
+  el.classList.remove('hidden');
+
+  const stateLabels: Record<WorktreeCardView['state'], [string, string]> = {
+    pending: ['Ожидает решения', 'wt-pending'],
+    applied: ['Применено', 'ok-badge'],
+    discarded: ['Отброшено', 'wt-discarded'],
+    conflict: ['Конфликт', 'wt-conflict'],
+  };
+  const [stateLabel, stateClass] = stateLabels[card.state] || stateLabels.pending;
+
+  const verifyLabels: Record<string, [string, string]> = {
+    verified: ['Verify: пройдено', 'ok-badge'],
+    failed: ['Verify: ошибка', 'wt-conflict'],
+    blocked: ['Verify: заблокировано', 'wt-conflict'],
+    needs_review: ['Verify: нужна проверка', 'wt-pending'],
+    no_changes: ['Verify: без правок', ''],
+  };
+  const [verifyLabel, verifyClass] = verifyLabels[card.verify.status] || [`Verify: ${card.verify.status}`, ''];
+
+  const filesHtml = card.changedFiles.length === 0
+    ? '<div class="muted small">Изменённых файлов в worktree нет.</div>'
+    : `<div class="wt-files">${card.changedFiles.map((file) => `
+      <div class="wt-file-row">
+        <span class="badge">${escapeHtml(file.status.slice(0, 1).toUpperCase())}</span>
+        <code class="wt-file-path">${escapeHtml(file.path)}</code>
+        <span class="spacer"></span>
+        <span class="diff-stats"><span class="add">+${file.additions}</span> <span class="del">-${file.deletions}</span></span>
+      </div>`).join('')}</div>`;
+
+  const conflictHtml = card.state === 'conflict' && card.conflictFiles.length > 0
+    ? `<div class="wt-conflict-box">
+        <b>Конфликт при применении — остановлено без merge/push:</b>
+        <ul class="wt-conflict-list">${card.conflictFiles.map((f) => `<li><code>${escapeHtml(f)}</code></li>`).join('')}</ul>
+      </div>`
+    : '';
+
+  const diffPreview = card.unifiedDiff
+    ? `<div class="wt-diff-section">
+        <button class="btn ghost small" data-action="toggle-worktree-diff">${worktreeDiffOpen ? icons.chevronDown : icons.chevronRight} Diff (${card.changedFiles.length} файлов, +${card.totalAdditions} / -${card.totalDeletions})</button>
+        ${worktreeDiffOpen ? `<pre class="wt-diff-pre">${escapeHtml(card.unifiedDiff.slice(0, 16000))}</pre>` : ''}
+      </div>`
+    : '';
+
+  const canAct = card.state === 'pending' || card.state === 'conflict';
+  const applyDisabled = !canAct || card.changedFiles.length === 0;
+  const discardDisabled = card.state === 'applied' || card.state === 'discarded';
+
+  el.innerHTML = `
+    <div class="wt-card state-${escapeHtml(card.state)}">
+      <div class="wt-head">
+        ${icons.diff}
+        <b class="wt-title">Результат worktree: <code>${escapeHtml(card.worktreeName)}</code></b>
+        <span class="badge ${verifyClass}" title="${escapeHtml(card.verify.detail)}">${escapeHtml(verifyLabel)}</span>
+        <span class="badge ${stateClass}">${escapeHtml(stateLabel)}</span>
+      </div>
+      <div class="muted small">${escapeHtml(card.verify.detail)} · база <code>${escapeHtml(card.baseCommit.slice(0, 8))}</code></div>
+      ${filesHtml}
+      ${conflictHtml}
+      ${card.statusMessage ? `<div class="wt-status-msg small">${escapeHtml(card.statusMessage)}</div>` : ''}
+      ${diffPreview}
+      <div class="wt-actions">
+        <span class="muted small">Без авто-merge и push</span>
+        <span class="spacer"></span>
+        <button class="btn secondary small" data-action="discard-worktree" ${discardDisabled ? 'disabled' : ''}>Отбросить</button>
+        <button class="btn primary small" data-action="apply-worktree" ${applyDisabled ? 'disabled' : ''}>Применить</button>
+      </div>
+    </div>`;
+}
+
 const AUTO_APPROVE_ITEMS: Array<[string, string, string]> = [
   ['read', 'Read', 'Read files and directories in the workspace'],
   ['write', 'Edit', 'Create and edit files without asking'],
@@ -829,6 +929,14 @@ function renderComposer(): void {
   computeBtn.innerHTML = `${icons.cpu}<span class="ellipsis">${escapeHtml(compute?.shortLabel || computeId)}</span>${icons.chevronDown}`;
   computeBtn.classList.toggle('on', computeId !== 'search');
   computeBtn.title = `Compute mode: ${compute?.label || computeId}${state.selection.computeRoute && state.selection.computeRoute.modelId !== state.selection.modelId ? ` → ${state.selection.computeRoute.modelId}` : ''} — click to change`;
+  const wtEnabled = Boolean(state.worktree?.enabled || state.settings?.worktreeEnabled);
+  const wtActiveName = state.task?.status?.worktreeName;
+  const wtBtn = $('worktree-btn');
+  wtBtn.innerHTML = `${icons.diff}<span>${wtActiveName ? escapeHtml(wtActiveName) : 'Worktree'}</span>`;
+  wtBtn.classList.toggle('on', wtEnabled || Boolean(wtActiveName));
+  wtBtn.title = wtActiveName
+    ? `Задача выполняется в изолированном git worktree: ${wtActiveName}`
+    : `Изоляция в git worktree: ${wtEnabled ? 'вкл.' : 'выкл.'} (кликните для переключения)`;
   const webOn = state.selection.webSearch === null ? state.selection.modeWebSearchDefault && state.settings.webSearch !== 'never' || state.settings.webSearch === 'always' : state.selection.webSearch;
   const webBtn = $('web-btn');
   webBtn.innerHTML = icons.globe + (state.selection.webSearch === null ? '<span class="auto-dot"></span>' : '');
@@ -889,6 +997,10 @@ function renderComposerChips(): void {
   if (agent) {
     const installed = state?.library?.agents.some((entry) => entry.name === agent);
     chips.push(`<span class="chip agent-chip ${installed ? '' : 'missing'}" title="${installed ? 'Runs as this subagent' : 'Not installed yet: you will be offered to install it'}">${icons.agent}@${escapeHtml(agent)}${activePreset ? '' : `<button class="chip-x" data-clear-chip="agent" title="Clear subagent">${icons.x}</button>`}</span>`);
+  }
+  const preWarn = !state?.task && state?.worktree?.enabled ? state.worktree.preStartWarning : undefined;
+  if (preWarn) {
+    chips.push(`<span class="chip wt-warn-chip" title="${escapeHtml(preWarn)}">${icons.warning}${escapeHtml(preWarn)}</span>`);
   }
   el.innerHTML = chips.join('');
   el.classList.toggle('hidden', chips.length === 0);
@@ -1238,6 +1350,8 @@ function renderSettings(): void {
         ${field('repoMapMaxChars', 'Бюджет карты репозитория (симв.)', 'Жёсткий потолок символов для блока @repo', number('repoMapMaxChars', s.repoMapMaxChars ?? 6000, 500, 60000))}
         ${field('autoCompactThreshold', 'Порог авто-сжатия (0..0.98)', 'Доля от maxPromptChars для структурированного авто-сжатия (0 выключает)', number('autoCompactThreshold', s.autoCompactThreshold ?? 0.8, 0, 0.98))}
         ${field('autoCompactKeepSteps', 'Нетронутых последних шагов при сжатии', 'Последние N шагов и системный промпт не затрагиваются', number('autoCompactKeepSteps', s.autoCompactKeepSteps ?? 4, 1, 20))}
+        ${field('worktreeEnabled', 'Изоляция задачи в git worktree', 'Создавать отдельный git worktree от HEAD с изоляцией путей, симлинков и git -C', checkbox('worktreeEnabled', Boolean(s.worktreeEnabled)))}
+        ${field('maxParallelSubtasks', 'Лимит параллельных субагентов Orchestrator', 'Читающие субагенты работают в основном дереве, пишущие — каждый в своём worktree', number('maxParallelSubtasks', s.maxParallelSubtasks ?? 3, 1, 16))}
         ${field('maxReadFileLines', 'Max lines per file read', 'Larger files are truncated; the model can read ranges', number('maxReadFileLines', s.maxReadLines, 50, 20000))}
         ${field('includeFileListOnStart', 'Include file list', 'Send the workspace file list with the first message', checkbox('includeFileListOnStart', s.includeFileListOnStart))}
         ${field('diffEnabled', 'Diff edits', 'Let the model use apply_diff (targeted SEARCH/REPLACE edits)', checkbox('diffEnabled', s.diffEnabled))}
@@ -1796,6 +1910,22 @@ document.addEventListener('click', (event) => {
     case 'openSettingsJson': post({ type: 'openSettingsJson' }); break;
     case 'copyDiagnostics': post({ type: 'requestDiagnosticsPreview', taskId: state?.task?.id }); break;
     case 'inspectContext': post({ type: 'requestContextInspection', taskId: state?.task?.id }); break;
+    case 'toggle-worktree': {
+      const next = !(state?.worktree?.enabled || state?.settings?.worktreeEnabled);
+      post({ type: 'toggleWorktree', enabled: next });
+      showToast(`Git worktree: ${next ? 'включён' : 'выключен'}`);
+      break;
+    }
+    case 'toggle-worktree-diff':
+      worktreeDiffOpen = !worktreeDiffOpen;
+      renderWorktreeCard();
+      break;
+    case 'apply-worktree':
+      post({ type: 'applyWorktree', taskId: state?.task?.id });
+      break;
+    case 'discard-worktree':
+      post({ type: 'discardWorktree', taskId: state?.task?.id });
+      break;
     case 'ctx-close':
       contextInspectionReport = undefined;
       renderContextModal();

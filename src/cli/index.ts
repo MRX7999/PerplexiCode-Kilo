@@ -20,8 +20,17 @@ import { OpenAICompatibleProvider, openAIOptionsFromEnv } from '../core/openaiPr
 import { createPerplexityBackend } from '../core/perplexity';
 import { CoreSession, RunResult } from '../core/runner';
 import { loadSettings, projectDefinesHooks } from '../core/settings';
+import { HookEngine } from '../core/hooks';
 import { CoreEvent, PERMISSION_MODES, PermissionMode } from '../core/types';
 import { VERIFICATION_LABELS } from '../core/verification';
+import {
+  applyWorktreeChanges,
+  buildWorktreeResultCard,
+  discardWorktreeChanges,
+  listManagedWorktrees,
+  loadManagedWorktree,
+  WorktreeHookBlockedError,
+} from '../core/worktree';
 import { browserLogin } from './browserLogin';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -91,9 +100,30 @@ export interface CliOptions {
   bundle: boolean;
   bundleOutput?: string;
   yes: boolean;
+  /** F16: Run task inside an isolated git worktree (`true` = auto-name, `string` = explicit name). */
+  worktree?: boolean | string;
+  /** F18: Max concurrent subagents in Orchestrator mode. */
+  maxParallelSubtasks?: number;
 }
 
-const SUBCOMMANDS = new Set(['login', 'logout', 'accounts', 'sessions', 'models', 'agents', 'skills', 'presets', 'mcp', 'doctor', 'help', 'version']);
+/**
+ * F20: Documented `pcode -p` exit codes for CI pipelines.
+ */
+export const PCODE_EXIT_CODES = {
+  OK: 0,
+  RUNTIME_ERROR: 1,
+  VERIFY_FAILED: 2,
+  POLICY_BLOCKED: 3,
+  MAX_TURNS_EXCEEDED: 4,
+  AUTH_REQUIRED: 5,
+  WORKTREE_CONFLICT: 6,
+  USAGE_ERROR: 64,
+  INTERRUPTED: 130,
+} as const;
+
+export type PcodeExitCode = (typeof PCODE_EXIT_CODES)[keyof typeof PCODE_EXIT_CODES];
+
+const SUBCOMMANDS = new Set(['login', 'logout', 'accounts', 'sessions', 'models', 'agents', 'skills', 'presets', 'mcp', 'worktree', 'doctor', 'help', 'version']);
 
 function splitRules(value: string): string[] {
   // "Bash(npm test:*),Read Edit" → ["Bash(npm test:*)", "Read", "Edit"]; commas/spaces inside (...) are kept.
@@ -258,6 +288,31 @@ export function parseArgs(argv: string[]): CliOptions {
       case '--bundle': options.bundle = true; break;
       case '-o': case '--output': options.bundleOutput = path.resolve(value()); break;
       case '-y': case '--yes': options.yes = true; break;
+      case '-w': case '--worktree': {
+        if (inline !== undefined) {
+          options.worktree = inline.trim() ? inline.trim() : true;
+        } else {
+          const next = argv[i + 1];
+          if (
+            next !== undefined
+            && !next.startsWith('-')
+            && /^[a-zA-Z0-9._-]+$/.test(next)
+            && !SUBCOMMANDS.has(next)
+          ) {
+            options.worktree = next;
+            i++;
+          } else {
+            options.worktree = true;
+          }
+        }
+        break;
+      }
+      case '--max-parallel-subtasks': {
+        const n = Number(value());
+        if (!Number.isInteger(n) || n < 1 || n > 16) throw new Error('--max-parallel-subtasks must be an integer between 1 and 16');
+        options.maxParallelSubtasks = n;
+        break;
+      }
       case '-h': case '--help': options.help = true; break;
       case '--version': options.version = true; break;
       default:
@@ -304,7 +359,8 @@ Options:
   --repo-map / --no-repo-map  enable or disable structural @repo map (default: on, budget 6000 chars)
   --repo-map-chars <n>        character budget for @repo map (min 500)
   --max-rpm <n>               per-account requests-per-minute cap (default: 12)
-  --stop-on-fallback          stop instead of falling back to another mode/model/account
+  -w, --worktree [name]       isolate the task in a detached git worktree from HEAD (blocks symlink & git -C escapes)
+  --max-parallel-subtasks <n> max concurrent Orchestrator subagents (1..16, default 3)
   --cwd <dir>                 workspace folder (default: current)
   --trust-project             run hooks and project MCP servers from project settings in headless mode
   --mcp-config <file|json>    extra MCP servers (Claude Code format), repeatable; --strict-mcp-config uses only them
@@ -330,8 +386,22 @@ Commands:
   pcode mcp remove <name> [-s scope]       delete a server from the config files
   pcode mcp get <name>                     show one server, connect and list its tools
   pcode mcp test [name]                    connect to the servers and report tools/resources
+  pcode worktree list                      list active isolated git worktrees created by PerplexiCode
+  pcode worktree apply <name>              apply worktree diff onto main checkout (no auto-merge/push; stops on conflict)
+  pcode worktree discard <name>            discard worktree changes and remove isolated tree
   pcode doctor                             environment and configuration check
   pcode doctor --bundle [-o file] [-y]     preview and export redacted diagnostics bundle (no secrets/code/prompts)
+
+Exit codes (pcode -p / CI):
+  0    OK — task completed (attempt_completion) and verify.command passed (or no file edits)
+  1    RUNTIME_ERROR — runtime/network error or task ended without attempt_completion
+  2    VERIFY_FAILED — verify.command exited non-zero
+  3    POLICY_BLOCKED — blocked by permission policy, hook (exit 2 / continue=false), or --stop-on-fallback
+  4    MAX_TURNS_EXCEEDED — --max-turns reached without attempt_completion
+  5    AUTH_REQUIRED — missing or expired Perplexity / OAuth session
+  6    WORKTREE_CONFLICT — conflict when applying isolated git worktree changes
+  64   USAGE_ERROR — invalid CLI flags, unknown preset/model, or missing prompt
+  130  INTERRUPTED — aborted via SIGINT (Ctrl+C)
 
 Settings: ~/.claude/settings.json, ~/.perplexicode/settings.json, .claude/settings.json,
 .perplexicode/settings.json and *.local.json (permissions, hooks, verify, env, computeMode, mcpServers).
@@ -577,6 +647,8 @@ async function buildSession(options: CliOptions, ui: SessionUi): Promise<Session
     repoMapMaxChars: options.repoMapMaxChars ?? settings.repoMapMaxChars ?? 6000,
     autoCompactThreshold: settings.autoCompactThreshold ?? 0.8,
     autoCompactKeepSteps: settings.autoCompactKeepSteps ?? 4,
+    worktreeEnabled: Boolean(options.worktree),
+    maxParallelSubtasks: options.maxParallelSubtasks ?? settings.maxParallelSubtasks ?? 3,
   };
   let sessionRef: CoreSession | undefined;
   const session = new CoreSession({
@@ -594,6 +666,8 @@ async function buildSession(options: CliOptions, ui: SessionUi): Promise<Session
     getModelLabel: withComputeLabel(backend.label, () => sessionRef?.selection.computeMode),
     trustProjectHooks: trusted,
     mcp,
+    worktree: options.worktree,
+    onWorktreeWarning: (warning) => out(yellow(`[worktree] ${warning}`)),
     onAsk: (task, message) => ui.ask(task, message, extraAllow),
     onMessage: (task, message) => ui.message(task, message),
     onEvent: (task, event) => ui.event(task, event),
@@ -848,10 +922,62 @@ function resultText(result: RunResult): string {
   return (result.result ?? result.lastText ?? '').trim();
 }
 
-function exitCodeFor(result: RunResult): number {
-  if (result.status === 'error' || result.status === 'aborted') return 1;
-  if (result.verification.status === 'failed') return 2;
-  return 0;
+/**
+ * F20: Deterministic CI exit-code mapping for `pcode -p` results.
+ */
+export function classifyPrintExitCode(result: RunResult, options: { aborted?: boolean } = {}): PcodeExitCode {
+  if (options.aborted || result.status === 'aborted') {
+    return PCODE_EXIT_CODES.INTERRUPTED;
+  }
+  if (result.worktreeCard?.state === 'conflict') {
+    return PCODE_EXIT_CODES.WORKTREE_CONFLICT;
+  }
+  const rule = result.stopRule || '';
+  const reason = `${result.stopReason || ''} ${result.lastText || ''}`;
+  if (
+    rule === 'accounts.none'
+    || (result.status === 'error' && /\b(no perplexity account|session-token|unauthorized|http 401|http 403)\b/i.test(reason))
+  ) {
+    return PCODE_EXIT_CODES.AUTH_REQUIRED;
+  }
+  if (result.result === undefined && rule.startsWith('maxRequests=')) {
+    return PCODE_EXIT_CODES.MAX_TURNS_EXCEEDED;
+  }
+  if (
+    result.verification.status === 'blocked'
+    || (
+      result.result === undefined
+      && (
+        rule === 'stopOnFallback'
+        || rule.startsWith('hook')
+        || rule.startsWith('permission')
+        || rule.startsWith('worktree')
+      )
+    )
+  ) {
+    return PCODE_EXIT_CODES.POLICY_BLOCKED;
+  }
+  if (result.verification.status === 'failed') {
+    return PCODE_EXIT_CODES.VERIFY_FAILED;
+  }
+  if (result.status === 'error' || result.result === undefined) {
+    return PCODE_EXIT_CODES.RUNTIME_ERROR;
+  }
+  return PCODE_EXIT_CODES.OK;
+}
+
+export function classifyCliErrorExitCode(error: unknown): PcodeExitCode {
+  if (error instanceof WorktreeHookBlockedError) {
+    return PCODE_EXIT_CODES.POLICY_BLOCKED;
+  }
+  const msg = (error as Error)?.message || String(error);
+  if (/^(Unknown preset|Unknown model|Unknown option|--[a-z0-9-]+ )/i.test(msg)) {
+    return PCODE_EXIT_CODES.USAGE_ERROR;
+  }
+  if (/No Perplexity account|session-token|HTTP 401|HTTP 403|unauthorized/i.test(msg)) {
+    return PCODE_EXIT_CODES.AUTH_REQUIRED;
+  }
+  return PCODE_EXIT_CODES.RUNTIME_ERROR;
 }
 
 async function runHeadless(options: CliOptions): Promise<number> {
@@ -860,43 +986,63 @@ async function runHeadless(options: CliOptions): Promise<number> {
   if (piped.trim()) prompt = prompt ? `${prompt}\n\n${piped}` : piped;
   if (!prompt && !options.continue && !options.resume) {
     out('pcode -p needs a prompt (argument or stdin).');
-    return 64;
+    return PCODE_EXIT_CODES.USAGE_ERROR;
   }
   const ui = headlessUi(options);
   const { session, mcp } = await buildSession(options, ui);
   const started = Date.now();
   let aborted = false;
-  process.on('SIGINT', () => {
+  const onSigint = () => {
     aborted = true;
     session.abort();
-  });
+  };
+  process.on('SIGINT', onSigint);
   let result: RunResult;
   try {
     result = options.resume || options.continue
       ? await session.resume(options.resume || 'latest', prompt)
       : await session.run(prompt!);
   } finally {
+    process.removeListener('SIGINT', onSigint);
     await mcp?.closeAll().catch(() => undefined);
   }
+  const code = classifyPrintExitCode(result, { aborted });
   const payload = {
     type: 'result',
     subtype: aborted ? 'aborted' : result.status === 'error' ? 'error' : result.result !== undefined ? 'success' : 'stopped',
+    exit_code: code,
     session_id: result.taskId,
     result: resultText(result),
     status: result.status,
+    stop_rule: result.stopRule,
     num_turns: result.requests,
     duration_ms: Date.now() - started,
     verification: { status: result.verification.status, detail: result.verification.detail, edited_files: result.verification.editedFiles },
+    worktree: result.worktreeCard
+      ? {
+          name: result.worktreeCard.worktreeName,
+          path: result.worktreeCard.worktreePath,
+          base_commit: result.worktreeCard.baseCommit,
+          state: result.worktreeCard.state,
+          changed_files: result.worktreeCard.changedFiles,
+          total_additions: result.worktreeCard.totalAdditions,
+          total_deletions: result.worktreeCard.totalDeletions,
+          conflict_files: result.worktreeCard.conflictFiles,
+        }
+      : undefined,
     permission_mode: session.permissionMode,
     journal: result.journal,
   };
   if (options.outputFormat === 'text') {
     process.stdout.write(`${payload.result}\n`);
+    if (result.worktreeCard) {
+      out(cyan(`[worktree ${result.worktreeCard.worktreeName}] файлов: ${result.worktreeCard.changedFiles.length} (+${result.worktreeCard.totalAdditions}/-${result.worktreeCard.totalDeletions}) · Применить: pcode worktree apply ${result.worktreeCard.worktreeName} · Отбросить: pcode worktree discard ${result.worktreeCard.worktreeName}`));
+    }
     if (options.verbose) out(dim(`[${VERIFICATION_LABELS[result.verification.status]}] ${result.verification.detail} · session ${result.taskId}`));
   } else {
     process.stdout.write(`${JSON.stringify(payload)}\n`);
   }
-  return aborted ? 130 : exitCodeFor(result);
+  return code;
 }
 
 const SLASH_HELP = `/help              this help
@@ -906,6 +1052,7 @@ const SLASH_HELP = `/help              this help
 /compute [mode]    show or switch Perplexity compute mode (${COMPUTE_MODES.map((m) => m.id).join(', ')})
 /mcp [reconnect [name]]  MCP servers, their tools and resources
 /context [exclude|include <id>]  inspect next-request context, why items are included, and toggle exclusions
+/worktree [status|apply|discard] inspect, apply, or discard isolated git worktree changes
 /compact [focus]   summarise the conversation to save context
 /clear             start a new session
 /agents  /skills   list subagents / skills
@@ -1047,6 +1194,27 @@ async function runInteractive(options: CliOptions): Promise<number> {
             out(dim('нет активной сессии для инспекции контекста'));
           } else {
             out(formatContextReportForCli(report));
+          }
+          break;
+        }
+        case 'worktree': {
+          const sub = (arg || 'status').trim().split(/\s+/)[0];
+          const wt = s.worktreeHandle;
+          if (!wt) {
+            out(dim('нет активного git worktree в этой сессии (запустите с --worktree)'));
+            break;
+          }
+          if (sub === 'apply') {
+            const res = await s.applyWorktree();
+            if (res.ok) out(green(`✔ ${res.message}`));
+            else out(red(`✖ ${res.message}`));
+          } else if (sub === 'discard') {
+            const res = await s.discardWorktree();
+            out(yellow(`○ ${res.message}`));
+          } else {
+            const card = buildWorktreeResultCard(wt, s.verification());
+            out(`worktree ${bold(card.worktreeName)} (${card.worktreePath}) · база ${card.baseCommit.slice(0, 8)} · файлов ${card.changedFiles.length} (+${card.totalAdditions}/-${card.totalDeletions})`);
+            for (const f of card.changedFiles) out(dim(`  ${f.status.padEnd(8)} ${f.path} (+${f.additions}/-${f.deletions})`));
           }
           break;
         }
@@ -1548,25 +1716,84 @@ async function cmdDoctor(options: CliOptions): Promise<number> {
   return 0;
 }
 
+async function cmdWorktree(options: CliOptions): Promise<number> {
+  const sub = options.args[0] || 'list';
+  const trusted = options.trustProject || isTrusted(options.cwd);
+  const settings = loadSettings(options.cwd, { trustProjectHooks: trusted });
+  const hooks = new HookEngine(settings.hooks, options.cwd, settings.env, undefined, (line) => {
+    if (options.verbose) out(dim(line));
+  });
+
+  if (sub === 'list' || sub === 'ls') {
+    const items = listManagedWorktrees(options.cwd);
+    if (items.length === 0) {
+      out(dim('Нет активных изолированных git worktree.'));
+      return PCODE_EXIT_CODES.OK;
+    }
+    for (const wt of items) {
+      const card = buildWorktreeResultCard(wt, { status: 'needs_review', detail: '', editedFiles: [], checks: [] });
+      process.stdout.write(`${wt.name}\t${wt.baseCommit.slice(0, 8)}\t+${card.totalAdditions}/-${card.totalDeletions}\t${wt.worktreePath}\n`);
+    }
+    return PCODE_EXIT_CODES.OK;
+  }
+
+  const name = options.args[1];
+  if (!name) {
+    out(`usage: pcode worktree ${sub} <name>`);
+    return PCODE_EXIT_CODES.USAGE_ERROR;
+  }
+  const handle = loadManagedWorktree(options.cwd, name);
+  if (!handle) {
+    out(red(`Worktree '${name}' не найден.`));
+    return PCODE_EXIT_CODES.USAGE_ERROR;
+  }
+
+  if (sub === 'apply') {
+    const res = await applyWorktreeChanges(handle, {
+      hooks,
+      permissionMode: options.permissionMode || settings.permissions.defaultMode,
+    });
+    if (!res.ok) {
+      out(red(`✖ ${res.message}`));
+      for (const f of res.conflictFiles) process.stdout.write(`${f}\n`);
+      return PCODE_EXIT_CODES.WORKTREE_CONFLICT;
+    }
+    out(green(`✔ ${res.message}`));
+    return PCODE_EXIT_CODES.OK;
+  }
+
+  if (sub === 'discard' || sub === 'rm' || sub === 'remove') {
+    const res = await discardWorktreeChanges(handle, {
+      hooks,
+      permissionMode: options.permissionMode || settings.permissions.defaultMode,
+    });
+    out(yellow(`○ ${res.message}`));
+    return PCODE_EXIT_CODES.OK;
+  }
+
+  out(red(`unknown worktree command '${sub}' (list, apply, discard)`));
+  return PCODE_EXIT_CODES.USAGE_ERROR;
+}
+
 export async function main(argv = process.argv.slice(2)): Promise<number> {
   let options: CliOptions;
   try {
     options = parseArgs(argv);
   } catch (error) {
     out(red((error as Error).message));
-    return 64;
+    return PCODE_EXIT_CODES.USAGE_ERROR;
   }
   if (options.help || options.command === 'help') {
     process.stdout.write(HELP);
-    return 0;
+    return PCODE_EXIT_CODES.OK;
   }
   if (options.version || options.command === 'version') {
     process.stdout.write(`${VERSION}\n`);
-    return 0;
+    return PCODE_EXIT_CODES.OK;
   }
   if (!fs.existsSync(options.cwd)) {
     out(red(`--cwd ${options.cwd} does not exist`));
-    return 64;
+    return PCODE_EXIT_CODES.USAGE_ERROR;
   }
   try {
     switch (options.command) {
@@ -1579,6 +1806,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       case 'presets': return cmdPresets(options);
       case 'skills': return cmdSkills(options);
       case 'mcp': return await cmdMcp(options);
+      case 'worktree': return await cmdWorktree(options);
       case 'doctor': return await cmdDoctor(options);
       default:
         applyPresetOption(options);
@@ -1589,11 +1817,12 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         return await runInteractive(options);
     }
   } catch (error) {
+    const code = classifyCliErrorExitCode(error);
     if (options.outputFormat !== 'text' && options.print) {
-      process.stdout.write(`${JSON.stringify({ type: 'result', subtype: 'error', result: (error as Error).message })}\n`);
+      process.stdout.write(`${JSON.stringify({ type: 'result', subtype: 'error', exit_code: code, result: (error as Error).message })}\n`);
     } else {
       out(red(`✖ ${(error as Error).message}`));
     }
-    return 1;
+    return code;
   }
 }

@@ -2,16 +2,27 @@ import { MODES } from '../agent/modes';
 import { AgentTask, AskResponse, CompletionProvider, McpToolProvider } from '../agent/task';
 import type { TodoItem } from '../agent/toolParser';
 import type { AgentHost } from '../agent/tools';
-import type { AgentSettings, ModelSelection, PersistedTask, UiMessage } from '../agent/types';
+import type { AgentSettings, ModelSelection, PersistedTask, UiMessage, WorktreeResultCard } from '../agent/types';
 import type { ContextInspectionReport } from './contextInspector';
 import { loadSubagents, SubagentDefinition } from './agents';
 import { compactMessages } from './compaction';
 import { CoreGate } from './gate';
+import { HookEngine, HookRunner } from './hooks';
 import { detectInterruptedWork, findSession, resumeNote, SessionJournal, sessionsDir } from './journal';
 import { NodeAgentHost } from './nodeHost';
 import { CoreSettings, loadSettings } from './settings';
 import { CoreEvent, PermissionMode } from './types';
 import { VerificationReport, VerificationTracker } from './verification';
+import {
+  applyWorktreeChanges,
+  ApplyWorktreeResult,
+  buildWorktreeResultCard,
+  createIsolatedWorktree,
+  discardWorktreeChanges,
+  IsolatedWorktreeHandle,
+  isReadOnlySubagentTarget,
+  runWithConcurrencyLimit,
+} from './worktree';
 
 /**
  * CoreSession: one root task plus its subtasks, wired to the 3.0 policy engine, the JSONL journal
@@ -45,6 +56,12 @@ export interface CoreSessionOptions {
   trustProjectHooks?: boolean;
   /** 3.3: MCP servers (core/mcp.ts McpRegistry). Omit to run without MCP. */
   mcp?: McpToolProvider;
+  /** 3.7 (F16): Run root task in an isolated git worktree (`true` = auto-name, `string` = explicit name). */
+  worktree?: boolean | string;
+  /** 3.7 (F16): Invoked before task start when uncommitted changes exist in the main checkout. */
+  onWorktreeWarning?: (warning: string, dirtyFiles: string[]) => void;
+  /** 3.7 (F19): Custom hook runner override (for tests or custom environments). */
+  hookRunner?: HookRunner;
 }
 
 export interface RunResult {
@@ -55,6 +72,15 @@ export interface RunResult {
   verification: VerificationReport;
   requests: number;
   journal?: string;
+  /** 3.7 (F16): Warning emitted before start if main checkout had uncommitted changes. */
+  worktreeWarning?: string;
+  /** 3.7 (F17): Result card with diff, verify outcome, and Apply / Discard state. */
+  worktreeCard?: WorktreeResultCard;
+  /** 3.7 (F18): Result cards produced by parallel writing subtasks in Orchestrator mode. */
+  subtaskWorktreeCards?: WorktreeResultCard[];
+  /** 3.7 (F20): Policy/limit/transport rule that caused an early stop, when present. */
+  stopRule?: string;
+  stopReason?: string;
 }
 
 export class CoreSession {
@@ -69,6 +95,10 @@ export class CoreSession {
   private readonly agents: SubagentDefinition[];
   private readonly host: AgentHost;
   private readonly editsByTask = new Map<string, number>();
+  private readonly hooksEngine: HookEngine;
+  private rootWorktree?: IsolatedWorktreeHandle;
+  private readonly subtaskWorktrees = new Map<string, IsolatedWorktreeHandle>();
+  private readonly subtaskCards: WorktreeResultCard[] = [];
 
   constructor(private readonly options: CoreSessionOptions) {
     this.settings = options.settings || loadSettings(options.cwd, { home: options.home, trustProjectHooks: options.trustProjectHooks });
@@ -77,6 +107,21 @@ export class CoreSession {
     this.host = options.host || new NodeAgentHost(options.cwd, this.settings.env);
     this.agents = loadSubagents(options.cwd, options.home);
     this.tracker = new VerificationTracker(this.settings.verify.command ? [this.settings.verify.command] : []);
+    this.hooksEngine = new HookEngine(
+      this.settings.hooks,
+      options.cwd,
+      this.settings.env,
+      options.hookRunner,
+      options.log
+    );
+  }
+
+  get worktreeHandle(): IsolatedWorktreeHandle | undefined {
+    return this.rootWorktree;
+  }
+
+  get worktreeSubtasks(): IsolatedWorktreeHandle[] {
+    return [...this.subtaskWorktrees.values()];
   }
 
   get subagents(): SubagentDefinition[] {
@@ -91,10 +136,31 @@ export class CoreSession {
     return this.journals.get(taskId)?.logPath;
   }
 
-  createTask(options: { mode: string; parentId?: string; restore?: PersistedTask; agent?: SubagentDefinition }): AgentTask {
+  createTask(options: {
+    mode: string;
+    parentId?: string;
+    restore?: PersistedTask;
+    agent?: SubagentDefinition;
+    worktree?: IsolatedWorktreeHandle;
+    customHost?: AgentHost;
+  }): AgentTask {
     const agent = options.agent;
+    const activeWorktree = options.worktree || (!options.parentId ? this.rootWorktree : undefined);
+    const taskHost = options.customHost
+      || (activeWorktree ? new NodeAgentHost(activeWorktree.worktreePath, this.settings.env) : this.host);
+    const effectiveCwd = activeWorktree ? activeWorktree.worktreePath : taskHost.cwd;
+    const worktreeIsolation = activeWorktree
+      ? {
+          name: activeWorktree.name,
+          worktreeRoot: activeWorktree.worktreePath,
+          mainRepoRoot: activeWorktree.mainRepoRoot,
+          baseCommit: activeWorktree.baseCommit,
+          warningMessage: !options.parentId ? activeWorktree.warningMessage : undefined,
+        }
+      : undefined;
+
     const gate = new CoreGate({
-      cwd: this.options.cwd,
+      cwd: effectiveCwd,
       settings: this.settings,
       permissionMode: () => this.permissionMode,
       extraAllow: this.options.extraAllow,
@@ -107,7 +173,8 @@ export class CoreSession {
         : undefined,
       includeAgents: !options.parentId,
       transcriptPath: (id) => this.journalPath(id),
-      runCommand: (command, cwd, run) => this.host.runCommand(command, cwd, run),
+      hookRunner: this.options.hookRunner,
+      runCommand: (command, cwd, run) => taskHost.runCommand(command, cwd, run),
       hasEdits: (id) => (this.editsByTask.get(id) || 0) > 0 || (id === this.root?.id && this.tracker.report().editedFiles.length > 0),
       onEvent: (id, event) => {
         const owner = this.tasks.get(id);
@@ -115,6 +182,9 @@ export class CoreSession {
       },
       log: this.options.log,
       home: this.options.home,
+      worktreeIsolation: worktreeIsolation
+        ? { worktreeRoot: worktreeIsolation.worktreeRoot, mainRepoRoot: worktreeIsolation.mainRepoRoot }
+        : undefined,
     });
     const selection = () => {
       if (agent?.model) {
@@ -123,7 +193,7 @@ export class CoreSession {
       return this.selection;
     };
     const task = new AgentTask({
-      host: this.host,
+      host: taskHost,
       provider: this.options.provider,
       getSettings: () => ({
         ...this.options.agentSettings,
@@ -134,6 +204,8 @@ export class CoreSession {
           this.options.agentSettings.autoCompactThreshold ?? this.settings.autoCompactThreshold,
         autoCompactKeepSteps:
           this.options.agentSettings.autoCompactKeepSteps ?? this.settings.autoCompactKeepSteps,
+        maxParallelSubtasks:
+          this.options.agentSettings.maxParallelSubtasks ?? this.settings.maxParallelSubtasks,
       }),
       getSelection: selection,
       getModelLabel: this.options.getModelLabel || ((modelId) => modelId),
@@ -144,6 +216,7 @@ export class CoreSession {
       isSubtaskTarget: (slug) => this.agents.some((entry) => entry.name === slug),
       readBatchSize: () => this.settings.readBatchSize,
       mcp: this.options.mcp,
+      worktreeIsolation,
       callbacks: {
         onMessage: (owner, message) => {
           this.options.onMessage?.(owner, message);
@@ -156,6 +229,8 @@ export class CoreSession {
         onState: () => undefined,
         onEvent: (owner, event) => this.handleEvent(owner, event),
         startSubtask: (parent, mode, message, todos) => this.runSubtask(parent, mode, message, todos),
+        startParallelSubtasks: (parent, items, maxParallel) =>
+          this.runParallelSubtasks(parent, items, maxParallel),
         persist: (owner) => this.snapshot(owner),
         onCompleted: (owner) => this.snapshot(owner),
       },
@@ -206,7 +281,99 @@ export class CoreSession {
     return `The subtask ended without attempt_completion (state: ${child.status.state}).${lastText ? ` Its last message:\n${lastText}` : ''}`;
   }
 
+  /**
+   * 3.7 (F18): Parallel Orchestrator subagents.
+   * Read-only targets run in the main tree; writing targets each get an isolated git worktree.
+   */
+  private async runParallelSubtasks(
+    parent: AgentTask,
+    items: Array<{ mode: string; message: string; todos: TodoItem[] }>,
+    maxParallel: number
+  ): Promise<Array<{ mode: string; result: string; error?: string }>> {
+    const mainTreeCwd = this.rootWorktree ? this.rootWorktree.mainRepoRoot : this.options.cwd;
+    return runWithConcurrencyLimit(items, maxParallel, async (item, index) => {
+      const agent = this.agents.find((entry) => entry.name === item.mode);
+      const readOnly = isReadOnlySubagentTarget(item.mode, agent);
+      let childWorktree: IsolatedWorktreeHandle | undefined;
+      let customHost: AgentHost | undefined;
+
+      try {
+        if (readOnly) {
+          customHost = this.rootWorktree
+            ? new NodeAgentHost(mainTreeCwd, this.settings.env)
+            : this.host;
+        } else {
+          childWorktree = await createIsolatedWorktree({
+            cwd: mainTreeCwd,
+            name: `sub-${index + 1}-${item.mode}`,
+            taskId: `${parent.id}-sub-${index + 1}`,
+            hooks: this.hooksEngine,
+            permissionMode: this.permissionMode,
+          });
+          this.subtaskWorktrees.set(childWorktree.name, childWorktree);
+        }
+
+        const child = this.createTask({
+          mode: agent ? agent.mode : item.mode,
+          parentId: parent.id,
+          agent,
+          worktree: childWorktree,
+          customHost,
+        });
+        child.todos = item.todos;
+        child.title = `${agent ? agent.name : item.mode}: ${item.message.replace(/\s+/g, ' ').slice(0, 100)}`;
+        await child.start(item.message);
+        this.snapshot(child);
+
+        let textResult: string;
+        if (child.completionResult !== undefined) {
+          textResult = child.completionResult;
+        } else {
+          const lastText = [...child.uiMessages].reverse().find((entry) => entry.type === 'text' && entry.text)?.text;
+          textResult = `The subtask ended without attempt_completion (state: ${child.status.state}).${lastText ? ` Its last message:\n${lastText}` : ''}`;
+        }
+
+        if (childWorktree) {
+          const subVerify: VerificationReport = {
+            status: (this.editsByTask.get(child.id) || 0) > 0 ? 'needs_review' : 'no_changes',
+            detail: `Isolated subagent worktree '${childWorktree.name}'`,
+            editedFiles: [],
+            checks: [],
+          };
+          const card = buildWorktreeResultCard(childWorktree, subVerify);
+          child.setWorktreeCard(card);
+          this.subtaskCards.push(card);
+          textResult += `\n[Worktree: ${card.worktreeName} (${card.worktreePath}) | files: ${card.changedFiles.length}, +${card.totalAdditions}/-${card.totalDeletions}]`;
+        }
+
+        return { mode: item.mode, result: textResult };
+      } catch (err) {
+        return { mode: item.mode, result: '', error: (err as Error).message };
+      }
+    });
+  }
+
+  private async ensureRootWorktree(): Promise<void> {
+    if (!this.options.worktree || this.rootWorktree) {
+      return;
+    }
+    const requestedName = typeof this.options.worktree === 'string' ? this.options.worktree : undefined;
+    const handle = await createIsolatedWorktree({
+      cwd: this.options.cwd,
+      name: requestedName,
+      taskId: 'root',
+      hooks: this.hooksEngine,
+      permissionMode: this.permissionMode,
+    });
+    this.rootWorktree = handle;
+    if (handle.dirtyMainCheckout && handle.warningMessage) {
+      this.options.onWorktreeWarning?.(handle.warningMessage, handle.dirtyMainFiles);
+      this.options.log?.(handle.warningMessage);
+    }
+  }
+
   async run(prompt: string): Promise<RunResult> {
+    await this.ensureRootWorktree();
     const rootAgent = this.options.agent ? this.agents.find((entry) => entry.name === this.options.agent) : undefined;
     if (this.options.agent && !rootAgent) {
       this.options.log?.(`Subagent '${this.options.agent}' is not installed; running in ${this.options.mode || 'code'} mode (pcode agents add ${this.options.agent}).`);
@@ -283,8 +450,73 @@ export class CoreSession {
     return this.tracker.report();
   }
 
+  /**
+   * 3.7 (F17): Applies changes from the isolated worktree onto `mainRepoRoot` without committing,
+   * merging, or pushing. Stops cleanly with `conflictFiles` on conflict.
+   */
+  async applyWorktree(worktreeName?: string, removeAfterApply = true): Promise<ApplyWorktreeResult> {
+    const handle = worktreeName
+      ? this.subtaskWorktrees.get(worktreeName) || (this.rootWorktree?.name === worktreeName ? this.rootWorktree : undefined)
+      : this.rootWorktree;
+    if (!handle) {
+      throw new Error(worktreeName ? `Worktree '${worktreeName}' not found in session.` : 'No active worktree in session.');
+    }
+    const res = await applyWorktreeChanges(handle, {
+      removeAfterApply,
+      hooks: this.hooksEngine,
+      taskId: this.root?.id,
+      permissionMode: this.permissionMode,
+    });
+    if (this.root && handle === this.rootWorktree && this.root.status.worktreeCard) {
+      this.root.setWorktreeCard({
+        ...this.root.status.worktreeCard,
+        state: res.state,
+        conflictFiles: res.conflictFiles,
+        statusMessage: res.message,
+      });
+    }
+    return res;
+  }
+
+  /**
+   * 3.7 (F17/F19): Discards the isolated worktree and invokes `WorktreeRemove` hooks without touching `mainRepoRoot`.
+   */
+  async discardWorktree(worktreeName?: string): Promise<{ ok: boolean; worktreeName: string; message: string }> {
+    const handle = worktreeName
+      ? this.subtaskWorktrees.get(worktreeName) || (this.rootWorktree?.name === worktreeName ? this.rootWorktree : undefined)
+      : this.rootWorktree;
+    if (!handle) {
+      throw new Error(worktreeName ? `Worktree '${worktreeName}' not found in session.` : 'No active worktree in session.');
+    }
+    const res = await discardWorktreeChanges(handle, {
+      hooks: this.hooksEngine,
+      taskId: this.root?.id,
+      permissionMode: this.permissionMode,
+    });
+    if (this.root && handle === this.rootWorktree && this.root.status.worktreeCard) {
+      this.root.setWorktreeCard({
+        ...this.root.status.worktreeCard,
+        state: 'discarded',
+        conflictFiles: [],
+        statusMessage: res.message,
+      });
+    }
+    return res;
+  }
+
   private finish(task: AgentTask): RunResult {
     const verification = this.tracker.report();
+    let worktreeCard: WorktreeResultCard | undefined;
+    if (this.rootWorktree && task === this.root) {
+      worktreeCard = buildWorktreeResultCard(
+        this.rootWorktree,
+        verification,
+        task.status.worktreeCard?.state || 'pending',
+        task.status.worktreeCard?.conflictFiles || [],
+        task.status.worktreeCard?.statusMessage
+      );
+      task.setWorktreeCard(worktreeCard);
+    }
     this.handleEvent(task, { type: 'verification', status: verification.status, detail: verification.detail });
     this.snapshot(task);
     const lastText = [...task.uiMessages].reverse().find((entry) => entry.type === 'text' && entry.text)?.text;
@@ -296,6 +528,11 @@ export class CoreSession {
       verification,
       requests: task.status.requestCount,
       journal: this.journalPath(task.id),
+      worktreeWarning: this.rootWorktree?.warningMessage,
+      worktreeCard,
+      subtaskWorktreeCards: this.subtaskCards.length > 0 ? [...this.subtaskCards] : undefined,
+      stopRule: task.status.banner?.rule,
+      stopReason: task.status.banner?.reason,
     };
   }
 

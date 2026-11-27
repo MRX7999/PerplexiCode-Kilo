@@ -2,6 +2,15 @@
 
 All notable changes to PerplexiCode Kilo. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.7.0] - 2026-11-27
+
+### Added
+- **Isolated git worktree tasks in CLI & IDE (F16):** `pcode -w` / `--worktree [name]`, REPL `/worktree`, and the IDE composer `worktree` toggle (`perplexicodeKilo.agent.worktreeEnabled`) create a detached git worktree from `HEAD` under `<gitCommonDir>/perplexicode-worktrees/<name>`. All file tools and `execute_command` calls are strictly confined to the worktree root — blocking `..`, symlink escapes (including directory and broken symlinks), `git -C <outside>`, `git --git-dir` / `--work-tree`, `GIT_DIR` / `GIT_WORK_TREE`, `git push`, `cd` outside, and external `ln -s`. If the main checkout has uncommitted changes, an explicit pre-start warning is emitted.
+- **Worktree Result Card with non-merging Apply & Discard (F17):** Completed isolated tasks render a result card showing changed files, unified diff, and `verify` status with **Применить** (`pcode worktree apply <name>`) and **Отбросить** (`pcode worktree discard <name>`). Applying runs an atomic dry-run patch check and applies changes to the main working copy without automatic `git merge`, `git commit`, or `git push`; on conflict, execution halts without mutating the main tree and lists every conflicting file.
+- **Parallel Orchestrator subagents with reader/writer split (F18):** Consecutive `<new_task>` calls emitted in Orchestrator mode run concurrently up to `maxParallelSubtasks` (`perplexicodeKilo.agent.maxParallelSubtasks`, CLI `--max-parallel-subtasks`, `.perplexicode/settings.json` `maxParallelSubtasks`, default `3`). Strictly read-only targets (`ask`, read-only `.claude/agents`) run in the main tree; write-capable targets each run in their own isolated git worktree.
+- **`WorktreeCreate` and `WorktreeRemove` hooks (F19):** Claude Code compatible lifecycle hooks receive session/worktree metadata on stdin, set `PERPLEXICODE_WORKTREE_PATH` and `PERPLEXICODE_WORKTREE_NAME`, can block creation with exit code `2` (or `{"decision":"block"}`), or return a custom `worktreePath`.
+- **Documented `pcode -p` CI exit codes (F20):** Deterministic exit-code contract (`0` OK, `1` runtime error, `2` `verify.command` failed, `3` policy/permission/hook/`stopOnFallback` blocked, `4` `--max-turns` exceeded, `5` authentication required, `6` worktree apply conflict, `64` CLI usage error, `130` interrupted by `SIGINT`) exposed on `PCODE_EXIT_CODES` and JSON `exit_code`.
+
 ## [3.6.0] - 2026-11-27
 
 ### Added

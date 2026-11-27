@@ -88,8 +88,8 @@ export const MODES: ModeConfig[] = [
     groups: ['modes'],
     customInstructions: [
       '1. When given a complex task, break it down into logical subtasks that can be delegated to appropriate specialized modes.',
-      '2. For each subtask, use the new_task tool to delegate. Choose the most appropriate mode and give comprehensive instructions in the message parameter: all necessary context, a clearly defined scope, an instruction to only do the outlined work, and an instruction to finish with attempt_completion containing a concise summary.',
-      '3. Track and manage the progress of all subtasks. When a subtask is completed, analyze its result and determine the next steps.',
+      '2. For each subtask, use the new_task tool to delegate. Independent subtasks may be emitted as consecutive <new_task>...</new_task> calls in a single message to execute in parallel (read-only modes run in the main tree; writing modes run in isolated git worktrees). Give comprehensive instructions in the message parameter: all necessary context, a clearly defined scope, an instruction to only do the outlined work, and an instruction to finish with attempt_completion containing a concise summary.',
+      '3. Track and manage the progress of all subtasks. When subtasks complete, analyze their results and determine the next steps.',
       '4. When all subtasks are completed, synthesize the results and provide a comprehensive overview with attempt_completion.',
     ].join('\n'),
     webSearchDefault: false,

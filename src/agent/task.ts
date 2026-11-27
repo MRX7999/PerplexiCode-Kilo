@@ -47,6 +47,7 @@ import { getComputeModeOption } from '../api/modelCatalog';
 import { computeBackoffWithJitterMs } from '../api/rotationEngine';
 import { checkAutoCompactThreshold, structuredAutoCompact } from '../core/compaction';
 import { assembleAndInspectPrompt, ContextInspectionReport } from '../core/contextInspector';
+import { enforceWorktreeToolCall, runWithConcurrencyLimit } from '../core/worktree';
 import type { CoreEvent, GateContext, GateVerdict, ToolGate } from '../core/types';
 import { EDIT_TOOLS, READ_TOOLS } from '../core/types';
 import {
@@ -60,6 +61,7 @@ import {
   TaskStatus,
   ToolInfo,
   UiMessage,
+  WorktreeResultCard,
 } from './types';
 
 export interface CompletionProvider {
@@ -104,6 +106,12 @@ export interface TaskCallbacks {
   onModeChanged?(task: AgentTask, mode: string): void;
   /** Runs a child task to completion and resolves with its result text. */
   startSubtask?(parent: AgentTask, mode: string, message: string, todos: TodoItem[]): Promise<string>;
+  /** 3.7 (F18): Runs multiple child tasks in parallel (readers in main tree, writers in isolated worktrees). */
+  startParallelSubtasks?(
+    parent: AgentTask,
+    items: Array<{ mode: string; message: string; todos: TodoItem[] }>,
+    maxParallel: number
+  ): Promise<Array<{ mode: string; result: string; error?: string }>>;
   onCompleted?(task: AgentTask, result: string): void;
   persist?(task: AgentTask): void;
   /** Called after a file was changed so the editor can reveal it. */
@@ -131,6 +139,14 @@ export interface TaskOptions {
   readBatchSize?: () => number;
   /** 3.3: Model Context Protocol servers available to this task. */
   mcp?: McpToolProvider;
+  /** 3.7 (F16): Confines all file tools and shell commands to an isolated git worktree. */
+  worktreeIsolation?: {
+    name: string;
+    worktreeRoot: string;
+    mainRepoRoot?: string;
+    baseCommit?: string;
+    warningMessage?: string;
+  };
 }
 
 let idCounter = 0;
@@ -155,6 +171,9 @@ export class AgentTask {
   status: TaskStatus = { state: 'idle', requestCount: 0 };
   completionResult?: string;
   lastModelId?: string;
+  worktreePath?: string;
+  mainRepoRoot?: string;
+  worktreeBaseCommit?: string;
 
   private abortController = new AbortController();
   private pendingAsk?: { id: string; kind: AskKind; resolve: (response: AskResponse) => void };
@@ -200,7 +219,13 @@ export class AgentTask {
         state: restore.status === 'running' || restore.status === 'waiting' ? 'idle' : restore.status,
         requestCount: restore.requestCount,
         routeLine: restore.routeLine,
+        worktreeName: restore.worktreeName,
+        worktreeWarning: restore.worktreeWarning,
+        worktreeCard: restore.worktreeCard,
       };
+      this.worktreePath = restore.worktreePath;
+      this.mainRepoRoot = restore.mainRepoRoot;
+      this.worktreeBaseCommit = restore.worktreeBaseCommit;
       this.checkpointSeq = this.checkpoints.reduce((max, record) => Math.max(max, record.seq), 0);
       // Unresolved asks from a previous session cannot be answered any more.
       this.uiMessages.forEach((message) => {
@@ -221,6 +246,13 @@ export class AgentTask {
           }
         }
       });
+    }
+    if (options.worktreeIsolation) {
+      this.status.worktreeName = options.worktreeIsolation.name;
+      this.status.worktreeWarning = options.worktreeIsolation.warningMessage;
+      this.worktreePath = options.worktreeIsolation.worktreeRoot;
+      this.mainRepoRoot = options.worktreeIsolation.mainRepoRoot;
+      this.worktreeBaseCommit = options.worktreeIsolation.baseCommit;
     }
   }
 
@@ -244,9 +276,18 @@ export class AgentTask {
   // Public API used by the controller
   // ---------------------------------------------------------------------------------------------
 
+  setWorktreeCard(card?: WorktreeResultCard): void {
+    this.status.worktreeCard = card;
+    this.options.callbacks.onState(this);
+    this.options.callbacks.persist?.(this);
+  }
+
   async start(text: string, images: string[] = []): Promise<void> {
     this.title = this.title || text.replace(/\s+/g, ' ').trim().slice(0, 140);
     this.emitEvent({ type: 'session_start', mode: this.mode, cwd: this.options.host.cwd, resumed: false });
+    if (this.options.worktreeIsolation?.warningMessage) {
+      this.say({ type: 'info', text: this.options.worktreeIsolation.warningMessage });
+    }
     this.say({ type: 'user', text, images });
     const extra = await this.checkPrompt(text);
     if (extra === null) {
@@ -474,6 +515,12 @@ export class AgentTask {
       completionResult: this.completionResult,
       routeLine: this.status.routeLine,
       excludedContextIds: this.excludedContextIds.size > 0 ? [...this.excludedContextIds] : undefined,
+      worktreeName: this.status.worktreeName,
+      worktreePath: this.worktreePath,
+      mainRepoRoot: this.mainRepoRoot,
+      worktreeBaseCommit: this.worktreeBaseCommit,
+      worktreeWarning: this.status.worktreeWarning,
+      worktreeCard: this.status.worktreeCard,
     };
   }
 
@@ -873,13 +920,21 @@ export class AgentTask {
     const batch = tool && !tool.partial && READ_TOOLS.has(tool.name) && batchLimit > 1
       ? (parsed.readBatch || []).slice(0, batchLimit - 1)
       : [];
+    const parallelSubtasks = tool
+      && !tool.partial
+      && tool.name === 'new_task'
+      && (parsed.subtaskBatch?.length ?? 0) > 0
+      && (this.mode === 'orchestrator' || Boolean(this.options.callbacks.startParallelSubtasks))
+      ? (parsed.subtaskBatch || [])
+      : [];
     // Store a normalized assistant message: prose + the executed tool call(s).
     const source = parsed.source ?? result.text;
+    const executedCalls = tool ? [tool, ...batch, ...parallelSubtasks] : [];
     const assistantContent = tool
-      ? `${parsed.text ? `${parsed.text}\n\n` : ''}${[tool, ...batch].map((entry) => source.slice(entry.start, entry.end)).join('\n')}`
+      ? `${parsed.text ? `${parsed.text}\n\n` : ''}${executedCalls.map((entry) => source.slice(entry.start, entry.end)).join('\n')}`
       : result.text.trim();
     this.apiMessages.push({ role: 'assistant', content: assistantContent, ts: Date.now() });
-    this.emitEvent({ type: 'assistant', text: parsed.text.slice(0, 4000), tools: tool ? [tool, ...batch].map((entry) => entry.name) : [] });
+    this.emitEvent({ type: 'assistant', text: parsed.text.slice(0, 4000), tools: executedCalls.map((entry) => entry.name) });
 
     if (!tool) {
       return this.handleNoTool(parsed.text);
@@ -894,6 +949,18 @@ export class AgentTask {
     if (!isToolAllowedForMode(tool.name, this.modeConfig)) {
       this.consecutiveMistakes += 1;
       return this.pushToolError(tool.name, `Tool '${tool.name}' is not available in ${this.modeConfig.name} mode. Use switch_mode to change to a mode that allows it, or use another tool.`, settings);
+    }
+
+    if (parallelSubtasks.length > 0) {
+      const parOutcome = await this.executeParallelSubtasks([tool, ...parallelSubtasks], settings);
+      if (parOutcome === 'stop') {
+        return 'stop';
+      }
+      const ignoredAfterSubtasks = parsed.ignoredToolCount - parallelSubtasks.length;
+      if (ignoredAfterSubtasks > 0) {
+        this.appendToLastUser(`\n\n[Note: ${parallelSubtasks.length + 1} parallel new_task calls were executed; ${ignoredAfterSubtasks} additional non-new_task call(s) were ignored.]`);
+      }
+      return 'continue';
     }
 
     const result_ = await this.executeGated(tool, settings);
@@ -996,13 +1063,156 @@ export class AgentTask {
     return { taskId: this.id, parentId: this.parentId, mode: this.mode, cwd: this.options.host.cwd };
   }
 
+  /** 3.7 (F18): Executes multiple `new_task` calls in parallel bounded by `maxParallelSubtasks`. */
+  private async executeParallelSubtasks(
+    calls: ParsedToolUse[],
+    settings: AgentSettings
+  ): Promise<'continue' | 'stop'> {
+    if (!this.options.callbacks.startSubtask && !this.options.callbacks.startParallelSubtasks) {
+      return this.pushToolError('new_task', 'Subtasks are not supported in this context.', settings);
+    }
+
+    const specs: Array<{ mode: string; message: string; todos: TodoItem[]; call: ParsedToolUse }> = [];
+    for (const call of calls) {
+      const modeSlug = call.params.mode?.trim();
+      const message = call.params.message?.trim();
+      if (!modeSlug) {
+        return this.pushToolError('new_task', 'Missing required parameter <mode>.', settings);
+      }
+      if (!message) {
+        return this.pushToolError('new_task', 'Missing required parameter <message>.', settings);
+      }
+      if (!MODES.some((mode) => mode.slug === modeSlug) && !this.options.isSubtaskTarget?.(modeSlug)) {
+        return this.pushToolError('new_task', `Unknown mode or subagent '${modeSlug}'.`, settings);
+      }
+      const gate = this.options.gate;
+      if (gate?.preToolUse) {
+        const verdict = await gate.preToolUse(this.gateContext, { name: call.name, params: call.params });
+        if (verdict.stopTask) {
+          this.setBanner('needs_attention', 'нужно вмешательство', verdict.reason || 'Остановлено хуком', verdict.source || 'hook.PreToolUse');
+          this.say({ type: 'info', text: `Stopped by hook: ${verdict.reason || 'continue=false'}` });
+          this.setState('idle');
+          return 'stop';
+        }
+        if (verdict.decision === 'deny') {
+          this.consecutiveMistakes += 1;
+          return this.pushToolError('new_task', verdict.reason || 'Denied by policy.', settings);
+        }
+      }
+      specs.push({
+        mode: modeSlug,
+        message,
+        todos: call.params.todos ? parseTodos(call.params.todos) : [],
+        call,
+      });
+    }
+
+    const maxParallel = Math.max(1, Math.min(16, Math.round(settings.maxParallelSubtasks ?? 3)));
+    const summaryLines = specs.map((spec, idx) => `${idx + 1}. [${spec.mode}] ${spec.message.replace(/\s+/g, ' ').slice(0, 140)}`).join('\n');
+    const approved = await this.approve('new_task', settings.autoApprove.subtasks, {
+      name: 'new_task',
+      title: `Parallel subtasks (${specs.length}, limit ${maxParallel})`,
+      mode: specs.map((s) => s.mode).join(', '),
+      content: summaryLines,
+    });
+    if (approved.response === 'no' || this.abortController.signal.aborted) {
+      return this.denied('new_task', specs.map((s) => s.mode).join(', '), approved.text);
+    }
+
+    const uiCards = specs.map((spec) =>
+      this.say({
+        type: 'subtask',
+        text: spec.message,
+        tool: {
+          name: 'new_task',
+          title: MODES.some((mode) => mode.slug === spec.mode) ? getModeBySlug(spec.mode).name : spec.mode,
+          mode: spec.mode,
+        },
+        status: 'running',
+      })
+    );
+
+    this.setState('waiting');
+    let outcomes: Array<{ mode: string; result: string; error?: string }>;
+    if (this.options.callbacks.startParallelSubtasks) {
+      outcomes = await this.options.callbacks.startParallelSubtasks(
+        this,
+        specs.map(({ mode, message, todos }) => ({ mode, message, todos })),
+        maxParallel
+      );
+    } else {
+      outcomes = await runWithConcurrencyLimit(specs, maxParallel, async (spec) => {
+        try {
+          const res = await this.options.callbacks.startSubtask!(this, spec.mode, spec.message, spec.todos);
+          return { mode: spec.mode, result: res };
+        } catch (err) {
+          return { mode: spec.mode, result: '', error: (err as Error).message };
+        }
+      });
+    }
+
+    if (this.abortController.signal.aborted) {
+      return 'stop';
+    }
+    this.setState('running');
+
+    const formattedBlocks: string[] = [];
+    for (let i = 0; i < specs.length; i += 1) {
+      const outcome = outcomes[i] || { mode: specs[i].mode, result: '', error: 'Missing outcome' };
+      const card = uiCards[i];
+      if (outcome.error) {
+        card.status = 'error';
+        card.tool = { ...card.tool!, content: outcome.error };
+        this.emit(card);
+        formattedBlocks.push(`### Subtask ${i + 1} (${outcome.mode}) — ERROR\n${outcome.error}`);
+      } else {
+        card.status = 'done';
+        card.tool = { ...card.tool!, content: outcome.result };
+        this.emit(card);
+        formattedBlocks.push(`### Subtask ${i + 1} (${outcome.mode})\n${outcome.result}`);
+      }
+    }
+
+    this.pushToolResult(
+      'new_task',
+      `parallel (${specs.length})`,
+      `Parallel subtasks completed (${specs.length}, max concurrency ${maxParallel}):\n\n${formattedBlocks.join('\n\n')}`
+    );
+    await this.appendEnvironment();
+    return 'continue';
+  }
+
   /** Runs one tool through the 3.0 gate: PreToolUse policy/hooks, execution, PostToolUse hooks. */
   private async executeGated(tool: ParsedToolUse, settings: AgentSettings): Promise<'continue' | 'stop'> {
+    if (this.worktreePath && tool.name !== 'attempt_completion') {
+      const iso = enforceWorktreeToolCall(
+        { name: tool.name, params: tool.params },
+        { worktreeRoot: this.worktreePath, mainRepoRoot: this.mainRepoRoot }
+      );
+      if (!iso.ok) {
+        const reason = iso.reason || 'Blocked by git worktree isolation.';
+        this.consecutiveMistakes += 1;
+        this.say({
+          type: 'tool',
+          tool: {
+            name: tool.name,
+            path: tool.params.path,
+            title: `Blocked: ${toolActivityLabel(tool.name)}${tool.params.path ? ` ${tool.params.path}` : tool.params.command ? ` \`${tool.params.command}\`` : ''}`,
+            content: `${reason}\n(worktree.isolation)`,
+          },
+          status: 'rejected',
+        });
+        this.emitEvent({ type: 'denied', tool: tool.name, reason, source: 'worktree.isolation' });
+        this.pushToolResult(tool.name, tool.params.path || tool.params.command, `[ERROR] ${reason}`);
+        return 'continue';
+      }
+    }
     const gate = this.options.gate;
     this.gateVerdict = undefined;
     if (gate?.preToolUse && tool.name !== 'attempt_completion') {
       const verdict = await gate.preToolUse(this.gateContext, { name: tool.name, params: tool.params });
       if (verdict.stopTask) {
+        this.setBanner('needs_attention', 'нужно вмешательство', verdict.reason || 'Остановлено хуком', verdict.source || 'hook.PreToolUse');
         this.say({ type: 'info', text: `Stopped by hook: ${verdict.reason || 'continue=false'}` });
         this.emitEvent({ type: 'denied', tool: tool.name, reason: verdict.reason || 'stopped', source: verdict.source || 'hook' });
         this.setState('idle');

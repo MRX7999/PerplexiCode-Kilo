@@ -391,6 +391,68 @@ check((await clickPosted('[data-ctx-toggle="repo_map"]')).some((m) => m.type ===
 await page.click('[data-action="ctx-close"]');
 check(Boolean(await page.$('#context-modal.hidden')), '3.6 context inspector modal closes');
 
+// 3.7: Worktree toggle + dirty-checkout pre-start warning (F16) and Worktree Result Card with diff, verify, Apply & Discard (F17).
+await page.setViewport({ width: 780, height: 900, deviceScaleFactor: 2 });
+const empty37 = copy(fixture.empty);
+empty37.version = '3.7.0';
+empty37.worktree = {
+  enabled: true,
+  preStartWarning: 'Предупреждение: в основном рабочем дереве есть незакоммиченные изменения (1: dirty.ts). Изолированный git worktree создаётся от коммита HEAD (a1b2c3d4).',
+};
+await send(empty37);
+check(Boolean(await page.$('#worktree-btn.on')), '3.7 worktree toggle pill shows active state');
+check(Boolean(await page.$('.wt-warn-chip')), '3.7 dirty main checkout warning chip shown before task start');
+check((await clickPosted('#worktree-btn')).some((m) => m.type === 'toggleWorktree' && m.enabled === false), '3.7 clicking worktree pill posts toggleWorktree');
+await page.evaluate(() => { const t = document.getElementById('toast'); if (t) { t.className = 'toast hidden'; t.textContent = ''; } });
+
+const task37 = copy(fixture.withTask);
+task37.version = '3.7.0';
+task37.worktree = { enabled: true };
+task37.task.status = {
+  state: 'idle',
+  requestCount: 3,
+  worktreeName: 'wt-auth-guard',
+  worktreeCard: {
+    worktreeName: 'wt-auth-guard',
+    worktreePath: '/repo/.git/perplexicode-worktrees/wt-auth-guard',
+    mainRepoRoot: '/repo',
+    baseCommit: '8236aa8f19c0ffee',
+    changedFiles: [
+      { path: 'src/core/worktree.ts', status: 'modified', additions: 42, deletions: 4 },
+      { path: 'test/release-3.7.test.ts', status: 'added', additions: 118, deletions: 0 },
+    ],
+    totalAdditions: 160,
+    totalDeletions: 4,
+    unifiedDiff: 'diff --git a/src/core/worktree.ts b/src/core/worktree.ts\n--- a/src/core/worktree.ts\n+++ b/src/core/worktree.ts\n@@ -12,4 +12,8 @@\n+export function enforceWorktreePathIsolation(worktreeRoot: string, candidatePath: string) {\n+  // strict symlink & git -C confinement\n+}\n',
+    verify: {
+      status: 'verified',
+      detail: 'npm test exited 0 after last edit',
+      editedFiles: ['src/core/worktree.ts', 'test/release-3.7.test.ts'],
+    },
+    state: 'pending',
+    conflictFiles: [],
+  },
+};
+await send(task37);
+await page.click('[data-action="toggle-worktree-diff"]');
+await page.evaluate(() => { const t = document.getElementById('toast'); if (t) { t.className = 'toast hidden'; t.textContent = ''; } });
+check(Boolean(await page.$('#worktree-card:not(.hidden) .wt-card')), '3.7 worktree result card renders');
+check(await page.$eval('#worktree-card', (el) => el.textContent.includes('wt-auth-guard') && el.textContent.includes('Verify: пройдено') && el.textContent.includes('Применить') && el.textContent.includes('Отбросить') && el.textContent.includes('enforceWorktreePathIsolation')), '3.7 worktree card shows diff, verify status, Apply and Discard buttons');
+check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), '3.7 worktree result card has no horizontal overflow');
+await shot('30-release-37-worktree-card');
+check((await clickPosted('[data-action="apply-worktree"]')).some((m) => m.type === 'applyWorktree'), '3.7 Apply button posts applyWorktree');
+check((await clickPosted('[data-action="discard-worktree"]')).some((m) => m.type === 'discardWorktree'), '3.7 Discard button posts discardWorktree');
+
+// 3.7 conflict state rendering
+const conflict37 = copy(task37);
+conflict37.task.status.worktreeCard.state = 'conflict';
+conflict37.task.status.worktreeCard.conflictFiles = ['src/core/worktree.ts'];
+conflict37.task.status.worktreeCard.statusMessage = 'Конфликт при применении worktree: основное дерево не изменено.';
+await send(conflict37);
+await page.evaluate(() => { const t = document.getElementById('toast'); if (t) { t.className = 'toast hidden'; t.textContent = ''; } });
+check(await page.$eval('#worktree-card', (el) => el.textContent.includes('Конфликт') && el.textContent.includes('src/core/worktree.ts')), '3.7 conflict state displays conflicting file list cleanly');
+await shot('31-release-37-worktree-conflict');
+
 const posted = await page.evaluate(() => window.__posted.map((m) => m.type));
 console.log('posted:', [...new Set(posted)].join(','));
 console.log('tabs:', tabs.length);

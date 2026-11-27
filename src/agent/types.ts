@@ -117,6 +117,36 @@ export interface AgentSettings {
   autoCompactThreshold?: number;
   /** F13: Number of latest dialogue steps kept untouched during auto-compaction. Default 4. */
   autoCompactKeepSteps?: number;
+  /** F16: Run new tasks inside an isolated git worktree created from HEAD. Default false. */
+  worktreeEnabled?: boolean;
+  /** F18: Maximum concurrent subtasks executed in parallel by Orchestrator. Default 3. */
+  maxParallelSubtasks?: number;
+}
+
+export interface WorktreeChangedFile {
+  path: string;
+  status: 'added' | 'modified' | 'deleted' | 'renamed';
+  additions: number;
+  deletions: number;
+}
+
+export interface WorktreeResultCard {
+  worktreeName: string;
+  worktreePath: string;
+  mainRepoRoot: string;
+  baseCommit: string;
+  changedFiles: WorktreeChangedFile[];
+  totalAdditions: number;
+  totalDeletions: number;
+  unifiedDiff: string;
+  verify: {
+    status: 'no_changes' | 'verified' | 'needs_review' | 'failed' | 'blocked';
+    detail: string;
+    editedFiles: string[];
+  };
+  state: 'pending' | 'applied' | 'discarded' | 'conflict';
+  conflictFiles: string[];
+  statusMessage?: string;
 }
 
 export interface ModelSelection {
@@ -146,6 +176,12 @@ export interface TaskStatus {
   banner?: TaskStateBanner;
   /** F04: Last request route line: "<запрошенный режим> → <фактический>, <причина>". */
   routeLine?: string;
+  /** F16/F17: Active isolated worktree name when task runs inside a git worktree. */
+  worktreeName?: string;
+  /** F16: Pre-start warning when uncommitted changes existed in the main checkout. */
+  worktreeWarning?: string;
+  /** F17: Result card with diff, verify outcome, and Apply / Discard controls. */
+  worktreeCard?: WorktreeResultCard;
 }
 
 export interface PersistedTask {
@@ -169,6 +205,13 @@ export interface PersistedTask {
   routeLine?: string;
   /** F12: Context item IDs manually excluded by user via Context Inspector. */
   excludedContextIds?: string[];
+  /** F16/F17: Persisted worktree metadata and result card. */
+  worktreeName?: string;
+  worktreePath?: string;
+  mainRepoRoot?: string;
+  worktreeBaseCommit?: string;
+  worktreeWarning?: string;
+  worktreeCard?: WorktreeResultCard;
 }
 
 export interface HistoryItem {

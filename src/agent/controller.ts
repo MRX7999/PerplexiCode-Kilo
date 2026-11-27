@@ -1,4 +1,5 @@
 import * as cp from 'child_process';
+import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { formatQuotaSummary, getQuotaItem, setPlanOverride } from '../api/capabilityFetcher';
@@ -26,6 +27,16 @@ import { CoreBridge } from './coreBridge';
 import { compactMessages } from '../core/compaction';
 import { buildDiagnosticBundle, serializeDiagnosticBundle } from '../core/diagnostics';
 import { loadSettings } from '../core/settings';
+import {
+  applyWorktreeChanges,
+  buildWorktreeResultCard,
+  createIsolatedWorktree,
+  discardWorktreeChanges,
+  inspectMainCheckoutDirty,
+  IsolatedWorktreeHandle,
+  isReadOnlySubagentTarget,
+  runWithConcurrencyLimit,
+} from '../core/worktree';
 import {
   applyPresetPrompt,
   createCustomAgent,
@@ -71,6 +82,8 @@ export class AgentController implements vscode.Disposable {
   private readonly tasks = new Map<string, AgentTask>();
   /** Subagent name a task runs as (presets / agent picker / delegation). */
   private readonly taskAgents = new Map<string, string>();
+  /** 3.7 (F16/F17): Active isolated git worktrees keyed by task ID. */
+  private readonly taskWorktrees = new Map<string, IsolatedWorktreeHandle>();
   /** 3.0 core: permissions, hooks, verify, subagents, shared session journal. */
   readonly core: CoreBridge;
   /** Stack of tasks; the last element is the one shown in the UI (child tasks on top). */
@@ -514,6 +527,8 @@ export class AgentController implements vscode.Disposable {
         return raw <= 0 ? 0 : Math.min(0.98, Math.max(0.3, raw));
       })(),
       autoCompactKeepSteps: clamp(config.get<number>('autoCompactKeepSteps', 4), 1, 20),
+      worktreeEnabled: config.get<boolean>('worktreeEnabled', false),
+      maxParallelSubtasks: clamp(config.get<number>('maxParallelSubtasks', 3), 1, 16),
     };
   }
 
@@ -651,15 +666,41 @@ export class AgentController implements vscode.Disposable {
     return folders[0].uri.fsPath;
   }
 
-  private buildTask(options: { mode: string; parentId?: string; restore?: PersistedTask; cwd?: string; agent?: string }): AgentTask {
-    const cwd = options.restore?.workspace || options.cwd || this.workspaceRoot() || os.homedir();
-    const host = new VsCodeAgentHost(cwd, () => readSetting<boolean>('perplexicodeKilo.agent.revealEditedFiles', true));
-    const agent = options.agent ? this.core.findSubagent(cwd, options.agent) : undefined;
-    const gate = this.core.createGate({ cwd, host, parentId: options.parentId, agent });
-    const readBatchSize = this.core.readBatchSize(cwd);
+  private buildTask(options: {
+    mode: string;
+    parentId?: string;
+    restore?: PersistedTask;
+    cwd?: string;
+    agent?: string;
+    worktree?: IsolatedWorktreeHandle;
+  }): AgentTask {
+    const baseCwd = options.restore?.workspace || options.cwd || this.workspaceRoot() || os.homedir();
+    const activeWorktree = options.worktree;
+    const effectiveCwd = activeWorktree ? activeWorktree.worktreePath : baseCwd;
+    const host = new VsCodeAgentHost(effectiveCwd, () => readSetting<boolean>('perplexicodeKilo.agent.revealEditedFiles', true));
+    const agent = options.agent ? this.core.findSubagent(effectiveCwd, options.agent) : undefined;
+    const worktreeIsolation = activeWorktree
+      ? {
+          name: activeWorktree.name,
+          worktreeRoot: activeWorktree.worktreePath,
+          mainRepoRoot: activeWorktree.mainRepoRoot,
+          baseCommit: activeWorktree.baseCommit,
+          warningMessage: !options.parentId ? activeWorktree.warningMessage : undefined,
+        }
+      : undefined;
+    const gate = this.core.createGate({
+      cwd: effectiveCwd,
+      host,
+      parentId: options.parentId,
+      agent,
+      worktreeIsolation: worktreeIsolation
+        ? { worktreeRoot: worktreeIsolation.worktreeRoot, mainRepoRoot: worktreeIsolation.mainRepoRoot }
+        : undefined,
+    });
+    const readBatchSize = this.core.readBatchSize(effectiveCwd);
     const task = new AgentTask({
       gate,
-      isSubtaskTarget: (slug) => this.core.subagents(cwd).some((entry) => entry.name === slug),
+      isSubtaskTarget: (slug) => this.core.subagents(effectiveCwd).some((entry) => entry.name === slug),
       readBatchSize: () => readBatchSize,
       host,
       provider: this.transport,
@@ -669,10 +710,11 @@ export class AgentController implements vscode.Disposable {
         const compute = this.getSelection().computeMode;
         return compute ? `${getModelLabel(modelId, thinking)} · ${getComputeModeOption(compute).label}` : getModelLabel(modelId, thinking);
       },
-      mcp: this.mcpFor(cwd),
+      mcp: this.mcpFor(effectiveCwd),
       mode: agent ? agent.mode : options.mode,
       parentId: options.parentId,
       restore: options.restore,
+      worktreeIsolation,
       callbacks: {
         onEvent: (owner, event) => this.core.onEvent(owner, event),
         onMessage: (owner, message) => {
@@ -698,12 +740,25 @@ export class AgentController implements vscode.Disposable {
           }
         },
         startSubtask: (parent, mode, message, todos) => this.startSubtask(parent, mode, message, todos),
+        startParallelSubtasks: (parent, items, maxParallel) =>
+          this.startParallelSubtasks(parent, items, maxParallel),
         persist: (owner) => this.store.save(owner.toJSON()),
         onCompleted: (owner) => {
           const report = this.core.finish(owner);
           if (report && report.status !== 'no_changes') {
             owner.say({ type: 'info', text: `Verification — ${this.core.label(report)}` });
             this.output.appendLine(`[core] ${owner.id} ${this.core.label(report)}`);
+          }
+          const wt = this.taskWorktrees.get(owner.id);
+          if (wt && fs.existsSync(wt.worktreePath)) {
+            const card = buildWorktreeResultCard(
+              wt,
+              report || { status: 'no_changes', detail: 'No edits', editedFiles: [], checks: [] },
+              owner.status.worktreeCard?.state || 'pending',
+              owner.status.worktreeCard?.conflictFiles || [],
+              owner.status.worktreeCard?.statusMessage
+            );
+            owner.setWorktreeCard(card);
           }
           this.store.save(owner.toJSON());
           this.postState();
@@ -712,6 +767,26 @@ export class AgentController implements vscode.Disposable {
     });
     this.core.register(task);
     this.tasks.set(task.id, task);
+    if (activeWorktree) {
+      this.taskWorktrees.set(task.id, activeWorktree);
+    } else if (
+      options.restore?.worktreePath
+      && options.restore.mainRepoRoot
+      && options.restore.worktreeName
+      && fs.existsSync(options.restore.worktreePath)
+    ) {
+      this.taskWorktrees.set(task.id, {
+        name: options.restore.worktreeName,
+        worktreePath: options.restore.worktreePath,
+        mainRepoRoot: options.restore.mainRepoRoot,
+        gitCommonDir: path.join(options.restore.mainRepoRoot, '.git'),
+        baseCommit: options.restore.worktreeBaseCommit || 'HEAD',
+        createdByHook: false,
+        dirtyMainCheckout: Boolean(options.restore.worktreeWarning),
+        dirtyMainFiles: [],
+        warningMessage: options.restore.worktreeWarning,
+      });
+    }
     if (agent) {
       this.taskAgents.set(task.id, agent.name);
     }
@@ -738,7 +813,64 @@ export class AgentController implements vscode.Disposable {
     return result;
   }
 
-  async newTask(text: string, images: string[] = [], mode?: string, agent?: string): Promise<void> {
+  /**
+   * 3.7 (F18): Parallel Orchestrator subagents in IDE.
+   * Read-only subagents execute in the main tree; writing subagents each execute in an isolated git worktree.
+   */
+  private async startParallelSubtasks(
+    parent: AgentTask,
+    items: Array<{ mode: string; message: string; todos: TodoItem[] }>,
+    maxParallel: number
+  ): Promise<Array<{ mode: string; result: string; error?: string }>> {
+    const parentSnap = parent.toJSON();
+    const mainTreeCwd = parentSnap.mainRepoRoot || parentSnap.workspace;
+    return runWithConcurrencyLimit(items, maxParallel, async (item, index) => {
+      const subagent = !MODES.some((entry) => entry.slug === item.mode)
+        ? this.core.findSubagent(mainTreeCwd, item.mode)
+        : undefined;
+      const readOnly = isReadOnlySubagentTarget(item.mode, subagent);
+      let childWorktree: IsolatedWorktreeHandle | undefined;
+      try {
+        if (!readOnly) {
+          childWorktree = await createIsolatedWorktree({
+            cwd: mainTreeCwd,
+            name: `sub-${index + 1}-${item.mode}`,
+            taskId: `${parent.id}-sub-${index + 1}`,
+            hooks: this.core.createHooksEngine(mainTreeCwd),
+            permissionMode: this.core.permissionMode,
+          });
+        }
+        const child = this.buildTask({
+          mode: subagent ? subagent.mode : item.mode,
+          parentId: parent.id,
+          cwd: mainTreeCwd,
+          agent: subagent?.name,
+          worktree: childWorktree,
+        });
+        child.todos = item.todos;
+        await child.start(item.message);
+        this.store.save(child.toJSON());
+        let textResult = child.completionResult
+          ?? ([...child.uiMessages].reverse().find((m) => m.type === 'text' && m.text)?.text
+            || `Subtask finished with state ${child.status.state}.`);
+        if (childWorktree && fs.existsSync(childWorktree.worktreePath)) {
+          const card = buildWorktreeResultCard(childWorktree, {
+            status: child.hasEdits ? 'needs_review' : 'no_changes',
+            detail: `Isolated subagent worktree '${childWorktree.name}'`,
+            editedFiles: [],
+            checks: [],
+          });
+          child.setWorktreeCard(card);
+          textResult += `\n[Worktree: ${card.worktreeName} (${card.worktreePath}) | files: ${card.changedFiles.length}, +${card.totalAdditions}/-${card.totalDeletions}]`;
+        }
+        return { mode: item.mode, result: textResult };
+      } catch (err) {
+        return { mode: item.mode, result: '', error: (err as Error).message };
+      }
+    });
+  }
+
+  async newTask(text: string, images: string[] = [], mode?: string, agent?: string, worktreeName?: string): Promise<void> {
     await this.clearTask();
     if (!this.workspaceRoot()) {
       void vscode.window.showWarningMessage('PerplexiCode: open a folder or workspace so the agent can work with files. The task will run in your home directory.');
@@ -753,10 +885,35 @@ export class AgentController implements vscode.Disposable {
     if (agent && !resolvedAgent) {
       this.output.appendLine(`[library] subagent "${agent}" is not installed; running in ${this.selection.mode} mode`);
     }
-    const task = this.buildTask({ mode: this.selection.mode, agent: resolvedAgent?.name });
+    let worktreeHandle: IsolatedWorktreeHandle | undefined;
+    const useWorktree = Boolean(worktreeName || this.getSettings().worktreeEnabled);
+    if (useWorktree && cwd) {
+      try {
+        worktreeHandle = await createIsolatedWorktree({
+          cwd,
+          name: worktreeName,
+          hooks: this.core.createHooksEngine(cwd),
+          permissionMode: this.core.permissionMode,
+        });
+        if (worktreeHandle.dirtyMainCheckout && worktreeHandle.warningMessage) {
+          this.output.appendLine(`[worktree] ${worktreeHandle.warningMessage}`);
+          void vscode.window.showWarningMessage(`PerplexiCode: ${worktreeHandle.warningMessage}`);
+        }
+      } catch (error) {
+        void vscode.window.showErrorMessage(`PerplexiCode worktree: ${(error as Error).message}`);
+        return;
+      }
+    }
+    const task = this.buildTask({ mode: this.selection.mode, agent: resolvedAgent?.name, worktree: worktreeHandle });
     this.stack = [task];
     this.postState(true);
     await task.start(text, images);
+    if (worktreeHandle && fs.existsSync(worktreeHandle.worktreePath) && !task.status.worktreeCard) {
+      const report = this.core.finish(task) || { status: 'no_changes', detail: 'No edits', editedFiles: [], checks: [] };
+      task.setWorktreeCard(buildWorktreeResultCard(worktreeHandle, report));
+      this.store.save(task.toJSON());
+      this.postState();
+    }
   }
 
   async clearTask(): Promise<void> {
@@ -1215,6 +1372,82 @@ export class AgentController implements vscode.Disposable {
         }
         break;
       }
+      case 'toggleWorktree': {
+        const nextEnabled = typeof message.enabled === 'boolean' ? message.enabled : !this.getSettings().worktreeEnabled;
+        await this.updateSetting('worktreeEnabled', nextEnabled);
+        this.postState();
+        break;
+      }
+      case 'applyWorktree': {
+        const task =
+          (typeof message.taskId === 'string' && message.taskId ? this.tasks.get(message.taskId) : undefined) ||
+          this.currentTask;
+        if (!task) {
+          break;
+        }
+        const handle = this.taskWorktrees.get(task.id);
+        if (!handle) {
+          this.post({ type: 'toast', text: 'Worktree для этой задачи уже закрыт или не найден' }, webview);
+          break;
+        }
+        try {
+          const res = await applyWorktreeChanges(handle, {
+            removeAfterApply: true,
+            hooks: this.core.createHooksEngine(handle.mainRepoRoot),
+            taskId: task.id,
+            permissionMode: this.core.permissionMode,
+          });
+          if (task.status.worktreeCard) {
+            task.setWorktreeCard({
+              ...task.status.worktreeCard,
+              state: res.state,
+              conflictFiles: res.conflictFiles,
+              statusMessage: res.message,
+            });
+          }
+          this.store.save(task.toJSON());
+          this.post({ type: 'toast', text: res.message }, webview);
+          this.postState();
+        } catch (err) {
+          void vscode.window.showErrorMessage(`PerplexiCode worktree apply: ${(err as Error).message}`);
+        }
+        break;
+      }
+      case 'discardWorktree': {
+        const task =
+          (typeof message.taskId === 'string' && message.taskId ? this.tasks.get(message.taskId) : undefined) ||
+          this.currentTask;
+        if (!task) {
+          break;
+        }
+        const handle = this.taskWorktrees.get(task.id);
+        if (!handle) {
+          this.post({ type: 'toast', text: 'Worktree для этой задачи уже удалён' }, webview);
+          break;
+        }
+        try {
+          const res = await discardWorktreeChanges(handle, {
+            hooks: this.core.createHooksEngine(handle.mainRepoRoot),
+            taskId: task.id,
+            permissionMode: this.core.permissionMode,
+          });
+          this.taskWorktrees.delete(task.id);
+          if (task.status.worktreeCard) {
+            task.setWorktreeCard({
+              ...task.status.worktreeCard,
+              state: 'discarded',
+              conflictFiles: [],
+              statusMessage: res.message,
+            });
+          }
+          this.store.save(task.toJSON());
+          this.post({ type: 'toast', text: res.message }, webview);
+          this.postState();
+        } catch (err) {
+          void vscode.window.showErrorMessage(`PerplexiCode worktree discard: ${(err as Error).message}`);
+        }
+        break;
+      }
       case 'insertCode': {
         const editor = vscode.window.activeTextEditor;
         if (editor) {
@@ -1456,6 +1689,18 @@ export class AgentController implements vscode.Disposable {
       workspace: this.workspaceRoot() || null,
       library: this.getLibrary(),
       permissionMode: this.core.permissionMode,
+      worktree: (() => {
+        const enabled = Boolean(this.getSettings().worktreeEnabled);
+        let preStartWarning: string | undefined;
+        const root = this.workspaceRoot();
+        if (enabled && !task && root) {
+          const dirty = inspectMainCheckoutDirty(root);
+          if (dirty.dirty) {
+            preStartWarning = dirty.warningMessage;
+          }
+        }
+        return { enabled, preStartWarning };
+      })(),
     };
     this.post(state, target);
     this.stateEmitter.fire();
