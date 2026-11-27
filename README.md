@@ -5,7 +5,7 @@
 <img src="docs/visuals/hero.png" alt="PerplexiCode Kilo: one agent core for the IDE and pcode CLI, with MCP integrations and configurable approvals" width="100%" />
 
 [![Release](https://img.shields.io/github/v/release/MRX7999/PerplexiCode-Kilo?label=release&color=20b8cd)](https://github.com/MRX7999/PerplexiCode-Kilo/releases/latest)
-[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-4.0.0-007acc)](https://marketplace.visualstudio.com/items?itemName=MRX7999.perplexicode-kilo)
+[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-4.0.1-007acc)](https://marketplace.visualstudio.com/items?itemName=MRX7999.perplexicode-kilo)
 [![Open VSX](https://img.shields.io/open-vsx/v/MRX7999/perplexicode-kilo?label=Open%20VSX&color=a60ee5)](https://open-vsx.org/extension/MRX7999/perplexicode-kilo)
 [![Open VSX downloads](https://img.shields.io/open-vsx/dt/MRX7999/perplexicode-kilo?label=installs&color=5eead4)](https://open-vsx.org/extension/MRX7999/perplexicode-kilo)
 [![CI](https://img.shields.io/github/actions/workflow/status/MRX7999/PerplexiCode-Kilo/ci.yml?branch=master&label=CI)](https://github.com/MRX7999/PerplexiCode-Kilo/actions/workflows/ci.yml)
@@ -14,7 +14,7 @@
 [![Antigravity IDE](https://img.shields.io/badge/Antigravity%20IDE-supported-4285f4)](https://antigravity.google/download)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-[Overview](#features) · [Install](#install) · [What's new in 4.0](#40-remote-core-lsp-repl--quick-edit) · [3.5–3.8](#38-mcp-oauth-slash-prompts--cross-model-review) · [Interface & agents](#31-agents-skills--presets) · [MCP catalog](#34-mcp-catalog-security-and-parrot-os) · [MCP & compute](#33-mcp-servers-and-compute-modes) · [CLI](#30-headless-core--pcode-cli) · [Models](#models) · [Commands](#commands-and-shortcuts) · [Settings](#settings) · [Migrating to 4.0](#миграция-на-40) · [Build](#build-from-source) · [Help](#troubleshooting)
+[Overview](#features) · [Install](#install) · [What's new in 4.0](#40-remote-core-lsp-repl--quick-edit) · [3.5–3.8](#38-mcp-oauth-slash-prompts--cross-model-review) · [Interface & agents](#31-agents-skills--presets) · [MCP catalog](#34-mcp-catalog-security-and-parrot-os) · [MCP & compute](#33-mcp-servers-and-compute-modes) · [CLI](#30-headless-core--pcode-cli) · [Models](#models) · [Commands](#commands-and-shortcuts) · [Settings](#settings) · [Migrating to 4.0](#migrating-to-40) · [Build](#build-from-source) · [Help](#troubleshooting)
 
 [Core reference](docs/CORE-3.0.md) · [Security policy & threat model](SECURITY.md) · [Security & Parrot OS guide](docs/MCP-SECURITY-PARROT.md)
 
@@ -187,6 +187,8 @@ Sessions are kept in the editor's [SecretStorage](https://code.visualstudio.com/
 
 </details>
 
+<img src="docs/visuals/whats-new-4.png" alt="Road to 4.0: 3.5 reliability, 3.6 context, 3.7 isolation, 3.8 MCP and review, 4.0 remote core — 77% fewer read_file calls before the first edit, 63% smaller prompts, 133 models, 0 renamed settings" width="100%" />
+
 <a id="40-remote-core-lsp-repl--quick-edit"></a>
 <a id="whats-new-in-40"></a>
 <details open>
@@ -209,6 +211,8 @@ pcode serve                         # Unix socket, token written to ~/.perplexic
 pcode serve --port 4190 --token-env PCODE_SERVE_TOKEN   # WebSocket on 127.0.0.1:4190
 ssh -L 4190:127.0.0.1:4190 build-box                     # reach a remote daemon through SSH
 ```
+
+<img src="docs/visuals/remote-core.png" alt="Remote core: the IDE keeps the Perplexity session and the serve token, talks to pcode serve over a 0600 Unix socket, a bearer-token WebSocket or an SSH tunnel; model calls return to the IDE through llm/complete; the daemon rejects session fields" width="100%" />
 
 On start the daemon prints one `serve_ready` JSON line with the endpoint and the token source (never the token itself). To reach a daemon on another host, forward the socket or port over SSH instead of binding it to a public interface.
 
@@ -239,7 +243,7 @@ The agent can ask the language server instead of grepping: `definition`, `refere
 
 ### Quick Edit — `Cmd/Ctrl+I`
 
-Select code, press `Cmd+I` (macOS) or `Ctrl+I` (Windows / Linux) and describe the change. The new code streams into a side-by-side diff with `+added / -removed` counters; nothing is written until you click **Применить правку** (Apply). Cancel the progress notification to stop the request. **Add Selection to Chat** is now on `Cmd/Ctrl+Shift+I`.
+Select code, press `Cmd+I` (macOS) or `Ctrl+I` (Windows / Linux) and describe the change. The new code streams into a side-by-side diff with `+added / -removed` counters; nothing is written until you click **Apply**. Cancel the progress notification to stop the request. **Add Selection to Chat** is now on `Cmd/Ctrl+Shift+I`.
 
 ### Model catalog without a release
 
@@ -249,7 +253,7 @@ Select code, press `Cmd+I` (macOS) or `Ctrl+I` (Windows / Linux) and describe th
 
 [`.github/workflows/canary.yml`](.github/workflows/canary.yml) sends one minimal request every night (03:17 UTC) with a test account and opens or updates a “Nightly Perplexity SSE Canary Alert” issue if Perplexity's response format changes. Add the cookie of a test account as the repository secret `PPLX_CANARY_COOKIE`; without it the job is skipped, not failed. Issue text is redacted.
 
-Upgrading from 3.x? Read [Migrating to 4.0](#миграция-на-40) — eleven behaviour changes, no renamed settings.
+Upgrading from 3.x? Read [Migrating to 4.0](#migrating-to-40) — eleven behaviour changes, no renamed settings.
 
 </details>
 
@@ -292,10 +296,12 @@ OAuth was tested against a local OAuth / PKCE test server, not against a specifi
 | | |
 | --- | --- |
 | **Isolated task** | `pcode -w [name]` / `--worktree`, REPL `/worktree`, or the **Worktree** pill in the composer (`perplexicodeKilo.agent.worktreeEnabled`). The task runs in a detached worktree from `HEAD`. Tools cannot leave it: `..`, symlinks, `git -C`, `--git-dir`, `GIT_DIR`, `cd` outside and `git push` are blocked. Uncommitted changes in your checkout trigger a warning first. |
-| **Result card** | Changed files, the diff and the `verify` status, with **Применить** (Apply) and **Отбросить** (Discard). Apply checks the patch first and writes to your working copy — no `merge`, `commit` or `push`. On a conflict nothing changes and the conflicting files are listed. CLI: `pcode worktree list \| apply <name> \| discard <name>`. |
+| **Result card** | Changed files, the diff and the `verify` status, with **Apply** and **Discard**. Apply checks the patch first and writes to your working copy — no `merge`, `commit` or `push`. On a conflict nothing changes and the conflicting files are listed. CLI: `pcode worktree list \| apply <name> \| discard <name>`. |
 | **Parallel subagents** | Consecutive `new_task` calls in Orchestrator mode run at the same time, up to `maxParallelSubtasks` (default `3`, CLI `--max-parallel-subtasks`). Read-only subagents share the main tree; each writing subagent gets its own worktree. |
 | **Hooks** | `WorktreeCreate` and `WorktreeRemove` receive JSON on stdin, can block with exit code `2` or return a custom `worktreePath`. |
 | **Exit codes** | `pcode -p` returns a fixed code per outcome — see the table in [Headless core & pcode CLI](#30-headless-core--pcode-cli). |
+
+<img src="docs/visuals/worktree-flow.png" alt="Worktree flow: task, isolated tree with escapes and git push blocked, verify, result card, then Apply (patch checked, no commit or push), Discard, or Conflict (nothing changes, exit code 6)" width="100%" />
 
 <table>
   <tr>
@@ -318,6 +324,8 @@ OAuth was tested against a local OAuth / PKCE test server, not against a specifi
 | **Auto-compaction** | At `autoCompactThreshold` × `maxPromptChars` (default 80%) older turns become a structured summary — changed files, checked hypotheses, constraints, todo status — while the system prompt and the last `autoCompactKeepSteps` steps stay verbatim. |
 | **Rate limits** | Jittered exponential backoff and a per-account cap of `12` requests per minute (`perplexicodeKilo.rotation.maxRequestsPerMinute`, CLI `--max-rpm`). |
 
+<img src="docs/visuals/repo-map-benchmark.png" alt="@repo benchmark on 24 tasks: read_file calls before the first edit 4.29 to 1.00, prompt characters 150,858 to 55,347, verify pass rate 100% to 100%" width="100%" />
+
 <p align="center"><img src="docs/images/context-inspector.png" width="640" alt="Context Inspector: prompt budget, included blocks with reasons, compacted summary and per-item exclusion" /><br /><sub>Context Inspector</sub></p>
 
 </details>
@@ -329,9 +337,9 @@ OAuth was tested against a local OAuth / PKCE test server, not against a specifi
 | | |
 | --- | --- |
 | **Stream safety** | A repeated final chunk, a stream cut inside a tool call or a reconnect after an applied edit never apply an edit or run a command twice (covered by SSE replay tests). |
-| **Safe resume** | A command interrupted before its exit code was recorded is marked *result not confirmed*. After `pcode -c` / `-r` or reopening the task, the agent must inspect the workspace before it may run that command again. |
-| **Task state** | A status card in the IDE and a `[статус]` line in the CLI: waiting for approval, retrying, checking the result, or needs you — with the reason and the rule that caused it. |
-| **Route line** | Each request shows requested mode/model → actual one and the reason (or `не сообщена` when Perplexity does not report it). `stopOnFallback` (CLI `--stop-on-fallback`) stops instead of silently switching. |
+| **Safe resume** | A command interrupted before its exit code was recorded is marked *result not confirmed* (`command_unconfirmed`). After `pcode -c` / `-r` or reopening the task, the agent must inspect the workspace before it may run that command again. |
+| **Task state** | A status card in the IDE and a status line in the CLI: waiting for approval, retrying, checking the result, or needs you — with the reason and the rule that caused it. |
+| **Route line** | Each request shows requested mode/model → actual one and the reason (or *not reported* when Perplexity does not say). `stopOnFallback` (CLI `--stop-on-fallback`) stops instead of silently switching. |
 | **`web_fetch` SSRF guard** | Loopback, RFC 1918, link-local, cloud metadata (`169.254.169.254`), CGNAT, ULA, `.localhost` / `.internal` are blocked, re-checked on every redirect. |
 | **Shell parser** | Chains (`;`, `&&`, `\|\|`, `\|`, `&`), `env` wrappers and `bash -c` scripts are split and every segment is checked against allow / deny. Substitutions, `eval` and redirections always ask. |
 | **Protected configs** | Edits to `.perplexicode/settings*.json`, hooks, `.mcp.json`, `.lsp.json` and `.claude/**` always need your confirmation, even with auto-approve or `bypassPermissions`. See [SECURITY.md](SECURITY.md). |
@@ -687,25 +695,30 @@ Max models unlock automatically for Max accounts. If a Max model is picked on a 
 
 </details>
 
-<a id="миграция-на-40"></a>
 <a id="migrating-to-40"></a>
-## Миграция на 4.0
+<a id="миграция-на-40"></a>
+<details open>
+<summary><strong>Migrating to 4.0</strong> · Eleven behaviour changes since 3.4 · no settings renamed</summary>
 
-> **Migrating to 4.0.** No settings were renamed and Claude Code configs keep working. The list below (in Russian) covers every behaviour change from 3.4.0: secrets in CLI arguments are refused (exit `64`), shell chains are checked per segment, agent config edits always ask, `web_fetch` blocks private addresses, interrupted commands are not re-run blindly, MCP argument `deny` rules beat auto-approve, worktree results are applied only by you, `pcode -p` has fixed exit codes, a 12 RPM per-account cap and optional `stopOnFallback`, `pcode serve` never receives cookies, and `Cmd/Ctrl+I` now opens Quick Edit.
+## Migrating to 4.0
 
-Все существующие настройки `perplexicodeKilo.*`, сохранённые аккаунты в `SecretStorage` и конфигурации в формате Claude Code (`.claude/settings.json`, `hooks`, `agents`, `skills`, `.mcp.json`) сохраняют полную совместимость без переименования ключей. Ниже перечислены все несовместимые и поведенческие изменения, введённые на пути от `3.4.0` к `4.0.0`:
+Every `perplexicodeKilo.*` setting keeps its name, saved accounts stay in SecretStorage, and Claude Code configs (`.claude/settings.json`, hooks, agents, skills, `.mcp.json`) keep working unchanged. These are all the incompatible or behaviour changes between `3.4.0` and `4.0.0`:
 
-1. **Запрет передачи секретов и токенов через аргументы CLI (выход `64`).** Команды `pcode login`, `pcode mcp install` и `pcode serve` отклоняют флаги вида `--token` или секреты в открытых аргументах командной строки с кодом выхода `64`. Используйте переменные окружения (`PPLX_COOKIE`, `PCODE_SERVE_TOKEN`), интерактивный ввод / stdin или локальный файл токена `~/.perplexicode/serve.token` с правами `0600`.
-2. **Посегментный разбор shell-команд в `execute_command`.** Цепочки команд с `;`, `&&`, `||`, `|`, `&`, переводами строк, обёртками `env VAR=…` и вызовами `sh -c` / `bash -c` / `zsh -c` теперь разбираются на отдельные сегменты, и каждый сегмент проверяется правилами `allow` / `deny` независимо. Командные подстановки (`$(...)`, `` `...` ``), `eval` и перенаправления (`>`, `>>`, `<`) больше не одобряются автоматически по префиксу первой команды и всегда запрашивают подтверждение.
-3. **Обязательное подтверждение правок агентских конфигов.** Запись или удаление файлов `.perplexicode/settings*.json`, скриптов `hooks`, `.mcp.json`, `.lsp.json` и содержимого `.claude/**` всегда требует явного подтверждения пользователя, даже если включены `perplexicodeKilo.agent.autoApprove.write: true`, режим `acceptEdits` или `bypassPermissions`.
-4. **Блокировка локальных и приватных адресов в `web_fetch` (SSRF).** Инструмент `web_fetch` блокирует обращения и HTTP-редиректы на loopback (`127.0.0.0/8`, `::1`), приватные подсети RFC1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local и метаданные облаков (`169.254.0.0/16`, `fe80::/10`), CGNAT, ULA и домены `.localhost` / `.internal`. Для доступа к локальным сервисам подключайте явный MCP-сервер.
-5. **Безопасное возобновление после обрыва (`command_unconfirmed`).** Если сессия прервалась во время выполнения shell-команды до фиксации кода возврата, при `pcode --continue` / `--resume` или повторном открытии задачи в IDE повторный запуск этой же команды вслепую блокируется, пока агент не проверит состояние рабочей копии инструментами чтения (`read_file`, `list_files`, `search_files`).
-6. **Приоритет аргументных правил MCP над `autoApprove.mcp`.** Правила `permissions.deny` и `permissions.ask` с предикатами аргументов (например, `mcp__db__query(sql:*DROP*)`) имеют приоритет над `perplexicodeKilo.agent.autoApprove.mcp: true`. Если в конфигурации задано аргументное `deny`-правило, вызов с невалидным JSON аргументов блокируется по принципу fail-closed.
-7. **Изоляция git worktree без автоматического слияния.** Задачи с `--worktree` / `worktreeEnabled: true` и пишущие параллельные субагенты в режиме Orchestrator работают в отдельных git worktree без автоматического `git merge`, `git commit` или `git push` в основную ветку. Перенос изменений выполняется явно кнопкой **Применить** или командой `pcode worktree apply <name>` с атомарной предварительной проверкой патча; при конфликте дерево остаётся нетронутым, а CLI завершается с кодом `6`.
-8. **Детерминированные коды выхода `pcode -p` в CI.** В неинтерактивном режиме коды возврата разделены по причинам остановки: `0` — успех, `1` — ошибка выполнения, `2` — провал `verify.command`, `3` — блокировка политикой / хуком / `stopOnFallback`, `4` — превышен `--max-turns`, `5` — отсутствует авторизация, `6` — конфликт применения worktree, `64` — неверные аргументы CLI, `130` — прерывание `SIGINT`. В CI-скриптах проверяйте ненулевой код возврата или конкретный код из этой таблицы.
-9. **Лимит RPM и поведение при фолбэке (`stopOnFallback`).** По умолчанию введён скользящий потолок `12` запросов в минуту на один аккаунт (`perplexicodeKilo.rotation.maxRequestsPerMinute`). При включении `perplexicodeKilo.agent.stopOnFallback: true` (`--stop-on-fallback`) задача останавливается со статусом `нужно вмешательство`, если запрошенный compute mode или модель недоступны, вместо автоматического переключения. Режим `council` не поддерживается, поскольку отсутствует во внутреннем каталоге `bundledModelsConfig.json`.
-10. **Граница безопасности удалённого ядра (`pcode serve`).** Демон `pcode serve` не хранит и не принимает cookie, `csrfToken` или `sessionToken` аккаунтов Perplexity: все обращения к модели выполняются на машине с IDE через обратный RPC `llm/complete`, а попытка передать поля сессии по сокету или WebSocket пресекается ошибкой `RemoteSecurityViolationError`. Проектные серверы из `.lsp.json` на демоне и в CLI запускаются только в доверенных рабочих директориях (`--trust-project` / `pcode trust`).
-11. **Сочетание клавиш `Cmd/Ctrl+I` в редакторе.** При выделенном тексте в редактируемом файле `Cmd+I` (macOS) / `Ctrl+I` (Windows, Linux) теперь запускает быструю правку выделения со стримингом diff (`perplexicodeKilo.quickEditSelection`). Добавление выделения в чат доступно по `Cmd+Shift+I` / `Ctrl+Shift+I` (`perplexicodeKilo.askAboutSelection`).
+| # | Change | What to do |
+| :---: | --- | --- |
+| 1 | **No secrets in CLI arguments.** `pcode login`, `pcode mcp install` and `pcode serve` refuse `--token` and other secrets passed as arguments with exit code `64`. | Use environment variables (`PPLX_COOKIE`, `PCODE_SERVE_TOKEN`), `--token-env`, `--token-stdin`, the hidden prompt or `~/.perplexicode/serve.token` (`0600`). |
+| 2 | **Shell commands are checked per segment.** Chains (`;`, `&&`, `\|\|`, `\|`, `&`, new lines), `env VAR=…` wrappers and `sh -c` / `bash -c` / `zsh -c` scripts are split, and every segment must pass `allow` / `deny` on its own. `$(…)`, backticks, `eval` and redirections (`>`, `>>`, `<`) always ask. | Allow rules that relied on the first command's prefix may now prompt — add rules for the other segments. |
+| 3 | **Agent config edits always ask.** Writing or deleting `.perplexicode/settings*.json`, hook scripts, `.mcp.json`, `.lsp.json` and anything under `.claude/**` needs your confirmation, even with `autoApprove.write`, `acceptEdits` or `bypassPermissions`. | Nothing to change; expect a prompt for these files. |
+| 4 | **`web_fetch` blocks local and private addresses.** Loopback (`127.0.0.0/8`, `::1`), RFC 1918 (`10/8`, `172.16/12`, `192.168/16`), link-local and cloud metadata (`169.254/16`, `fe80::/10`), CGNAT, ULA and `.localhost` / `.internal` are refused, including after redirects. | Reach local services through an explicit MCP server. |
+| 5 | **Safe resume after a crash.** A command cut off before its exit code was recorded (`command_unconfirmed`) cannot be re-run blindly after `pcode --continue` / `--resume` or reopening the task. | The agent first inspects the workspace with `read_file`, `list_files` or `search_files`. |
+| 6 | **MCP argument rules beat auto-approve.** `permissions.deny` / `ask` with argument predicates (for example `mcp__db__query(sql:*DROP*)`) win over `autoApprove.mcp: true`; malformed JSON arguments are blocked when such a `deny` rule exists. | Review `deny` rules that used to be bypassed by auto-approve. |
+| 7 | **Worktrees never merge on their own.** `--worktree` / `worktreeEnabled` tasks and writing Orchestrator subagents run in separate git worktrees with no automatic `merge`, `commit` or `push`. | Bring results back with **Apply** or `pcode worktree apply <name>`; a conflict leaves your tree untouched and the CLI exits with `6`. |
+| 8 | **Fixed exit codes for `pcode -p`.** `0` done, `1` runtime error, `2` `verify.command` failed, `3` blocked by a rule / hook / `stopOnFallback`, `4` `--max-turns` reached, `5` not signed in, `6` worktree conflict, `64` invalid arguments, `130` interrupted. | CI scripts that compared against `1` only should check for non-zero or the specific code. |
+| 9 | **12 requests per minute per account, optional hard stop on fallback.** `perplexicodeKilo.rotation.maxRequestsPerMinute` defaults to `12`. With `perplexicodeKilo.agent.stopOnFallback: true` (`--stop-on-fallback`) the task stops with *needs you* instead of switching mode or model. `council` mode is not offered because it is not in `bundledModelsConfig.json`. | Raise the RPM cap if you run many accounts; turn on `stopOnFallback` if a silent model switch is unacceptable. |
+| 10 | **`pcode serve` security boundary.** The daemon never stores or accepts cookies, `csrfToken` or `sessionToken`; model calls go back to the IDE through `llm/complete`, and any message with session fields is rejected (`RemoteSecurityViolationError`). Project `.lsp.json` servers start only in trusted folders. | Use `--trust-project` for project LSP and hooks on the daemon. |
+| 11 | **`Cmd/Ctrl+I` opens Quick Edit.** With a selection in an editable file, `Cmd+I` (macOS) / `Ctrl+I` (Windows, Linux) runs `perplexicodeKilo.quickEditSelection`. | **Add Selection to Chat** (`perplexicodeKilo.askAboutSelection`) is on `Cmd/Ctrl+Shift+I`; rebind in Keyboard Shortcuts if you prefer the old key. |
+
+</details>
 
 <a id="build-from-source"></a>
 <a id="project-layout"></a>
@@ -760,7 +773,7 @@ docs/                   CORE-3.0.md, screenshots and diagrams
 | The CLI says `NOT registered` | Harmless Antigravity warning; check `--list-extensions --show-versions`. |
 | Install script cannot find the editor | Pass `--vsix` with a downloaded file, or use **Install from VSIX…**. |
 | Agent stops after many steps | Raise `perplexicodeKilo.agent.maxRequestsPerTask`. |
-| Task stopped with «нужно вмешательство» after a fallback | `stopOnFallback` is on and the requested mode or model is not available for your accounts. Pick another one or turn the setting off. |
+| Task stopped with *needs you* after a fallback | `stopOnFallback` is on and the requested mode or model is not available for your accounts. Pick another one or turn the setting off. |
 | `pcode` exits with code `64` | A secret was passed as an argument (for example `--token`). Use `PCODE_SERVE_TOKEN`, `--token-env`, `--token-stdin` or the hidden prompt. |
 | `lsp` says *No LSP servers configured* (CLI) | Add the server to `.lsp.json` or `~/.perplexicode/lsp.json`; project files also need `--trust-project`. |
 | Catalog update says the hash does not match | Nothing changed — the bundled snapshot is still used. Check `remoteCatalogUrl` / `remoteCatalogSha256Url` point to the same commit. |

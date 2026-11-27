@@ -1,0 +1,137 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="880" viewBox="0 0 1600 880" fill="none" role="img" aria-labelledby="release-title release-desc">
+  <title id="release-title">PerplexiCode Kilo road to 4.0</title>
+  <desc id="release-desc">Five releases from 3.4 to 4.0: 3.5 reliability and security hardening, 3.6 context intelligence, 3.7 worktree isolation, 3.8 MCP OAuth and review, 4.0 remote core, LSP, REPL and Quick Edit. Key results: 77 percent fewer read_file calls before the first edit, 63 percent smaller prompts with the repo map, 133 models in the 2026-11-27 snapshot, zero renamed settings.</desc>
+  <defs>
+    <pattern id="release-grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" stroke="#26344d" stroke-opacity=".26"/>
+    </pattern>
+    <marker id="release-arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="m1 1 5 3-5 3" stroke="#5de2e7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <marker id="release-arrow2" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="m1 1 5 3-5 3" stroke="#a4a6ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <marker id="release-arrow3" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="m1 1 5 3-5 3" stroke="#f5b971" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; }
+      .overline { font-size:24px; font-weight:600; letter-spacing:3px; fill:#9baac0; }
+      .title { font-size:44px; font-weight:650; letter-spacing:-1px; fill:#f3f7fc; }
+      .heading { font-size:28px; font-weight:600; fill:#f3f7fc; }
+      .body { font-size:24px; fill:#9baac0; }
+      .small { font-size:21px; fill:#9baac0; }
+      .label { font-size:24px; font-weight:550; fill:#f3f7fc; }
+      .mono { font-family: "SFMono-Regular", Menlo, Consolas, "DejaVu Sans Mono", monospace; font-size:21px; fill:#5de2e7; }
+      .pill { font-size:20px; font-weight:650; letter-spacing:1px; }
+      .big { font-size:52px; font-weight:700; letter-spacing:-1px; fill:#5de2e7; }
+    </style>
+  </defs>
+  <rect width="1600" height="880" rx="24" fill="#0b1020"/>
+  <rect x="1" y="1" width="1598" height="878" rx="23" stroke="#27344a"/>
+  <rect x="1" y="1" width="1598" height="878" rx="23" fill="url(#release-grid)"/>
+  <path d="M1030 1v134c0 29 23 52 52 52h518M1102 1v94c0 29 23 52 52 52h446" stroke="#26344d" stroke-opacity=".55"/>
+  <text x="56" y="62" class="overline">RELEASE / 3.4 → 4.0</text>
+  <text x="56" y="120" class="title">Five releases. One agent you can leave running.</text>
+  <path d="M56 152h1488" stroke="#27344a"/>
+  <path d="M76 218H1524" stroke="#27344a" stroke-width="2"/>
+  <path d="M76 218H1402.0" stroke="#5de2e7" stroke-opacity=".55" stroke-width="2"/>
+  <circle cx="198.0" cy="218" r="8" fill="#0b1020" stroke="#a4a6ff" stroke-width="3"/>
+  <rect x="56" y="250" width="284" height="440" rx="14" fill="#0e172b" stroke="#34465d"/>
+  <rect x="80" y="276" width="72" height="34" rx="17" fill="#1c2240" stroke="#a4a6ff" stroke-opacity=".6"/>
+  <text x="116" y="300" text-anchor="middle" class="pill" fill="#a4a6ff">3.5</text>
+  <text x="80" y="354" class="heading">Reliability</text>
+  <path d="M80 376h236" stroke="#2c3b53"/>
+  <circle cx="88" cy="414" r="4" fill="#a4a6ff"/>
+  <text x="104" y="422" class="label" style="font-size:22px;font-weight:500;fill:#d5deea">Safe resume</text>
+  <circle cx="88" cy="470" r="4" fill="#a4a6ff"/>
+  <text x="104" y="478" class="label" style="font-size:22px;font-weight:500;fill:#d5deea">Task state + route</text>
+  <circle cx="88" cy="526" r="4" fill="#a4a6ff"/>
+  <text x="104" y="534" class="label" style="font-size:22px;font-weight:500;fill:#d5deea">SSRF-safe web_fetch</text>
+  <circle cx="88" cy="582" r="4" fill="#a4a6ff"/>
+  <text x="104" y="590" class="label" style="font-size:22px;font-weight:500;fill:#d5deea">Shell segment parser</text>
+  <circle cx="88" cy="638" r="4" fill="#a4a6ff"/>
+  <text x="104" y="646" class="label" style="font-size:22px;font-weight:500;fill:#d5deea">Diagnostics bundle</text>
+  <circle cx="499.0" cy="218" r="8" fill="#0b1020" stroke="#a4a6ff" stroke-width="3"/>
+  <rect x="357" y="250" width="284" height="440" rx="14" fill="#0e172b" stroke="#34465d"/>
+  <rect x="381" y="276" width="72" height="34" rx="17" fill="#1c2240" stroke="#a4a6ff" stroke-opacity=".6"/>
+  <text x="417" y="300" text-anchor="middle" class="pill" fill="#a4a6ff">3.6</text>
+  <text x="381" y="354" class="heading">Context</text>
+  <path d="M381 376h236" stroke="#2c3b53"/>
+  <circle cx="389" cy="414" r="4" fill="#a4a6ff"/>
+  <text x="405" y="422" class="label" style="font-size:22px;font-weight:500;fill:#d5deea">@repo map</text>
+  <circle cx="389" cy="470" r="4" fill="#a4a6ff"/>
+  <text x="405" y="478" class="label" style="font-size:22px;font-weight:500;fill:#d5deea">Post-edit diagnostics</text>
+  <circle cx="389" cy="526" r="4" fill="#a4a6ff"/>
+  <text x="405" y="534" class="label" style="font-size:22px;font-weight:500;fill:#d5deea">Context Inspector</text>
+  <circle cx="389" cy="582" r="4" fill="#a4a6ff"/>
+  <text x="405" y="590" class="label" style="font-size:22px;font-weight:500;fill:#d5deea">Auto-compaction</text>
+  <circle cx="389" cy="638" r="4" fill="#a4a6ff"/>
+  <text x="405" y="646" class="label" style="font-size:22px;font-weight:500;fill:#d5deea">Rate limiting</text>
+  <circle cx="800.0" cy="218" r="8" fill="#0b1020" stroke="#a4a6ff" stroke-width="3"/>
+  <rect x="658" y="250" width="284" height="440" rx="14" fill="#0e172b" stroke="#34465d"/>
+  <rect x="682" y="276" width="72" height="34" rx="17" fill="#1c2240" stroke="#a4a6ff" stroke-opacity=".6"/>
+  <text x="718" y="300" text-anchor="middle" class="pill" fill="#a4a6ff">3.7</text>
+  <text x="682" y="354" class="heading">Isolation</text>
+  <path d="M682 376h236" stroke="#2c3b53"/>
+  <circle cx="690" cy="414" r="4" fill="#a4a6ff"/>
+  <text x="706" y="422" class="label" style="font-size:22px;font-weight:500;fill:#d5deea">Git worktree tasks</text>
+  <circle cx="690" cy="470" r="4" fill="#a4a6ff"/>
+  <text x="706" y="478" class="label" style="font-size:22px;font-weight:500;fill:#d5deea">Apply / Discard card</text>
+  <circle cx="690" cy="526" r="4" fill="#a4a6ff"/>
+  <text x="706" y="534" class="label" style="font-size:22px;font-weight:500;fill:#d5deea">Parallel subagents</text>
+  <circle cx="690" cy="582" r="4" fill="#a4a6ff"/>
+  <text x="706" y="590" class="label" style="font-size:22px;font-weight:500;fill:#d5deea">Worktree hooks</text>
+  <circle cx="690" cy="638" r="4" fill="#a4a6ff"/>
+  <text x="706" y="646" class="label" style="font-size:22px;font-weight:500;fill:#d5deea">CI exit codes</text>
+  <circle cx="1101.0" cy="218" r="8" fill="#0b1020" stroke="#a4a6ff" stroke-width="3"/>
+  <rect x="959" y="250" width="284" height="440" rx="14" fill="#0e172b" stroke="#34465d"/>
+  <rect x="983" y="276" width="72" height="34" rx="17" fill="#1c2240" stroke="#a4a6ff" stroke-opacity=".6"/>
+  <text x="1019" y="300" text-anchor="middle" class="pill" fill="#a4a6ff">3.8</text>
+  <text x="983" y="354" class="heading">MCP & review</text>
+  <path d="M983 376h236" stroke="#2c3b53"/>
+  <circle cx="991" cy="414" r="4" fill="#a4a6ff"/>
+  <text x="1007" y="422" class="label" style="font-size:22px;font-weight:500;fill:#d5deea">OAuth 2.0 + PKCE</text>
+  <circle cx="991" cy="470" r="4" fill="#a4a6ff"/>
+  <text x="1007" y="478" class="label" style="font-size:22px;font-weight:500;fill:#d5deea">/server:skill prompts</text>
+  <circle cx="991" cy="526" r="4" fill="#a4a6ff"/>
+  <text x="1007" y="534" class="label" style="font-size:22px;font-weight:500;fill:#d5deea">Argument rules</text>
+  <circle cx="991" cy="582" r="4" fill="#a4a6ff"/>
+  <text x="1007" y="590" class="label" style="font-size:22px;font-weight:500;fill:#d5deea">Cross-model review</text>
+  <circle cx="991" cy="638" r="4" fill="#a4a6ff"/>
+  <text x="1007" y="646" class="label" style="font-size:22px;font-weight:500;fill:#d5deea">Keychain tokens</text>
+  <circle cx="1402.0" cy="218" r="11" fill="#0b1020" stroke="#5de2e7" stroke-width="3"/>
+  <circle cx="1402.0" cy="218" r="4" fill="#5de2e7"/>
+  <rect x="1260" y="250" width="284" height="440" rx="14" fill="#0e172b" stroke="#5de2e7" stroke-opacity=".75" stroke-width="1.5"/>
+  <path d="M1278 250h248" stroke="#5de2e7" stroke-width="3"/>
+  <rect x="1284" y="276" width="72" height="34" rx="17" fill="#103a40" stroke="#5de2e7" stroke-opacity=".6"/>
+  <text x="1320" y="300" text-anchor="middle" class="pill" fill="#5de2e7">4.0</text>
+  <text x="1284" y="354" class="heading">Remote core</text>
+  <path d="M1284 376h236" stroke="#2c3b53"/>
+  <circle cx="1292" cy="414" r="4" fill="#5de2e7"/>
+  <text x="1308" y="422" class="label" style="font-size:22px;font-weight:600;fill:#f3f7fc">pcode serve</text>
+  <circle cx="1292" cy="470" r="4" fill="#5de2e7"/>
+  <text x="1308" y="478" class="label" style="font-size:22px;font-weight:600;fill:#f3f7fc">lsp tool</text>
+  <circle cx="1292" cy="526" r="4" fill="#5de2e7"/>
+  <text x="1308" y="534" class="label" style="font-size:22px;font-weight:600;fill:#f3f7fc">!cmd · /rewind</text>
+  <circle cx="1292" cy="582" r="4" fill="#5de2e7"/>
+  <text x="1308" y="590" class="label" style="font-size:22px;font-weight:600;fill:#f3f7fc">Quick Edit · Cmd+I</text>
+  <circle cx="1292" cy="638" r="4" fill="#5de2e7"/>
+  <text x="1308" y="646" class="label" style="font-size:22px;font-weight:600;fill:#f3f7fc">Verified catalog</text>
+  <rect x="56.0" y="720" width="359.25" height="120" rx="14" fill="#111c30" stroke="#30415a"/>
+  <text x="82.0" y="798" class="big" style="fill:#5de2e7">−77%</text>
+  <text x="232.0" y="772" class="body" style="font-size:21px;fill:#d5deea">read_file calls</text>
+  <text x="232.0" y="804" class="body" style="font-size:21px">before first edit</text>
+  <rect x="432.25" y="720" width="359.25" height="120" rx="14" fill="#111c30" stroke="#30415a"/>
+  <text x="458.25" y="798" class="big" style="fill:#5de2e7">−63%</text>
+  <text x="608.25" y="772" class="body" style="font-size:21px;fill:#d5deea">prompt size</text>
+  <text x="608.25" y="804" class="body" style="font-size:21px">with @repo</text>
+  <rect x="808.5" y="720" width="359.25" height="120" rx="14" fill="#111c30" stroke="#30415a"/>
+  <text x="834.5" y="798" class="big" style="fill:#a4a6ff">133</text>
+  <text x="962.5" y="772" class="body" style="font-size:21px;fill:#d5deea">models in the</text>
+  <text x="962.5" y="804" class="body" style="font-size:21px">2026-11-27 list</text>
+  <rect x="1184.75" y="720" width="359.25" height="120" rx="14" fill="#111c30" stroke="#30415a"/>
+  <text x="1210.75" y="798" class="big" style="fill:#a4a6ff">0</text>
+  <text x="1282.75" y="772" class="body" style="font-size:21px;fill:#d5deea">renamed settings</text>
+  <text x="1282.75" y="804" class="body" style="font-size:21px">since 3.4</text>
+</svg>
