@@ -30,6 +30,9 @@ export const TOOL_PARAMS: Record<string, string[]> = {
   use_mcp_tool: ['server_name', 'tool_name', 'arguments'],
   access_mcp_resource: ['server_name', 'uri'],
   list_mcp_resources: ['server_name'],
+  // 4.1: Auto Skill
+  find_skill: ['query'],
+  install_skill: ['source', 'scope', 'name'],
 };
 
 export const TOOL_NAMES = Object.keys(TOOL_PARAMS);

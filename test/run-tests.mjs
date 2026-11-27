@@ -85,6 +85,13 @@ const suites = [
     prebuild: true,
     options: { external: ['vscode', 'puppeteer-core', 'sql.js'] },
   },
+  {
+    // 4.1 Auto Skill: ClawHub / skills.sh / GitHub sources, scan, lock file, find_skill / install_skill, pcode skills install.
+    entry: 'release-4.1.test.ts',
+    outfile: 'release-4.1.test.cjs',
+    prebuild: true,
+    options: { external: ['vscode', 'puppeteer-core', 'sql.js'] },
+  },
 ];
 
 const only = process.argv[2];

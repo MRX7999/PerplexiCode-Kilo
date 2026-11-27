@@ -102,6 +102,25 @@ await page.evaluate(() => { const b = document.querySelector('#view-library .vie
 await shot('17-library-agents-catalog');
 await page.click('[data-lib-tab="skills"]');
 await shot('18-library-skills');
+// 4.1 Auto Skill: search the registries from the Skills tab and install a result.
+await page.type('#library-search', 'pdf');
+const beforeSkillSearch = await page.evaluate(() => window.__posted.length);
+await page.click('[data-action="skill-search-online"]');
+const skillSearch = await page.evaluate((n) => window.__posted.slice(n), beforeSkillSearch);
+if (!skillSearch.some((m) => m.type === 'skillSearch' && m.query === 'pdf')) errors.push(`skillSearch not posted: ${JSON.stringify(skillSearch)}`);
+await send({ type: 'skillSearchResults', query: 'pdf', errors: [], results: [
+  { registry: 'skills-sh', name: 'pdf', install: 'skills-sh:anthropics/skills/pdf', owner: 'anthropics', installs: 61234, url: 'https://skills.sh/anthropics/skills/pdf' },
+  { registry: 'clawhub', name: 'pdf', install: 'clawhub:awspace/pdf', owner: 'awspace', description: 'Read, merge and fill PDF files with pypdf and pdfplumber.', installs: 1840, url: 'https://clawhub.ai/awspace/skills/pdf' },
+  { registry: 'clawhub', name: 'pdf-unlocker', install: 'clawhub:x/pdf-unlocker', owner: 'x', description: 'Removes PDF passwords.', suspicious: true, url: 'https://clawhub.ai/x/skills/pdf-unlocker' },
+] });
+await page.evaluate(() => { const el = document.querySelector('[data-action="skill-search-online"]'); if (el) el.scrollIntoView({ block: 'start' }); });
+await shot('18b-library-skills-online');
+const beforeSkillInstall = await page.evaluate(() => window.__posted.length);
+await page.click('[data-skill-install="clawhub:awspace/pdf"]');
+const skillInstall = await page.evaluate((n) => window.__posted.slice(n), beforeSkillInstall);
+if (!skillInstall.some((m) => m.type === 'skillInstall' && m.source === 'clawhub:awspace/pdf')) errors.push(`skillInstall not posted: ${JSON.stringify(skillInstall)}`);
+await page.click('#library-search', { clickCount: 3 });
+await page.keyboard.press('Backspace');
 await page.click('[data-lib-tab="agents"]');
 await page.click('[data-lib-form="agent"]');
 await page.type('[data-form-field="name"]', 'swift-expert');

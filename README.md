@@ -5,7 +5,7 @@
 <img src="docs/visuals/hero.png" alt="PerplexiCode Kilo: one agent core for the IDE and pcode CLI, with MCP integrations and configurable approvals" width="100%" />
 
 [![Release](https://img.shields.io/github/v/release/MRX7999/PerplexiCode-Kilo?label=release&color=20b8cd)](https://github.com/MRX7999/PerplexiCode-Kilo/releases/latest)
-[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-4.0.3-007acc)](https://marketplace.visualstudio.com/items?itemName=MRX7999.perplexicode-kilo)
+[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-4.1.0-007acc)](https://marketplace.visualstudio.com/items?itemName=MRX7999.perplexicode-kilo)
 [![Open VSX](https://img.shields.io/open-vsx/v/MRX7999/perplexicode-kilo?label=Open%20VSX&color=a60ee5)](https://open-vsx.org/extension/MRX7999/perplexicode-kilo)
 [![Open VSX downloads](https://img.shields.io/open-vsx/dt/MRX7999/perplexicode-kilo?label=installs&color=5eead4)](https://open-vsx.org/extension/MRX7999/perplexicode-kilo)
 [![CI](https://img.shields.io/github/actions/workflow/status/MRX7999/PerplexiCode-Kilo/ci.yml?branch=master&label=CI)](https://github.com/MRX7999/PerplexiCode-Kilo/actions/workflows/ci.yml)
@@ -14,7 +14,7 @@
 [![Antigravity IDE](https://img.shields.io/badge/Antigravity%20IDE-supported-4285f4)](https://antigravity.google/download)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-[Overview](#features) · [Install](#install) · [What's new in 4.0](#40-remote-core-lsp-repl--quick-edit) · [3.5–3.8](#38-mcp-oauth-slash-prompts--cross-model-review) · [Interface & agents](#31-agents-skills--presets) · [MCP catalog](#34-mcp-catalog-security-and-parrot-os) · [MCP & compute](#33-mcp-servers-and-compute-modes) · [CLI](#30-headless-core--pcode-cli) · [Models](#models) · [Commands](#commands-and-shortcuts) · [Settings](#settings) · [Migrating to 4.0](#migrating-to-40) · [Build](#build-from-source) · [Help](#troubleshooting)
+[Overview](#features) · [Install](#install) · [Auto Skill · 4.1](#41-auto-skill) · [What's new in 4.0](#40-remote-core-lsp-repl--quick-edit) · [3.5–3.8](#38-mcp-oauth-slash-prompts--cross-model-review) · [Interface & agents](#31-agents-skills--presets) · [MCP catalog](#34-mcp-catalog-security-and-parrot-os) · [MCP & compute](#33-mcp-servers-and-compute-modes) · [CLI](#30-headless-core--pcode-cli) · [Models](#models) · [Commands](#commands-and-shortcuts) · [Settings](#settings) · [Migrating to 4.0](#migrating-to-40) · [Build](#build-from-source) · [Help](#troubleshooting)
 
 [Core reference](docs/CORE-3.0.md) · [Security policy & threat model](SECURITY.md) · [Security & Parrot OS guide](docs/MCP-SECURITY-PARROT.md)
 
@@ -184,6 +184,50 @@ Run **PerplexiCode: Add Perplexity Account** and pick one method:
 | **Manual Paste** | Paste the full `Cookie` header from DevTools → Network on [perplexity.ai](https://www.perplexity.ai). |
 
 Sessions are kept in the editor's [SecretStorage](https://code.visualstudio.com/api/references/vscode-api#SecretStorage). You can add several accounts; requests are spread across them with **round-robin**, **least-used** or **failover-only** rotation.
+
+</details>
+
+<a id="41-auto-skill"></a>
+<a id="whats-new-in-41"></a>
+<details open>
+<summary><strong>What's new · 4.1</strong> · Auto Skill: find and install skills from ClawHub, skills.sh and GitHub</summary>
+
+<img src="docs/visuals/auto-skill.png" alt="Auto Skill flow: find on ClawHub or skills.sh, pin to a commit or archive, static scan (clean, review, blocked), approval that always asks; installed skills go to .perplexicode/skills with a skills-lock.json entry, declined installs write nothing, blocked skills are not installed" width="100%" />
+
+Skills are the same `SKILL.md` folders Claude Code and [OpenClaw](https://docs.openclaw.ai/tools/skills) use. 4.1 can pull them from public registries instead of writing them by hand.
+
+| Source | Spec | Example |
+| --- | --- | --- |
+| [ClawHub](https://clawhub.ai) | `clawhub:<owner>/<slug>` · `@owner/slug` · ClawHub URL | `clawhub:awspace/pdf` |
+| [skills.sh](https://skills.sh) | `skills-sh:<owner>/<repo>/<skill>` · skills.sh URL | `skills-sh:anthropics/skills/pdf` |
+| GitHub | `git:<owner>/<repo>[/<path>][@<ref>]` · `https://github.com/o/r/tree/<ref>/<path>` | `git:anthropics/skills/skills/docx@main` |
+| URL | `https://…/SKILL.md` (single file) | |
+| Local folder | `./path`, `~/path` (CLI and command only) | `./my-skills/release-notes` |
+
+**What happens on install**
+
+1. The source is resolved and **pinned**: GitHub refs become a commit SHA, ClawHub returns a versioned archive (or a pinned GitHub handoff). Files are downloaded into memory over an SSRF-checked connection (private addresses refused, redirects re-validated) with limits of 200 files, 8 MB in total and 2 MB per file; archive paths that leave the folder are rejected.
+2. A **static scan** reads every text file — nothing is executed. *Blocked*: download piped to a shell, reading SSH / cloud credentials, uploading local files, reverse shells, `rm -rf ~`, crypto miners, text telling the agent to ignore instructions or skip approvals. *Review*: `sudo`, `eval` / `exec`, dumping all environment variables, changes to shell startup files or cron, hidden Unicode control characters, a ClawHub "suspicious" flag. Scripts are listed but never run.
+3. You see the name, description, pinned source, file list and findings, and confirm. Blocked skills are not installed (CLI: `--allow-risky`, IDE: **Install anyway** after a second warning).
+4. The folder is written to `.perplexicode/skills/<name>/` (project) or `~/.perplexicode/skills/<name>/` (global) and recorded in `skills-lock.json` next to it: source, pinned location, SHA-256 of the files, scan verdict and time.
+
+**Agent: `find_skill` / `install_skill`** — with `perplexicodeKilo.agent.autoSkills` (or `pcode --auto-skills`) the agent can search the registries when no installed skill fits the task and propose one. `find_skill` follows the `web_fetch` approval setting; `install_skill` **always asks**, even with auto-approve or `bypassPermissions`, and is only offered in modes that can edit files. Off by default.
+
+**IDE** — Library → Skills → **Online**: type a topic in the filter and press **Search online**, or **From source…** for a spec. **PerplexiCode: Install Skill from Source…** does the same from the Command Palette. Skills installed from a source show a ClawHub / skills.sh / GitHub badge.
+
+**CLI**
+
+```bash
+pcode skills search pdf                              # ClawHub + skills.sh
+pcode skills install skills-sh:anthropics/skills/pdf # shows files + scan, asks y/N
+pcode skills install clawhub:awspace/pdf -g --as pdf-tools   # global, custom folder name
+pcode skills update                                  # re-check sources, show the new scan, update on yes
+pcode skills verify                                  # local edits vs skills-lock.json (exit 1 if changed)
+pcode skills remove pdf
+pcode --auto-skills "convert report.docx to PDF"     # let the agent find and propose a skill
+```
+
+GitHub allows 60 unauthenticated API requests per hour. Set `GITHUB_TOKEN` (or `GH_TOKEN`) in the environment to raise the limit; it is only sent to `api.github.com`.
 
 </details>
 
@@ -629,6 +673,7 @@ Max models unlock automatically for Max accounts. If a Max model is picked on a 
 | PerplexiCode: MCP: Reconnect Servers · OAuth Login to Server… · OAuth Logout from Server… | Command Palette, Library → MCP | Command Palette, Library → MCP |
 | PerplexiCode: Remote Core: Connect to pcode serve… · Disconnect | Command Palette | Command Palette |
 | PerplexiCode: Update Model Catalog from Repository | Command Palette | Command Palette |
+| PerplexiCode: Install Skill from Source… | Command Palette, Library → Skills | Command Palette, Library → Skills |
 | PerplexiCode: Compact Current Task · Set Permission Mode | Command Palette | Command Palette |
 | PerplexiCode: Share Accounts with CLI (pcode) | Command Palette | Command Palette |
 | PerplexiCode: Task History · Settings · Open in Editor Tab | view title bar | view title bar |
@@ -680,6 +725,8 @@ Max models unlock automatically for Max accounts. If a Max model is picked on a 
 | `perplexicodeKilo.agent.stopOnFallback` | `false` | Stop the task instead of falling back to another compute mode, model or account. |
 | `perplexicodeKilo.agent.crossModelReview` | `false` | Run an independent review of the git diff and `verify` status using a model from a different family before `attempt_completion`. |
 | `perplexicodeKilo.agent.crossModelReviewModel` | `""` | Optional preferred reviewer model ID for cross-model review (empty auto-selects another model family). |
+| `perplexicodeKilo.agent.autoSkills` | `false` | Auto Skill: offer `find_skill` / `install_skill` to the agent. Every install asks. |
+| `perplexicodeKilo.agent.skillRegistries` | `["clawhub", "skills-sh"]` | Registries used by `find_skill` and Library → Skills → Search online. |
 | `perplexicodeKilo.rotation.maxRequestsPerMinute` | `12` | Conservative per-account RPM cap before rotating or throttling. |
 | `perplexicodeKilo.agent.language` | `auto` | Reply language, e.g. `en`, `ru`. |
 | `perplexicodeKilo.agent.customInstructions` | — | Instructions added to every mode. |
@@ -780,6 +827,9 @@ docs/                   CORE-3.0.md, screenshots and diagrams
 | `lsp` says *No LSP servers configured* (CLI) | Add the server to `.lsp.json` or `~/.perplexicode/lsp.json`; project files also need `--trust-project`. |
 | Catalog update says the hash does not match | Nothing changed — the bundled snapshot is still used. Check `remoteCatalogUrl` / `remoteCatalogSha256Url` point to the same commit. |
 | Remote Core cannot connect | Check the endpoint and token (`~/.perplexicode/serve.token`), and that the socket or SSH tunnel exists. The IDE stays in local mode until it connects. |
+| `pcode skills install` says `HTTP 403` / `rate limit` from GitHub | GitHub's unauthenticated limit is 60 requests per hour. Export `GITHUB_TOKEN` (a token with no scopes is enough for public repositories) and retry. |
+| A skill install says *blocked by the scan* | The skill contains a high-risk pattern (listed in the message). Read the files at the pinned link; install it only if you trust it (`--allow-risky` / **Install anyway**). |
+| `pcode skills verify` reports `modified` | A file in an installed skill no longer matches `skills-lock.json`. Reinstall with `pcode skills install <source> --force` or keep your edit. |
 | Something else | `pcode doctor --bundle` or **Copy Diagnostics Bundle…** — attach the redacted file to an issue. |
 | `Unable to write to User Settings … is not a registered configuration` | The extension was updated while the window stayed open. Run **Developer: Reload Window**. Since 2.1.0 the change is saved anyway and moved into settings after the reload. |
 | Anything else | Open **Output → PerplexiCode** and attach the log to an [issue](https://github.com/MRX7999/PerplexiCode-Kilo/issues). |

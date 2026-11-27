@@ -26,6 +26,7 @@ import type { ComputeMode } from '../api/types';
 import { loadSkills, loadSubagents } from '../core/agents';
 import { buildDiagnosticBundle, serializeDiagnosticBundle } from '../core/diagnostics';
 import { formatContextReportForCli } from '../core/contextInspector';
+import { checkSkillUpdates, describeResolvedSkill, installResolvedSkill, removeInstalledSkill, resolveSkillSource, scanResolvedSkill, searchSkills, verifyInstalledSkills } from '../core/skillSources';
 import { applyPresetPrompt, installAgentPreset, installSkillPreset, librarySnapshot, loadTaskPresets } from '../core/library';
 import { listSessions, perplexicodeHome, SessionJournal, sessionsDir } from '../core/journal';
 import {
@@ -145,6 +146,11 @@ export interface CliOptions {
   /** F24: Enable/disable cross-model review before attempt_completion, and optional reviewer model ID. */
   crossModelReview?: boolean;
   crossModelReviewModel?: string;
+  /** 4.1 Auto Skill. */
+  autoSkills?: boolean;
+  skillAs?: string;
+  force?: boolean;
+  allowRisky?: boolean;
   /** F26: `pcode serve` daemon options (tokens come strictly from env/stdin/0600 file, never argv). */
   serveSocket?: string;
   serveHost?: string;
@@ -369,6 +375,11 @@ export function parseArgs(argv: string[]): CliOptions {
       case '--cross-review': case '--cross-model-review': options.crossModelReview = true; break;
       case '--no-cross-review': case '--no-cross-model-review': options.crossModelReview = false; break;
       case '--cross-review-model': options.crossModelReviewModel = value(); break;
+      case '--auto-skills': options.autoSkills = true; break;
+      case '--no-auto-skills': options.autoSkills = false; break;
+      case '--as': options.skillAs = value().trim(); break;
+      case '--force': options.force = true; break;
+      case '--allow-risky': options.allowRisky = true; break;
       case '--socket': options.serveSocket = path.resolve(value()); break;
       case '--ws': options.servePort = options.servePort ?? 0; break;
       case '--host': options.serveHost = value().trim(); break;
@@ -433,6 +444,7 @@ Options:
   --repo-map-chars <n>        character budget for @repo map (min 500)
   --max-rpm <n>               per-account requests-per-minute cap (default: 12)
   -w, --worktree [name]       isolate the task in a detached git worktree from HEAD (blocks symlink & git -C escapes)
+  --auto-skills               let the agent search ClawHub / skills.sh and install a skill (every install asks)
   --max-parallel-subtasks <n> max concurrent Orchestrator subagents (1..16, default 3)
   --cwd <dir>                 workspace folder (default: current)
   --trust-project             run hooks and project MCP servers from project settings in headless mode
@@ -452,6 +464,13 @@ Commands:
   pcode agents catalog | skills catalog    built-in presets you can install
   pcode agents add <id...> [-g]            install subagent presets (project; -g = ~/.perplexicode)
   pcode skills add <id...> [-g]            install skill presets
+  pcode skills search <query>              search ClawHub and skills.sh
+  pcode skills install <source> [-g] [--as name] [-y] [--force] [--allow-risky]
+                                           download, scan and install a skill (clawhub:owner/slug,
+                                           skills-sh:owner/repo/skill, git:owner/repo[/path][@ref], URL, ./path)
+  pcode skills update [name...] [-y]       re-check installed sources, show the new scan, update on yes
+  pcode skills verify                      compare installed skills with skills-lock.json hashes
+  pcode skills remove <name> [-g]          delete a skill installed from a source
   pcode presets                            task presets (built-in, ~/.perplexicode/presets.json, project)
   pcode mcp list                           MCP servers (Claude Code compatible: ~/.claude.json, .mcp.json, settings)
   pcode mcp catalog [category|query]         curated examples, requirements and setup guides (including Security / Pentest)
@@ -729,6 +748,8 @@ async function buildSession(options: CliOptions, ui: SessionUi): Promise<Session
     maxParallelSubtasks: options.maxParallelSubtasks ?? settings.maxParallelSubtasks ?? 3,
     crossModelReview: options.crossModelReview ?? settings.crossModelReview ?? false,
     crossModelReviewModel: options.crossModelReviewModel ?? settings.crossModelReviewModel,
+    autoSkills: options.autoSkills ?? settings.autoSkills ?? false,
+    skillRegistries: settings.skillRegistries,
   };
   let sessionRef: CoreSession | undefined;
   const session = new CoreSession({
@@ -2088,9 +2109,103 @@ function cmdAgents(options: CliOptions): number {
   return 0;
 }
 
-function cmdSkills(options: CliOptions): number {
+async function confirmCli(question: string, options: CliOptions): Promise<boolean> {
+  if (options.yes) return true;
+  if (!process.stdin.isTTY) {
+    out(yellow(`${question} — no terminal to confirm; pass -y to proceed.`));
+    return false;
+  }
+  const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+  const answer = await new Promise<string>((resolve) => rl.question(`${question} [y/N] `, (ans) => { rl.close(); resolve(ans.trim().toLowerCase()); }));
+  return !(answer !== 'y' && answer !== 'yes' && answer !== 'д' && answer !== 'да');
+}
+
+/** 4.1 Auto Skill: pcode skills search | install | update | verify | remove. */
+async function cmdSkillSources(options: CliOptions): Promise<number> {
+  const sub = options.args[0];
+  const rest = options.args.slice(1);
+  const paths = { cwd: options.cwd };
+  const scope = options.global ? 'user' : 'project';
+  if (sub === 'search') {
+    const query = rest.join(' ').trim();
+    if (!query) { out('usage: pcode skills search <query>'); return 64; }
+    const settings = loadSettings(options.cwd, { trustProjectHooks: false });
+    const found = await searchSkills(query, { registries: settings.skillRegistries, limit: 10 });
+    for (const error of found.errors) out(yellow(`! ${error.registry}: ${error.message}`));
+    if (!found.results.length) { out(dim(`No skills found for "${query}".`)); return found.errors.length ? 1 : 0; }
+    for (const item of found.results) {
+      process.stdout.write(`${item.install}\t${item.installs ?? '-'}\t${item.suspicious ? 'SUSPICIOUS ' : ''}${(item.description || '').replace(/\s+/g, ' ').slice(0, 160)}\n`);
+    }
+    out(dim('Install: pcode skills install <source> [-g]'));
+    return 0;
+  }
+  if (sub === 'install') {
+    if (rest.length !== 1) { out('usage: pcode skills install <clawhub:owner/slug | skills-sh:owner/repo/skill | git:owner/repo[/path][@ref] | https://…/SKILL.md | ./path> [-g] [--as name] [-y] [--force] [--allow-risky]'); return 64; }
+    let skill;
+    try {
+      skill = await resolveSkillSource(rest[0], { cwd: options.cwd });
+    } catch (error) {
+      out(red(`✖ ${(error as Error).message}`));
+      return 1;
+    }
+    const scan = scanResolvedSkill(skill);
+    out(describeResolvedSkill(skill, scan));
+    if (scan.verdict === 'blocked' && !options.allowRisky) {
+      out(red('✖ Not installed: the scan found high-risk patterns. Review the files and pass --allow-risky only if you trust them.'));
+      return 1;
+    }
+    const target = `${scope === 'user' ? '~/.perplexicode' : '.perplexicode'}/skills/${options.skillAs || skill.name}`;
+    if (!(await confirmCli(`Install to ${target}?`, options))) { out(dim('Cancelled.')); return 1; }
+    try {
+      const result = installResolvedSkill(skill, { scope, paths, as: options.skillAs, overwrite: options.force, allowRisky: options.allowRisky, scan });
+      out(`${green('✔')} ${result.name} → ${result.file}${result.replaced ? ' (replaced)' : ''}`);
+      return 0;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      out(`${code === 'EEXIST' ? yellow('!') : red('✖')} ${(error as Error).message}${code === 'EEXIST' ? ' — pass --force to replace or --as <name>' : ''}`);
+      return 1;
+    }
+  }
+  if (sub === 'update') {
+    const checks = await checkSkillUpdates(paths, { names: rest, scopes: options.global ? ['user'] : ['project', 'user'] });
+    if (!checks.length) { out(dim('No skills installed from a source (see skills-lock.json).')); return 0; }
+    let failed = 0;
+    for (const check of checks) {
+      if (check.status === 'error') { failed++; out(`${red('✖')} ${check.name}: ${check.error}`); continue; }
+      if (check.status === 'up-to-date') { out(`${green('✔')} ${check.name} is up to date`); continue; }
+      out(`${yellow('↑')} ${check.name}: update available from ${check.source}`);
+      out(describeResolvedSkill(check.skill!, check.scan!));
+      if (check.scan!.verdict === 'blocked' && !options.allowRisky) { failed++; out(red(`✖ ${check.name}: the new version is blocked by the scan; kept the installed one.`)); continue; }
+      if (!(await confirmCli(`Update ${check.name}?`, options))) continue;
+      installResolvedSkill(check.skill!, { scope: check.scope, paths, as: check.name, overwrite: true, allowRisky: options.allowRisky, scan: check.scan });
+      out(`${green('✔')} ${check.name} updated`);
+    }
+    return failed ? 1 : 0;
+  }
+  if (sub === 'verify') {
+    const results = verifyInstalledSkills(paths);
+    if (!results.length) { out(dim('No skills installed from a source.')); return 0; }
+    for (const r of results) process.stdout.write(`${r.name}\t${r.scope}\t${r.status}\t${r.source}\n`);
+    return results.some((r) => r.status !== 'ok') ? 1 : 0;
+  }
+  if (sub === 'remove') {
+    if (rest.length !== 1) { out('usage: pcode skills remove <name> [-g]'); return 64; }
+    try {
+      out(`${green('✔')} removed ${removeInstalledSkill(rest[0], scope, paths)}`);
+      return 0;
+    } catch (error) {
+      out(red(`✖ ${(error as Error).message}`));
+      return 1;
+    }
+  }
+  out(`Unknown subcommand "${sub}". See pcode --help.`);
+  return 64;
+}
+
+async function cmdSkills(options: CliOptions): Promise<number> {
   if (options.args[0] === 'add') return cmdLibraryAdd('skill', options);
   if (options.args[0] === 'catalog') return cmdCatalog('skill', options);
+  if (options.args[0]) return cmdSkillSources(options);
   const skills = loadSkills(options.cwd);
   if (skills.length === 0) out(dim('No skills. Add .perplexicode/skills/<name>/SKILL.md or .claude/skills/<name>/SKILL.md.'));
   for (const k of skills) process.stdout.write(`${k.name}\t${k.scope}\t${k.description}\n`);
@@ -2293,7 +2408,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       case 'serve': return await cmdServe(options);
       case 'agents': return cmdAgents(options);
       case 'presets': return cmdPresets(options);
-      case 'skills': return cmdSkills(options);
+      case 'skills': return await cmdSkills(options);
       case 'mcp': return await cmdMcp(options);
       case 'worktree': return await cmdWorktree(options);
       case 'doctor': return await cmdDoctor(options);

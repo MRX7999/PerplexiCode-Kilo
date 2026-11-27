@@ -2,6 +2,17 @@
 
 All notable changes to PerplexiCode Kilo. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [4.1.0] - 2026-11-27
+
+### Added
+- **Auto Skill.** Install `SKILL.md` skills from [ClawHub](https://clawhub.ai), [skills.sh](https://skills.sh), any GitHub repository folder or a `SKILL.md` URL — the same format as Claude Code and OpenClaw. Sources: `clawhub:owner/slug`, `skills-sh:owner/repo/skill`, `git:owner/repo[/path][@ref]`, GitHub tree URLs, `https://…/SKILL.md`, local folders.
+- Installs are pinned (GitHub ref → commit SHA, ClawHub archive or pinned GitHub handoff), downloaded over an SSRF-checked connection with size limits and zip-slip protection, statically scanned (clean / review / blocked) and confirmed before anything is written. `skills-lock.json` records source, pinned location, SHA-256 and verdict.
+- Agent tools `find_skill` and `install_skill`, enabled by `perplexicodeKilo.agent.autoSkills` (default `false`) or `pcode --auto-skills`. `install_skill` always asks, even with auto-approve or `bypassPermissions`, never runs skill scripts and is hidden in read-only modes. `perplexicodeKilo.agent.skillRegistries` chooses the registries.
+- CLI: `pcode skills search | install | update | verify | remove` with `-g`, `--as`, `-y`, `--force`, `--allow-risky`.
+- IDE: Library → Skills → **Online** (search, install, source badges) and **PerplexiCode: Install Skill from Source…**.
+- `GITHUB_TOKEN` / `GH_TOKEN` from the environment raise the GitHub API limit and are only sent to `api.github.com`.
+- README: "What's new · 4.1" section and `docs/visuals/auto-skill` diagram.
+
 ## [4.0.3] - 2026-11-27
 
 ### Changed

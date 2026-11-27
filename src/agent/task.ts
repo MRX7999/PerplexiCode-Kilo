@@ -8,6 +8,7 @@ import {
   buildFullPrompt,
   buildSystemPrompt,
   formatEnvironmentDetails,
+  skillToolsForMode,
   formatToolResult,
   loadWorkspaceRules,
   NO_TOOL_USED_REMINDER,
@@ -53,6 +54,7 @@ import { assembleAndInspectPrompt, ContextInspectionReport } from '../core/conte
 import { collectWorkspaceReviewDiff, runCrossModelReview } from '../core/crossReview';
 import { scrubSecretsFromText } from '../core/diagnostics';
 import { evaluatePermission } from '../core/permissions';
+import { describeResolvedSkill, installResolvedSkill, parseSkillSource, resolveSkillSource, scanResolvedSkill, searchSkills, SkillApiBases, SkillHttpFetch } from '../core/skillSources';
 import { loadSettings } from '../core/settings';
 import { enforceWorktreeToolCall, runWithConcurrencyLimit } from '../core/worktree';
 import type { CoreEvent, GateContext, GateVerdict, ToolGate } from '../core/types';
@@ -154,6 +156,11 @@ export interface TaskOptions {
     baseCommit?: string;
     warningMessage?: string;
   };
+  /** 4.1 Auto Skill: HTTP transport and API bases for find_skill / install_skill (tests inject mocks). */
+  skillFetch?: SkillHttpFetch;
+  skillApiBases?: Partial<SkillApiBases>;
+  /** Home directory for user-scope skills (default os.homedir()). */
+  skillHome?: string;
 }
 
 let idCounter = 0;
@@ -774,6 +781,7 @@ export class AgentTask {
       rules: rulesExcluded ? '' : rawRules,
       webSearch,
       mcpSection: mcpExcluded ? '' : rawMcp,
+      autoSkills: settings.autoSkills,
     });
 
     let repoMapBlock: string | undefined;
@@ -1084,7 +1092,7 @@ export class AgentTask {
       return this.pushToolError(tool.name, 'The tool call was cut off before its closing tag. Send the complete tool call again (for large files, split the change into several apply_diff / insert_content calls).', settings);
     }
 
-    if (!isToolAllowedForMode(tool.name, this.modeConfig)) {
+    if (!isToolAllowedForMode(tool.name, this.modeConfig) && !skillToolsForMode(this.modeConfig, Boolean(settings.autoSkills)).includes(tool.name)) {
       this.consecutiveMistakes += 1;
       return this.pushToolError(tool.name, `Tool '${tool.name}' is not available in ${this.modeConfig.name} mode. Use switch_mode to change to a mode that allows it, or use another tool.`, settings);
     }
@@ -1417,6 +1425,10 @@ export class AgentTask {
         return this.runCommandTool(tool, settings, missing);
       case 'web_fetch':
         return this.runWebFetchTool(tool, settings, missing);
+      case 'find_skill':
+        return this.runFindSkillTool(tool, settings, missing);
+      case 'install_skill':
+        return this.runInstallSkillTool(tool, settings, missing);
       case 'use_mcp_tool':
       case 'access_mcp_resource':
       case 'list_mcp_resources':
@@ -2154,6 +2166,109 @@ export class AgentTask {
     return 'continue';
   }
 
+  /** 4.1 Auto Skill: search ClawHub / skills.sh. Network call, approved like web_fetch. */
+  private async runFindSkillTool(tool: ParsedToolUse, settings: AgentSettings, missing: (name: string) => 'continue'): Promise<'continue' | 'stop'> {
+    const query = (tool.params.query || '').trim();
+    if (!query) {
+      return missing('query');
+    }
+    const info: ToolInfo = { name: tool.name, title: `Search skill registries for "${query.slice(0, 80)}"` };
+    const approved = await this.approve('tool', settings.autoApprove.web, info);
+    if (approved.response === 'no' || this.abortController.signal.aborted) {
+      return this.denied(tool.name, query, approved.text);
+    }
+    const message = approved.message;
+    message.status = 'running';
+    this.emit(message);
+    try {
+      const found = await searchSkills(query, { fetch: this.options.skillFetch, bases: this.options.skillApiBases, registries: settings.skillRegistries, limit: 8 });
+      if (this.abortController.signal.aborted) {
+        return 'stop';
+      }
+      const lines = found.results.map((item, index) => `${index + 1}. ${item.name} — source: ${item.install}${item.installs !== undefined ? ` · ${item.installs} installs` : ''}${item.suspicious ? ' · FLAGGED SUSPICIOUS by the registry' : ''}\n   ${item.description || '(no description in search results)'}\n   ${item.url}`);
+      const errors = found.errors.map((entry) => `[${entry.registry} unavailable] ${entry.message}`);
+      const text = lines.length
+        ? `${lines.join('\n')}${errors.length ? `\n\n${errors.join('\n')}` : ''}\n\nTo install one, call install_skill with its source. Prefer well-known publishers and skills with many installs; skip suspicious ones.`
+        : `No skills found for "${query}".${errors.length ? `\n${errors.join('\n')}` : ''} Continue without a skill.`;
+      this.consecutiveMistakes = 0;
+      message.status = 'done';
+      message.tool = { ...message.tool!, content: truncateMiddle(text, 3000) };
+      this.emit(message);
+      this.pushToolResult(tool.name, query, text);
+    } catch (error) {
+      if (this.abortController.signal.aborted) {
+        return 'stop';
+      }
+      this.consecutiveMistakes += 1;
+      message.status = 'error';
+      message.tool = { ...message.tool!, content: (error as Error).message };
+      this.emit(message);
+      this.pushToolResult(tool.name, query, `[ERROR] ${(error as Error).message}`);
+    }
+    return 'continue';
+  }
+
+  /**
+   * 4.1 Auto Skill: download, scan and install a skill. The download only reads into memory; the
+   * write always asks the user (never auto-approved) and shows source, pinned commit, files and scan.
+   */
+  private async runInstallSkillTool(tool: ParsedToolUse, settings: AgentSettings, missing: (name: string) => 'continue'): Promise<'continue' | 'stop'> {
+    const source = (tool.params.source || '').trim();
+    if (!source) {
+      return missing('source');
+    }
+    const scope = (tool.params.scope || '').trim().toLowerCase() === 'user' ? 'user' : 'project';
+    const cwd = this.options.host.cwd;
+    let spec;
+    try {
+      spec = parseSkillSource(source, cwd);
+      if (spec.kind === 'local') throw new Error('install_skill only accepts remote sources (clawhub:, skills-sh:, git:, https://…/SKILL.md). Local skills are already loaded from .perplexicode/skills and .claude/skills.');
+    } catch (error) {
+      this.consecutiveMistakes += 1;
+      return this.pushToolError(tool.name, (error as Error).message, settings);
+    }
+    let resolved;
+    try {
+      resolved = await resolveSkillSource(spec, { fetch: this.options.skillFetch, bases: this.options.skillApiBases, cwd });
+    } catch (error) {
+      if (this.abortController.signal.aborted) {
+        return 'stop';
+      }
+      this.consecutiveMistakes += 1;
+      return this.pushToolError(tool.name, `Could not download ${spec.spec}: ${(error as Error).message}`, settings);
+    }
+    const scan = scanResolvedSkill(resolved);
+    const summary = describeResolvedSkill(resolved, scan);
+    if (scan.verdict === 'blocked') {
+      this.say({ type: 'tool', tool: { name: tool.name, title: `Blocked skill ${resolved.name} from ${spec.spec}`, content: summary }, status: 'rejected' });
+      this.pushToolResult(tool.name, spec.spec, `[DENIED] The skill was not installed: the security scan found high-risk patterns.\n${summary}\nDo not retry. Continue without it or suggest a different skill to the user.`);
+      return 'continue';
+    }
+    const name = (tool.params.name || '').trim() || resolved.name;
+    const info: ToolInfo = { name: tool.name, title: `Install skill "${name}" from ${spec.spec} (${scope === 'user' ? 'global' : 'project'})`, content: summary };
+    const approved = await this.approve('tool', false, info, { reason: `Installing a skill from ${spec.spec} writes ${resolved.files.length} file(s) to the skills folder.`, rule: 'skills.install (always ask)' });
+    if (approved.response === 'no' || this.abortController.signal.aborted) {
+      return this.denied(tool.name, spec.spec, approved.text);
+    }
+    const message = approved.message;
+    try {
+      const installed = installResolvedSkill(resolved, { scope, paths: { cwd, home: this.options.skillHome }, as: tool.params.name, overwrite: false, scan });
+      this.consecutiveMistakes = 0;
+      message.status = 'done';
+      message.tool = { ...message.tool!, path: installed.file };
+      this.emit(message);
+      this.pushToolResult(tool.name, spec.spec, `Installed skill "${installed.name}" to ${toPosixRelative(cwd, installed.file)} (source ${spec.spec}, sha256 ${resolved.sha256.slice(0, 12)}…, scan ${scan.verdict}). Read it now with read_file and follow it. Scripts it mentions are not run automatically; run them only with execute_command when needed.${approved.text ? `\n\n<feedback>\n${approved.text}\n</feedback>` : ''}`);
+    } catch (error) {
+      this.consecutiveMistakes += 1;
+      message.status = 'error';
+      message.tool = { ...message.tool!, content: (error as Error).message };
+      this.emit(message);
+      const exists = (error as NodeJS.ErrnoException).code === 'EEXIST';
+      this.pushToolResult(tool.name, spec.spec, `[ERROR] ${exists ? `A skill named "${name}" is already installed. Use it, or pass another <name>.` : (error as Error).message}`);
+    }
+    return 'continue';
+  }
+
   private async runMcpTool(tool: ParsedToolUse, settings: AgentSettings, missing: (name: string) => 'continue'): Promise<'continue' | 'stop'> {
     const mcp = this.options.mcp;
     const params = tool.params;
@@ -2641,6 +2756,8 @@ export function toolActivityLabel(name: string): string {
     case 'lsp': return 'Querying LSP';
     case 'search_and_replace': return 'Preparing replacement';
     case 'web_fetch': return 'Fetching URL';
+    case 'find_skill': return 'Searching skills';
+    case 'install_skill': return 'Installing skill';
     case 'use_mcp_tool': return 'Calling MCP tool';
     case 'access_mcp_resource': return 'Reading MCP resource';
     case 'list_mcp_resources': return 'Listing MCP resources';

@@ -123,6 +123,8 @@ export const CLAUDE_TOOL_NAMES: Record<string, string> = {
   attempt_completion: 'AttemptCompletion',
   access_mcp_resource: 'ReadMcpResourceTool',
   list_mcp_resources: 'ListMcpResourcesTool',
+  find_skill: 'FindSkill',
+  install_skill: 'InstallSkill',
 };
 
 /**

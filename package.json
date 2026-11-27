@@ -2,7 +2,7 @@
   "name": "perplexicode-kilo",
   "displayName": "PerplexiCode Kilo",
   "description": "Kilo Code-style autonomous coding agent (Code / Architect / Ask / Debug / Orchestrator / Review modes, tools, diffs, checkpoints, auto-approve) powered by your Perplexity Pro/Max subscription and its latest models.",
-  "version": "4.0.3",
+  "version": "4.1.0",
   "publisher": "MRX7999",
   "engines": {
     "vscode": "^1.85.0"
@@ -89,6 +89,11 @@
         "title": "Agents, Skills & Presets",
         "category": "PerplexiCode",
         "icon": "$(library)"
+      },
+      {
+        "command": "perplexicodeKilo.installSkillFromSource",
+        "title": "Install Skill from Source…",
+        "category": "PerplexiCode"
       },
       {
         "command": "perplexicodeKilo.runPreset",
@@ -728,6 +733,20 @@
           "type": "string",
           "default": "",
           "description": "Optional explicit model ID for cross-model review (leave empty to automatically pick a model from a different family)."
+        },
+        "perplexicodeKilo.agent.autoSkills": {
+          "type": "boolean",
+          "default": false,
+          "description": "Auto Skill: let the agent search public skill registries (find_skill) and install a matching skill (install_skill) when no installed skill covers the task. Every install shows the source, files and security scan and needs your approval."
+        },
+        "perplexicodeKilo.agent.skillRegistries": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["clawhub", "skills-sh"]
+          },
+          "default": ["clawhub", "skills-sh"],
+          "description": "Registries searched by find_skill and the Library skill search: ClawHub (clawhub.ai) and skills.sh."
         },
         "perplexicodeKilo.rotation.maxRequestsPerMinute": {
           "type": "number",
