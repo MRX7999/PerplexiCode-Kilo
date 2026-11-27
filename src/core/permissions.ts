@@ -129,7 +129,14 @@ export function ruleCoversTool(ruleTool: string, nativeName: string, tool?: Gate
       if (rule.tool === undefined) {
         return true;
       }
-      // Resource tools are covered by server-wide rules only.
+      if (nativeName === 'access_mcp_resource') {
+        const seg = mcpSegment(rule.tool);
+        return seg === 'read_resource' || seg === 'access_mcp_resource';
+      }
+      if (nativeName === 'list_mcp_resources') {
+        const seg = mcpSegment(rule.tool);
+        return seg === 'list_resources' || seg === 'list_mcp_resources';
+      }
       return nativeName === 'use_mcp_tool' && mcpSegment(rule.tool) === mcpSegment(tool?.params.tool_name);
     }
     case 'web':
@@ -311,7 +318,214 @@ export function resolveTarget(tool: GateToolCall, cwd: string, additionalDirecto
   return { category, insideWorkspace: true };
 }
 
-function ruleMatches(rule: PermissionRule, tool: GateToolCall, target: ResolvedToolTarget, cwd: string, segment?: string): boolean {
+function valueGlobRegex(pattern: string): RegExp {
+  let out = '';
+  for (let i = 0; i < pattern.length; i += 1) {
+    const ch = pattern[i];
+    if (ch === '*') {
+      out += '[\\s\\S]*';
+    } else if (ch === '?') {
+      out += '[\\s\\S]';
+    } else {
+      out += ch.replace(/[.+^$()|[\]\\{}]/g, '\\$&');
+    }
+  }
+  return new RegExp(`^${out}$`);
+}
+
+function getNestedField(obj: Record<string, unknown>, dottedKey: string): unknown[] {
+  const parts = dottedKey.split('.').map((p) => p.trim()).filter(Boolean);
+  let current: unknown[] = [obj];
+  for (const part of parts) {
+    const next: unknown[] = [];
+    for (const item of current) {
+      if (Array.isArray(item)) {
+        for (const elem of item) {
+          if (elem && typeof elem === 'object' && part in (elem as Record<string, unknown>)) {
+            next.push((elem as Record<string, unknown>)[part]);
+          }
+        }
+      } else if (item && typeof item === 'object' && part in (item as Record<string, unknown>)) {
+        next.push((item as Record<string, unknown>)[part]);
+      }
+    }
+    current = next;
+  }
+  return current;
+}
+
+function scalarMatchesPattern(actual: unknown, rawPattern: string): boolean {
+  let pattern = rawPattern.trim();
+  if ((pattern.startsWith('"') && pattern.endsWith('"')) || (pattern.startsWith("'") && pattern.endsWith("'"))) {
+    pattern = pattern.slice(1, -1);
+  }
+  if (Array.isArray(actual)) {
+    return actual.some((elem) => scalarMatchesPattern(elem, rawPattern));
+  }
+  if (actual === undefined || actual === null) {
+    return pattern === 'null' && actual === null;
+  }
+  const str = typeof actual === 'string' ? actual : JSON.stringify(actual);
+  if (pattern.endsWith(':*')) {
+    const prefix = pattern.slice(0, -2).trim();
+    return str === prefix || str.startsWith(`${prefix} `) || str.startsWith(`${prefix}/`);
+  }
+  if (pattern.includes('*') || pattern.includes('?')) {
+    return valueGlobRegex(pattern).test(str);
+  }
+  return str === pattern;
+}
+
+function collectLeafValues(value: unknown, out: string[] = []): string[] {
+  if (value === null || value === undefined) return out;
+  if (typeof value === 'string') {
+    out.push(value);
+    return out;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    out.push(String(value));
+    return out;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectLeafValues(item, out);
+    return out;
+  }
+  if (typeof value === 'object') {
+    for (const v of Object.values(value as Record<string, unknown>)) collectLeafValues(v, out);
+  }
+  return out;
+}
+
+function splitTopLevelPredicates(spec: string): string[] {
+  const parts: string[] = [];
+  let current = '';
+  let quote: '"' | "'" | null = null;
+  let depth = 0;
+  for (let i = 0; i < spec.length; i += 1) {
+    const ch = spec[i];
+    if (quote) {
+      current += ch;
+      if (ch === '\\' && i + 1 < spec.length) {
+        current += spec[i + 1];
+        i += 1;
+      } else if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === '{' || ch === '[' || ch === '(') depth += 1;
+    if (ch === '}' || ch === ']' || ch === ')') depth = Math.max(0, depth - 1);
+    if ((ch === ',' || ch === ';') && depth === 0) {
+      if (current.trim()) parts.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) parts.push(current.trim());
+  return parts;
+}
+
+/**
+ * Evaluates MCP argument permission specifiers (`F23`):
+ * - Key-value predicates: `mcp__fs__read_file(path:/etc/*)`, `mcp__github__merge(repo:org/*, force=true)`
+ * - JSON object pattern: `mcp__db__query({"sql": "*DROP*", "readOnly": false})`
+ * - Wildcard value pattern: `mcp__db__query(*DROP TABLE*)`
+ *
+ * When `failClosedOnMalformed` is true (used for `deny` and `ask` rules), malformed JSON in
+ * `tool.params.arguments` cannot evade a rule: raw text fallback is also checked, and if the
+ * JSON is broken while a deny rule restricts arguments on that tool, it matches conservatively.
+ */
+export function mcpArgumentsMatch(
+  specifier: string,
+  tool: GateToolCall,
+  failClosedOnMalformed = false
+): boolean {
+  const spec = specifier.trim();
+  if (!spec || spec === '*') return true;
+
+  // Support URI matching on access_mcp_resource (`uri:file:///etc/*` or `file:///etc/*`).
+  if (tool.name === 'access_mcp_resource') {
+    const uri = (tool.params.uri || '').trim();
+    const uriPattern = /^uri\s*[:=]\s*/i.test(spec) ? spec.replace(/^uri\s*[:=]\s*/i, '') : spec;
+    return scalarMatchesPattern(uri, uriPattern);
+  }
+
+  const rawArgs = (tool.params.arguments ?? '').trim();
+  let parsedArgs: Record<string, unknown> | undefined;
+  if (!rawArgs) {
+    parsedArgs = {};
+  } else {
+    try {
+      const candidate = JSON.parse(rawArgs);
+      if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
+        parsedArgs = candidate as Record<string, unknown>;
+      }
+    } catch {
+      parsedArgs = undefined;
+    }
+  }
+
+  if (!parsedArgs) {
+    if (!failClosedOnMalformed) {
+      return false;
+    }
+    // Malformed JSON on a tool covered by an argument-scoped deny/ask rule: fail closed.
+    return true;
+  }
+
+  // 1. JSON object pattern `{"key": "glob*", ...}`
+  if (spec.startsWith('{') && spec.endsWith('}')) {
+    try {
+      const patternObj = JSON.parse(spec) as Record<string, unknown>;
+      if (patternObj && typeof patternObj === 'object' && !Array.isArray(patternObj)) {
+        return Object.entries(patternObj).every(([key, expected]) => {
+          const values = getNestedField(parsedArgs!, key);
+          if (values.length === 0) return false;
+          const expectedPattern = typeof expected === 'string' ? expected : JSON.stringify(expected);
+          return values.some((actual) => scalarMatchesPattern(actual, expectedPattern));
+        });
+      }
+    } catch {
+      return failClosedOnMalformed;
+    }
+  }
+
+  // 2. Comma/semicolon-separated `field:glob` or `field=glob` predicates
+  const predicates = splitTopLevelPredicates(spec);
+  const kvMatches = predicates.map((pred) => /^([A-Za-z_][\w.-]*)\s*([:=])\s*([\s\S]+)$/.exec(pred));
+  if (predicates.length > 0 && kvMatches.every(Boolean)) {
+    return kvMatches.every((m) => {
+      const field = m![1];
+      const pattern = m![3].trim();
+      const values = getNestedField(parsedArgs!, field);
+      if (values.length === 0) return false;
+      return values.some((actual) => scalarMatchesPattern(actual, pattern));
+    });
+  }
+
+  // 3. Bare value/wildcard glob (matches serialized JSON or any leaf scalar value)
+  const serialized = JSON.stringify(parsedArgs);
+  if (scalarMatchesPattern(serialized, spec)) {
+    return true;
+  }
+  const leaves = collectLeafValues(parsedArgs);
+  return leaves.some((leaf) => scalarMatchesPattern(leaf, spec));
+}
+
+function ruleMatches(
+  rule: PermissionRule,
+  tool: GateToolCall,
+  target: ResolvedToolTarget,
+  cwd: string,
+  segment?: string,
+  failClosedOnMalformed = false
+): boolean {
   if (!ruleCoversTool(rule.tool, tool.name, tool)) {
     return false;
   }
@@ -327,16 +541,30 @@ function ruleMatches(rule: PermissionRule, tool: GateToolCall, target: ResolvedT
     case 'task':
       return rule.specifier === target.subagent;
     case 'mcp': {
-      // mcp(server) / mcp(server__tool) / mcp(server:tool)
-      const spec = rule.specifier.replace(':', '__');
-      const parsed = parseMcpRuleTool(spec.startsWith('mcp__') ? spec : `mcp__${spec}`);
+      // Case A: rule.tool already names an MCP server/tool (`mcp__server__tool(argSpec)` or `use_mcp_tool(argSpec)`)
+      const toolRule = parseMcpRuleTool(rule.tool);
+      if ((toolRule && toolRule.server !== undefined) || rule.tool === 'use_mcp_tool' || rule.tool === 'access_mcp_resource') {
+        return mcpArgumentsMatch(rule.specifier, tool, failClosedOnMalformed);
+      }
+
+      // Case B: `mcp(server)` / `mcp(server__tool)` / `mcp(server:tool)` / `mcp(server__tool, key:glob)`
+      const parts = splitTopLevelPredicates(rule.specifier);
+      const serverToolSpec = (parts[0] || '').replace(':', '__');
+      const parsed = parseMcpRuleTool(serverToolSpec.startsWith('mcp__') ? serverToolSpec : `mcp__${serverToolSpec}`);
       if (!parsed || parsed.server === undefined) {
         return false;
       }
       if (mcpSegment(parsed.server) !== mcpSegment(target.mcpServer)) {
         return false;
       }
-      return parsed.tool === undefined || (tool.name === 'use_mcp_tool' && mcpSegment(parsed.tool) === mcpSegment(target.mcpTool));
+      const toolMatches = parsed.tool === undefined || (tool.name === 'use_mcp_tool' && mcpSegment(parsed.tool) === mcpSegment(target.mcpTool));
+      if (!toolMatches) {
+        return false;
+      }
+      if (parts.length > 1) {
+        return mcpArgumentsMatch(parts.slice(1).join(', '), tool, failClosedOnMalformed);
+      }
+      return true;
     }
     case 'web':
       return Boolean(target.url && urlMatches(rule.specifier, target.url));
@@ -410,7 +638,7 @@ export function evaluatePermission(config: PermissionConfig, tool: GateToolCall,
 
   // 1. Deny rules win (check both raw and unwrapped/recursively extracted shell segments).
   for (const rule of deny) {
-    if (denyCheckSegments.some((segment) => ruleMatches(rule, tool, target, cwd, segment))) {
+    if (denyCheckSegments.some((segment) => ruleMatches(rule, tool, target, cwd, segment, true))) {
       return { decision: 'deny', reason: `Blocked by permission rule ${rule.raw}.`, source: `permissions.deny: ${rule.raw}` };
     }
   }
@@ -466,7 +694,7 @@ export function evaluatePermission(config: PermissionConfig, tool: GateToolCall,
 
   // 3. Ask rules.
   for (const rule of ask) {
-    if (denyCheckSegments.some((segment) => ruleMatches(rule, tool, target, cwd, segment))) {
+    if (denyCheckSegments.some((segment) => ruleMatches(rule, tool, target, cwd, segment, true))) {
       return { decision: 'ask', reason: `Permission rule ${rule.raw} requires approval.`, source: `permissions.ask: ${rule.raw}` };
     }
   }

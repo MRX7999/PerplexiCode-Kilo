@@ -71,6 +71,13 @@ const suites = [
     prebuild: true,
     options: { external: ['vscode', 'puppeteer-core', 'sql.js'] },
   },
+  {
+    // 3.8 MCP OAuth + PKCE loopback & SecretStorage/keychain, /server:skill prompts in REPL, MCP argument permission rules, and cross-model review.
+    entry: 'release-3.8.test.ts',
+    outfile: 'release-3.8.test.cjs',
+    prebuild: true,
+    options: { external: ['vscode', 'puppeteer-core', 'sql.js'] },
+  },
 ];
 
 const only = process.argv[2];

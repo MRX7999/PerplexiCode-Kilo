@@ -4,6 +4,7 @@ import * as http from 'http';
 import * as https from 'https';
 import * as os from 'os';
 import * as path from 'path';
+import type { McpOAuthConfig, McpOAuthRuntimeProvider } from './mcpOAuth';
 
 /**
  * Claude Code compatible Model Context Protocol (MCP) client, config loader, and server.
@@ -34,6 +35,7 @@ export interface McpServerConfig {
   cwd?: string;
   url?: string;
   headers?: Record<string, string>;
+  oauth?: McpOAuthConfig;
   timeoutSec?: number;
   disabled?: boolean;
   scope: McpServerScope;
@@ -97,6 +99,78 @@ export function parseMcpQualifiedToolName(value: string): { server: string; tool
 }
 
 /**
+ * Canonical slash-menu command token for an MCP prompt (`/<server>:<skill>`).
+ */
+export function formatMcpPromptSlashCommand(server: string, promptName: string): string {
+  return `/${server.trim()}:${promptName.trim()}`;
+}
+
+/**
+ * Parses CLI / slash-menu argument text into MCP `prompts/get` `Record<string, string>`.
+ * Supports `key=value`, `key="quoted value"`, or positional text mapped to the first declared argument.
+ */
+export function parseMcpPromptArgs(
+  rawArgs: string,
+  argDefs?: Array<{ name: string; required?: boolean }>
+): Record<string, string> {
+  const trimmed = rawArgs.trim();
+  if (!trimmed) return {};
+
+  const out: Record<string, string> = {};
+  const kvRegex = /([A-Za-z_][\w.-]*)=("([^"\\]|\\.)*"|'([^'\\]|\\.)*'|\S+)/g;
+  let matchedAnyKv = false;
+  let consumed = '';
+  let match: RegExpExecArray | null;
+  while ((match = kvRegex.exec(trimmed)) !== null) {
+    matchedAnyKv = true;
+    const key = match[1];
+    let val = match[2];
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1).replace(/\\(["'\\])/g, '$1');
+    }
+    out[key] = val;
+    consumed += match[0];
+  }
+  if (matchedAnyKv && consumed.replace(/\s+/g, '').length >= trimmed.replace(/\s+/g, '').length * 0.6) {
+    return out;
+  }
+
+  if (argDefs && argDefs.length > 0) {
+    return { [argDefs[0].name]: trimmed };
+  }
+  return { input: trimmed };
+}
+
+/**
+ * Matches a slash command like `/github:review_pr pr=42` against discovered MCP prompts.
+ */
+export function resolveMcpPromptSlashCommand(
+  line: string,
+  prompts: McpPromptInfo[]
+): { prompt: McpPromptInfo; args: Record<string, string>; rawArgs: string } | undefined {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith('/')) return undefined;
+  const firstSpace = trimmed.search(/\s/);
+  const token = (firstSpace === -1 ? trimmed.slice(1) : trimmed.slice(1, firstSpace)).trim();
+  const rawArgs = firstSpace === -1 ? '' : trimmed.slice(firstSpace + 1).trim();
+  const colonIdx = token.indexOf(':');
+  if (colonIdx <= 0 || colonIdx === token.length - 1) return undefined;
+  const serverPart = token.slice(0, colonIdx);
+  const promptPart = token.slice(colonIdx + 1);
+  const found = prompts.find(
+    (entry) =>
+      (entry.server === serverPart || sanitizeMcpSegment(entry.server) === sanitizeMcpSegment(serverPart))
+      && (entry.name === promptPart || sanitizeMcpSegment(entry.name) === sanitizeMcpSegment(promptPart))
+  );
+  if (!found) return undefined;
+  return {
+    prompt: found,
+    args: parseMcpPromptArgs(rawArgs, found.arguments),
+    rawArgs,
+  };
+}
+
+/**
  * Expands Claude Code style `${VAR}` and `${VAR:-default}` placeholders in strings.
  */
 export function expandMcpEnv(value: string, env: NodeJS.ProcessEnv = process.env): string {
@@ -156,6 +230,27 @@ function parseServerEntry(
       ? obj.timeoutSec
       : undefined;
   const disabled = obj.disabled === true || obj.enabled === false;
+  let oauth: McpOAuthConfig | undefined;
+  if (obj.oauth && typeof obj.oauth === 'object' && !Array.isArray(obj.oauth)) {
+    const rawOAuth = obj.oauth as Record<string, unknown>;
+    oauth = {
+      authorizationUrl: typeof rawOAuth.authorizationUrl === 'string' && rawOAuth.authorizationUrl.trim()
+        ? expandMcpEnv(rawOAuth.authorizationUrl.trim(), env)
+        : undefined,
+      tokenUrl: typeof rawOAuth.tokenUrl === 'string' && rawOAuth.tokenUrl.trim()
+        ? expandMcpEnv(rawOAuth.tokenUrl.trim(), env)
+        : undefined,
+      registrationUrl: typeof rawOAuth.registrationUrl === 'string' && rawOAuth.registrationUrl.trim()
+        ? expandMcpEnv(rawOAuth.registrationUrl.trim(), env)
+        : undefined,
+      clientId: typeof rawOAuth.clientId === 'string' && rawOAuth.clientId.trim()
+        ? expandMcpEnv(rawOAuth.clientId.trim(), env)
+        : undefined,
+      scopes: Array.isArray(rawOAuth.scopes)
+        ? rawOAuth.scopes.filter((s): s is string => typeof s === 'string' && Boolean(s.trim())).map((s) => s.trim())
+        : undefined,
+    };
+  }
 
   return {
     name: name.trim(),
@@ -166,6 +261,7 @@ function parseServerEntry(
     cwd,
     url,
     headers,
+    oauth,
     timeoutSec,
     disabled,
     scope,
@@ -698,7 +794,10 @@ class HttpMcpConnection implements McpConnection {
   private postEndpoint: string;
   private closed = false;
 
-  constructor(private readonly config: McpServerConfig) {
+  constructor(
+    private readonly config: McpServerConfig,
+    private readonly oauthProvider?: McpOAuthRuntimeProvider
+  ) {
     this.postEndpoint = config.url || '';
   }
 
@@ -715,7 +814,7 @@ class HttpMcpConnection implements McpConnection {
     const initResult = await this.request('initialize', {
       protocolVersion: '2024-11-05',
       capabilities: {},
-      clientInfo: { name: 'perplexicode-kilo', version: '3.4.0' },
+      clientInfo: { name: 'perplexicode-kilo', version: '3.8.0' },
     }, timeoutMs) as Record<string, unknown> | undefined;
 
     await this.notify('notifications/initialized', {}).catch(() => undefined);
@@ -751,7 +850,32 @@ class HttpMcpConnection implements McpConnection {
     this.closed = true;
   }
 
-  private _postJson(payload: JsonRpcRequest, timeoutMs: number): Promise<JsonRpcResponse | undefined> {
+  private _hasExplicitAuthHeader(): boolean {
+    if (!this.config.headers) return false;
+    return Object.keys(this.config.headers).some((k) => k.toLowerCase() === 'authorization');
+  }
+
+  private async _postJson(payload: JsonRpcRequest, timeoutMs: number): Promise<JsonRpcResponse | undefined> {
+    const explicitAuth = this._hasExplicitAuthHeader();
+    const initialToken = !explicitAuth && this.oauthProvider
+      ? await this.oauthProvider.getAccessToken(this.config.name, this.postEndpoint)
+      : undefined;
+    try {
+      return await this._postJsonOnce(payload, timeoutMs, initialToken);
+    } catch (err) {
+      const status = (err as Error & { httpStatus?: number }).httpStatus;
+      if (status === 401 && !explicitAuth && this.oauthProvider) {
+        const refreshedToken = await this.oauthProvider.onUnauthorized(this.config.name, this.postEndpoint);
+        if (refreshedToken) {
+          this.sessionId = undefined;
+          return this._postJsonOnce(payload, timeoutMs, refreshedToken);
+        }
+      }
+      throw err;
+    }
+  }
+
+  private _postJsonOnce(payload: JsonRpcRequest, timeoutMs: number, bearerToken?: string): Promise<JsonRpcResponse | undefined> {
     return new Promise((resolve, reject) => {
       let targetUrl: URL;
       try {
@@ -768,6 +892,9 @@ class HttpMcpConnection implements McpConnection {
         'Content-Length': Buffer.byteLength(body),
         ...(this.config.headers || {}),
       };
+      if (bearerToken) {
+        headers['Authorization'] = `Bearer ${bearerToken}`;
+      }
       if (this.sessionId) {
         headers['Mcp-Session-Id'] = this.sessionId;
       }
@@ -793,7 +920,9 @@ class HttpMcpConnection implements McpConnection {
           });
           res.on('end', () => {
             if (res.statusCode && res.statusCode >= 400) {
-              reject(new Error(`MCP server '${this.config.name}' returned HTTP ${res.statusCode}: ${raw.slice(0, 300)}`));
+              const httpErr = new Error(`MCP server '${this.config.name}' returned HTTP ${res.statusCode}: ${raw.slice(0, 300)}`) as Error & { httpStatus?: number };
+              httpErr.httpStatus = res.statusCode;
+              reject(httpErr);
               return;
             }
             const trimmed = raw.trim();
@@ -854,6 +983,7 @@ export interface McpRegistryOptions {
   strict?: boolean;
   env?: NodeJS.ProcessEnv;
   serverEnv?: LoadMcpConfigOptions['serverEnv'];
+  oauthProvider?: McpOAuthRuntimeProvider;
   log?: (line: string) => void;
 }
 
@@ -865,6 +995,7 @@ export class McpRegistry {
   private readonly strict: boolean;
   private readonly env: NodeJS.ProcessEnv;
   private readonly serverEnv?: LoadMcpConfigOptions['serverEnv'];
+  private readonly oauthProvider?: McpOAuthRuntimeProvider;
   private readonly log: (line: string) => void;
   private readonly connections = new Map<string, McpConnection>();
   private readonly states = new Map<string, McpServerState>();
@@ -878,6 +1009,7 @@ export class McpRegistry {
     this.strict = options.strict ?? false;
     this.env = options.env || process.env;
     this.serverEnv = options.serverEnv;
+    this.oauthProvider = options.oauthProvider;
     this.log = options.log || (() => undefined);
     this.reloadConfigs();
   }
@@ -1049,7 +1181,7 @@ export class McpRegistry {
 
     const conn: McpConnection = state.config.type === 'stdio'
       ? new StdioMcpConnection(state.config, this.cwd)
-      : new HttpMcpConnection(state.config);
+      : new HttpMcpConnection(state.config, this.oauthProvider);
     if (conn instanceof StdioMcpConnection) {
       conn.onListChanged = () => {
         void this.refreshServer(state.config.name).catch(() => undefined);
@@ -1157,6 +1289,25 @@ export class McpRegistry {
           name: typeof r.name === 'string' && r.name.trim() ? r.name.trim() : String(r.uri).trim(),
           description: typeof r.description === 'string' ? r.description.trim() : undefined,
           mimeType: typeof r.mimeType === 'string' ? r.mimeType.trim() : undefined,
+        }));
+    }
+    const promptsRes = await conn.request('prompts/list', {}).catch(() => undefined) as { prompts?: Array<Record<string, unknown>> } | undefined;
+    if (Array.isArray(promptsRes?.prompts)) {
+      state.prompts = promptsRes!.prompts
+        .filter((p) => p && typeof p.name === 'string' && String(p.name).trim())
+        .map((p) => ({
+          server: state.config.name,
+          name: String(p.name).trim(),
+          description: typeof p.description === 'string' ? p.description.trim() : undefined,
+          arguments: Array.isArray(p.arguments)
+            ? (p.arguments as Array<Record<string, unknown>>)
+              .filter((a) => a && typeof a.name === 'string')
+              .map((a) => ({
+                name: String(a.name),
+                description: typeof a.description === 'string' ? a.description : undefined,
+                required: a.required === true,
+              }))
+            : undefined,
         }));
     }
     return state;

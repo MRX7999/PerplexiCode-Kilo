@@ -397,6 +397,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   register('perplexicodeKilo.mcp.reconnect', async () => {
     await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'PerplexiCode: connecting MCP servers…' }, () => controller.mcpConnect());
   });
+  register('perplexicodeKilo.mcp.login', async () => {
+    await controller.mcpOAuthLogin();
+  });
+  register('perplexicodeKilo.mcp.logout', async () => {
+    await controller.mcpOAuthLogout();
+  });
 
   register('perplexicodeKilo.cycleMode', async () => {
     const index = MODES.findIndex((mode) => mode.slug === controller.getModeSlug());

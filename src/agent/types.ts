@@ -121,6 +121,10 @@ export interface AgentSettings {
   worktreeEnabled?: boolean;
   /** F18: Maximum concurrent subtasks executed in parallel by Orchestrator. Default 3. */
   maxParallelSubtasks?: number;
+  /** F24: Run cross-family model review on diff + verify before attempt_completion. Default false. */
+  crossModelReview?: boolean;
+  /** F24: Optional preferred reviewer model ID (must belong to another family, else auto-selected). */
+  crossModelReviewModel?: string;
 }
 
 export interface WorktreeChangedFile {

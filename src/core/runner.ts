@@ -206,6 +206,10 @@ export class CoreSession {
           this.options.agentSettings.autoCompactKeepSteps ?? this.settings.autoCompactKeepSteps,
         maxParallelSubtasks:
           this.options.agentSettings.maxParallelSubtasks ?? this.settings.maxParallelSubtasks,
+        crossModelReview:
+          this.options.agentSettings.crossModelReview ?? this.settings.crossModelReview ?? false,
+        crossModelReviewModel:
+          this.options.agentSettings.crossModelReviewModel ?? this.settings.crossModelReviewModel,
       }),
       getSelection: selection,
       getModelLabel: this.options.getModelLabel || ((modelId) => modelId),

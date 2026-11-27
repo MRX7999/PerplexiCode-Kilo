@@ -2,6 +2,15 @@
 
 All notable changes to PerplexiCode Kilo. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [3.8.0] - 2026-11-27
+
+### Added
+- **MCP OAuth 2.0 + PKCE login, logout, and automatic 401 refresh (F21):** `pcode mcp login <server>` and `pcode mcp logout <server>` (plus **PerplexiCode: MCP: Login to Server (OAuth)…** / **Logout from Server (OAuth)…** and **OAuth Login** / **OAuth Logout** buttons on HTTP/SSE server cards in Library → MCP) perform RFC 8414 / RFC 9728 metadata discovery, optional RFC 7591 dynamic client registration, and Authorization Code + PKCE S256 with a loopback `127.0.0.1` callback. Tokens are stored in VS Code `SecretStorage` in the IDE and in the OS keychain in the CLI (macOS Keychain via `security -i` stdin, Linux `secret-tool`, Windows DPAPI Credential Manager, or `0600` `~/.perplexicode/mcp-oauth.json` fallback on headless systems) — never passed via argv or written to logs/journals — and HTTP `401` responses transparently refresh the access token and retry once.
+- **MCP server prompts in `/server:skill` slash menu in IDE & REPL (F22):** Connected MCP servers expose `prompts/list` entries directly in the composer `/` popup and REPL (`/skills`, `/help`, and `/<server>:<prompt> [key="val" …]`), resolving `prompts/get` with positional or named arguments and injecting the rendered prompt into the active conversation.
+- **Argument-level MCP permission rules overriding `autoApprove.mcp` (F23):** `permissions.allow`, `ask`, and `deny` accept argument predicates on MCP calls — e.g. `mcp__db__query(sql:SELECT *)`, `mcp__db__query(sql:*DROP*)`, `mcp__k8s__apply({"metadata":{"namespace":"prod*"}})`, and `mcp__vault__read_resource(uri:secret://*)` — failing closed on malformed JSON when a `deny` rule constrains arguments and enforcing `deny` even when `autoApprove.mcp` or `bypassPermissions` is enabled.
+- **Configurable cross-model pre-completion review (F24):** Optional setting `perplexicodeKilo.agent.crossModelReview` / `.perplexicode/settings.json` `crossModelReview` / CLI `--cross-review` (default `false`) runs an independent review of the current git diff and `verify` output using a model from a different model family than the author (`anthropic` ↔ `openai` ↔ `google` ↔ `xai`, overridable via `crossModelReviewModel` / `--cross-review-model`) before accepting `attempt_completion`.
+- **Compute mode `council` audit note (F25):** Intentionally omitted — `src/api/bundledModelsConfig.json` defines `default_models` (`search`, `research`, `agentic_research`, `study`, `browser_agent`, `asi`) and `computer_harness` (`light`, `standard`, `high`, `ultra`) with no `council` compute mode identifier or wire payload schema.
+
 ## [3.7.0] - 2026-11-27
 
 ### Added

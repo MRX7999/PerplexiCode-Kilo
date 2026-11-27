@@ -453,6 +453,90 @@ await page.evaluate(() => { const t = document.getElementById('toast'); if (t) {
 check(await page.$eval('#worktree-card', (el) => el.textContent.includes('Конфликт') && el.textContent.includes('src/core/worktree.ts')), '3.7 conflict state displays conflicting file list cleanly');
 await shot('31-release-37-worktree-conflict');
 
+// 3.8: MCP OAuth Login/Logout controls (F21), /server:skill slash menu (F22), and Cross-Model Review settings (F24).
+const state38 = copy(fixture.empty);
+state38.mcp.servers = [
+  {
+    name: 'github',
+    type: 'http',
+    scope: 'project',
+    sourceFile: '.mcp.json',
+    target: 'https://api.githubcopilot.com/mcp/',
+    status: 'connected',
+    oauthAuthenticated: true,
+    serverInfo: { name: 'github-mcp-server', version: '1.4.0' },
+    tools: [{ name: 'get_pull_request', description: 'Read PR metadata and diff' }],
+    resources: [],
+    prompts: [
+      {
+        name: 'review_pr',
+        description: 'Review pull request diff for regressions',
+        arguments: [
+          { name: 'pr', description: 'PR number', required: true },
+          { name: 'focus', description: 'Area to focus on', required: false },
+        ],
+      },
+    ],
+  },
+  {
+    name: 'corp-sentry',
+    type: 'http',
+    scope: 'user',
+    sourceFile: '~/.claude.json',
+    target: 'https://mcp.sentry.dev/mcp',
+    status: 'disconnected',
+    oauthAuthenticated: false,
+    tools: [],
+    resources: [],
+    prompts: [],
+  },
+];
+await send(state38);
+await send({ type: 'view', view: 'library' });
+await page.click('[data-lib-tab="mcp"]');
+await page.evaluate(() => { const b = document.querySelector('#view-library .view-body'); if (b) b.scrollTop = 0; const t = document.getElementById('toast'); if (t) { t.className = 'toast hidden'; t.textContent = ''; } });
+check(Boolean(await page.$('[data-testid="mcp-oauth-active"]')), '3.8 authenticated HTTP MCP server shows OAuth badge');
+check(Boolean(await page.$('[data-mcp-oauth-logout="github"]')), '3.8 authenticated HTTP MCP server shows OAuth Logout');
+check(Boolean(await page.$('[data-mcp-oauth-login="corp-sentry"]')), '3.8 unauthenticated HTTP MCP server shows OAuth Login');
+check(await page.$eval('#view-library', (el) => el.textContent.includes('/github:review_pr')), '3.8 MCP card renders /server:skill prompt chip');
+check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), '3.8 MCP OAuth cards have no horizontal overflow');
+await shot('32-release-38-mcp-oauth');
+check((await clickPosted('[data-mcp-oauth-login="corp-sentry"]')).some((m) => m.type === 'mcpOAuthLogin' && m.name === 'corp-sentry'), '3.8 OAuth Login button posts mcpOAuthLogin');
+check((await clickPosted('[data-mcp-oauth-logout="github"]')).some((m) => m.type === 'mcpOAuthLogout' && m.name === 'github'), '3.8 OAuth Logout button posts mcpOAuthLogout');
+
+// 3.8 slash popup for /server:skill
+await send({ type: 'view', view: 'chat' });
+await page.evaluate(() => {
+  const inp = document.querySelector('#input');
+  inp.value = '';
+  inp.dispatchEvent(new Event('input'));
+  const t = document.getElementById('toast');
+  if (t) { t.className = 'toast hidden'; t.textContent = ''; }
+});
+await page.focus('#input');
+await page.type('#input', '/github:');
+check(await page.$eval('#popup', (el) => !el.classList.contains('hidden') && el.textContent.includes('/github:review_pr')), '3.8 slash popup shows /github:review_pr');
+await shot('33-release-38-slash-mcp-prompt');
+await page.evaluate(() => {
+  const inp = document.querySelector('#input');
+  inp.value = '/github:review_pr pr=42 focus="oauth"';
+  inp.dispatchEvent(new Event('input'));
+});
+const beforePromptSubmit = await page.evaluate(() => window.__posted.length);
+await page.keyboard.press('Enter');
+const promptMsgs = await page.evaluate((n) => window.__posted.slice(n), beforePromptSubmit);
+check(promptMsgs.some((m) => m.type === 'runMcpPrompt' && m.server === 'github' && m.name === 'review_pr' && m.rawArgs.includes('pr=42')), '3.8 submitting /server:skill posts runMcpPrompt with arguments');
+
+// 3.8 settings: crossModelReview is present and off by default
+await send({ type: 'view', view: 'settings' });
+const settingTabIds = await page.$$eval('#view-settings [data-tab]', (els) => els.map((e) => e.getAttribute('data-tab')).filter(Boolean));
+for (const tabId of settingTabIds) {
+  await page.click(`#view-settings [data-tab="${tabId}"]`);
+  if (await page.$('[data-setting="crossModelReview"]')) break;
+}
+check(Boolean(await page.$('[data-setting="crossModelReview"]')), '3.8 settings view renders crossModelReview checkbox');
+check(await page.$eval('[data-setting="crossModelReview"]', (el) => el.checked === false), '3.8 crossModelReview is off by default');
+
 const posted = await page.evaluate(() => window.__posted.map((m) => m.type));
 console.log('posted:', [...new Set(posted)].join(','));
 console.log('tabs:', tabs.length);

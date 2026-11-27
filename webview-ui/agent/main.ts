@@ -87,9 +87,10 @@ interface AppState {
 interface McpServerEntry {
   name: string; type: string; scope: string; sourceFile: string; target: string; status: string; error?: string;
   serverInfo?: { name?: string; version?: string };
+  oauthAuthenticated?: boolean;
   tools: Array<{ name: string; qualifiedName: string; description: string }>;
   resources: Array<{ uri: string; name: string; description: string }>;
-  prompts: Array<{ name: string; description: string }>;
+  prompts: Array<{ name: string; description: string; arguments?: Array<{ name: string; description?: string; required?: boolean }> }>;
 }
 type McpCatalogCategory = 'development' | 'web' | 'productivity' | 'security' | 'pentest';
 interface McpCatalogEntry {
@@ -1099,7 +1100,16 @@ function send(): void {
   stickToBottom = true;
 }
 
-const SLASH_COMMANDS = () => [
+const sanitizeMcpSlashSegment = (raw: string) => raw.trim().replace(/[^a-zA-Z0-9._-]+/g, '_');
+
+interface SlashCommandItem {
+  label: string;
+  value: string;
+  description: string;
+  requiredArgs?: string[];
+}
+
+const SLASH_COMMANDS = (): SlashCommandItem[] => [
   ...(state?.modes || []).map((mode) => ({ label: `/${mode.slug}`, value: `mode:${mode.slug}`, description: `Switch to ${mode.name} mode` })),
   { label: '/newtask', value: 'newtask', description: 'Start a new task with the following text' },
   { label: '/context', value: 'context', description: 'Инспектор контекста: что уходит в следующий запрос, почему и что исключить' },
@@ -1112,19 +1122,35 @@ const SLASH_COMMANDS = () => [
   { label: '/agents', value: 'library:agents', description: 'Install or create subagents' },
   { label: '/skills', value: 'library:skills', description: 'Install or create skills' },
   ...(state?.library?.taskPresets || []).map((preset) => ({ label: `/${preset.id}`, value: `preset:${preset.id}`, description: `Preset: ${preset.title}` })),
+  ...(state?.mcp?.servers || []).flatMap((server) =>
+    (server.prompts || []).map((prompt) => {
+      const label = `/${sanitizeMcpSlashSegment(server.name)}:${sanitizeMcpSlashSegment(prompt.name)}`;
+      const argsList = prompt.arguments || [];
+      const argsHint = argsList.length > 0
+        ? ` (${argsList.map((a) => (a.required ? `${a.name}*` : a.name)).join(', ')})`
+        : '';
+      return {
+        label,
+        value: `mcpPrompt:${encodeURIComponent(server.name)}:${encodeURIComponent(prompt.name)}`,
+        description: `MCP ${server.name}: ${prompt.description || prompt.name}${argsHint}`,
+        requiredArgs: argsList.filter((a) => a.required).map((a) => a.name),
+      };
+    })
+  ),
 ];
 
 function handleSlash(text: string): boolean {
   const [command, ...rest] = text.split(/\s+/);
   const restText = text.slice(command.length).trim();
-  const entry = SLASH_COMMANDS().find((item) => item.label === command);
+  const lowerCmd = command.toLowerCase();
+  const entry = SLASH_COMMANDS().find((item) => item.label.toLowerCase() === lowerCmd);
   if (!entry) return false;
-  applySlash(entry.value, restText);
+  applySlash(entry.value, restText, true);
   void rest;
   return true;
 }
 
-function applySlash(value: string, restText = ''): void {
+function applySlash(value: string, restText = '', fromSubmit = false): void {
   if (value.startsWith('mode:')) {
     post({ type: 'setMode', mode: value.slice(5) });
     input.value = restText;
@@ -1174,6 +1200,19 @@ function applySlash(value: string, restText = ''): void {
   } else if (value.startsWith('preset:')) {
     selectPreset(value.slice(7));
     input.value = restText;
+  } else if (value.startsWith('mcpPrompt:')) {
+    const parts = value.slice('mcpPrompt:'.length).split(':');
+    const serverName = decodeURIComponent(parts[0] || '');
+    const promptName = decodeURIComponent(parts.slice(1).join(':') || '');
+    const entry = SLASH_COMMANDS().find((item) => item.value === value);
+    if (!fromSubmit && !restText && entry?.requiredArgs && entry.requiredArgs.length > 0) {
+      input.value = `${entry.label} `;
+      showToast(`Введите аргументы: ${entry.requiredArgs.map((a) => `${a}=…`).join(' ')} и нажмите Enter`);
+    } else {
+      post({ type: 'runMcpPrompt', server: serverName, name: promptName, rawArgs: restText });
+      setView('chat');
+      input.value = '';
+    }
   }
   saveDraft();
   autoResize();
@@ -1187,10 +1226,10 @@ function updatePopups(): void {
   const value = input.value;
   const caret = input.selectionStart || 0;
   const before = value.slice(0, caret);
-  const slashMatch = /^\/([\w-]*)$/.exec(before);
+  const slashMatch = /^\/([\w.:-]*)$/.exec(before);
   if (slashMatch) {
     const query = slashMatch[1].toLowerCase();
-    slashState = { items: SLASH_COMMANDS().filter((item) => item.label.slice(1).startsWith(query)), index: 0 };
+    slashState = { items: SLASH_COMMANDS().filter((item) => item.label.slice(1).toLowerCase().startsWith(query)), index: 0 };
     mentionState = undefined;
     renderPopup();
     return;
@@ -1352,6 +1391,8 @@ function renderSettings(): void {
         ${field('autoCompactKeepSteps', 'Нетронутых последних шагов при сжатии', 'Последние N шагов и системный промпт не затрагиваются', number('autoCompactKeepSteps', s.autoCompactKeepSteps ?? 4, 1, 20))}
         ${field('worktreeEnabled', 'Изоляция задачи в git worktree', 'Создавать отдельный git worktree от HEAD с изоляцией путей, симлинков и git -C', checkbox('worktreeEnabled', Boolean(s.worktreeEnabled)))}
         ${field('maxParallelSubtasks', 'Лимит параллельных субагентов Orchestrator', 'Читающие субагенты работают в основном дереве, пишущие — каждый в своём worktree', number('maxParallelSubtasks', s.maxParallelSubtasks ?? 3, 1, 16))}
+        ${field('crossModelReview', 'Кросс-модельное ревью перед завершением', 'Перед attempt_completion модель другого семейства проверяет git diff и результат verify (по умолчанию выключено)', checkbox('crossModelReview', Boolean(s.crossModelReview)))}
+        ${field('crossModelReviewModel', 'Модель кросс-ревью (необязательно)', 'Пусто = авто-выбор модели другого семейства (Claude ↔ GPT ↔ Gemini)', select('crossModelReviewModel', s.crossModelReviewModel || '', [['', 'Авто (другое семейство)'], ...state.models.filter((m) => m.selectable).map((m): [string, string] => [m.id, `${m.label} (${m.id})`])]))}
         ${field('maxReadFileLines', 'Max lines per file read', 'Larger files are truncated; the model can read ranges', number('maxReadFileLines', s.maxReadLines, 50, 20000))}
         ${field('includeFileListOnStart', 'Include file list', 'Send the workspace file list with the first message', checkbox('includeFileListOnStart', s.includeFileListOnStart))}
         ${field('diffEnabled', 'Diff edits', 'Let the model use apply_diff (targeted SEARCH/REPLACE edits)', checkbox('diffEnabled', s.diffEnabled))}
@@ -1656,7 +1697,10 @@ function mcpTabHtml(): string {
     ${form}
     ${servers.length === 0 ? `<div class="empty-inline muted">No MCP servers ${libraryQuery ? 'match the search' : 'configured'}. Add one above or choose a catalog entry below.</div>` : servers.map((server) => `
       <div class="lib-card mcp-card">
-        <div class="lib-card-head">${icons.plug}<b>${escapeHtml(server.name)}</b>${statusBadge(server)}<span class="badge">${escapeHtml(server.type)}</span><span class="badge">${escapeHtml(server.scope)}</span><span class="spacer"></span>
+        <div class="lib-card-head">${icons.plug}<b>${escapeHtml(server.name)}</b>${statusBadge(server)}<span class="badge">${escapeHtml(server.type)}</span><span class="badge">${escapeHtml(server.scope)}</span>${server.type !== 'stdio' && server.oauthAuthenticated ? '<span class="badge new" data-testid="mcp-oauth-active">OAuth ✓</span>' : ''}<span class="spacer"></span>
+          ${server.type !== 'stdio' ? (server.oauthAuthenticated
+            ? `<button class="btn ghost small" data-mcp-oauth-logout="${escapeHtml(server.name)}" data-testid="mcp-oauth-logout-${escapeHtml(server.name)}" title="Удалить OAuth токен из SecretStorage">OAuth Logout</button>`
+            : `<button class="btn secondary small" data-mcp-oauth-login="${escapeHtml(server.name)}" data-testid="mcp-oauth-login-${escapeHtml(server.name)}" title="Войти через OAuth 2.0 + PKCE (SecretStorage)">OAuth Login</button>`) : ''}
           <button class="icon-btn" data-mcp-connect="${escapeHtml(server.name)}" title="${server.status === 'connected' ? 'Reconnect' : 'Connect'}">${icons.refresh}</button>
           <button class="icon-btn" data-mcp-file="${escapeHtml(server.sourceFile)}" title="Open ${escapeHtml(server.sourceFile)}">${icons.file}</button>
           <button class="icon-btn" data-mcp-remove="${escapeHtml(server.name)}" data-scope="${escapeHtml(server.scope)}" title="Remove from config">${icons.trash}</button></div>
@@ -1665,7 +1709,7 @@ function mcpTabHtml(): string {
         ${server.serverInfo?.name ? `<div class="muted small">${escapeHtml(server.serverInfo.name)}${server.serverInfo.version ? ` ${escapeHtml(server.serverInfo.version)}` : ''}</div>` : ''}
         ${server.tools.length ? `<div class="mcp-tools">${server.tools.map((tool) => `<span class="chip" title="${escapeHtml(tool.description)}"><code>${escapeHtml(tool.name)}</code></span>`).join('')}</div>` : ''}
         ${server.resources.length ? `<div class="muted small">${server.resources.length} resource${server.resources.length === 1 ? '' : 's'}: ${server.resources.slice(0, 5).map((resource) => `<code>${escapeHtml(resource.uri)}</code>`).join(', ')}${server.resources.length > 5 ? ', …' : ''}</div>` : ''}
-        ${server.prompts.length ? `<div class="muted small">${server.prompts.length} prompt${server.prompts.length === 1 ? '' : 's'}: ${server.prompts.slice(0, 5).map((prompt) => `<code>${escapeHtml(prompt.name)}</code>`).join(', ')}</div>` : ''}
+        ${server.prompts.length ? `<div class="muted small">${server.prompts.length} prompt${server.prompts.length === 1 ? '' : 's'} (slash-меню): ${server.prompts.slice(0, 8).map((prompt) => `<button class="chip" data-slash="mcpPrompt:${encodeURIComponent(server.name)}:${encodeURIComponent(prompt.name)}" title="${escapeHtml(prompt.description || prompt.name)}"><code>/${escapeHtml(sanitizeMcpSlashSegment(server.name))}:${escapeHtml(sanitizeMcpSlashSegment(prompt.name))}</code></button>`).join(' ')}</div>` : ''}
       </div>`).join('')}
     ${mcpCatalogHtml(mcp)}`;
 }
@@ -1723,7 +1767,7 @@ function setView(next: ViewName): void {
 
 document.addEventListener('click', (event) => {
   const target = event.target as HTMLElement;
-  const el = target.closest('[data-action],[data-ctx-toggle],[data-mode],[data-model],[data-toggle],[data-toggle-tool],[data-copy],[data-insert],[data-url],[data-file],[data-restore],[data-suggest],[data-ask-primary],[data-ask-secondary],[data-open-task],[data-delete-task],[data-export-task],[data-tab],[data-slash],[data-mention],[data-remove-account],[data-toggle-account],[data-run],[data-preset],[data-preset-delete],[data-install],[data-install-bundle],[data-lib-open],[data-lib-remove],[data-lib-tab],[data-lib-form],[data-agent-pick],[data-clear-chip],#more-models,#mode-btn,#model-btn,#compute-btn,[data-compute],[data-mcp-connect],[data-mcp-remove],[data-mcp-file],[data-mcp-category],[data-mcp-catalog-install],#web-btn,#enhance-btn,#send-btn,#task-title-toggle,#task-export,#task-close,#todos-toggle,#aa-toggle') as HTMLElement | null;
+  const el = target.closest('[data-action],[data-ctx-toggle],[data-mode],[data-model],[data-toggle],[data-toggle-tool],[data-copy],[data-insert],[data-url],[data-file],[data-restore],[data-suggest],[data-ask-primary],[data-ask-secondary],[data-open-task],[data-delete-task],[data-export-task],[data-tab],[data-slash],[data-mention],[data-remove-account],[data-toggle-account],[data-run],[data-preset],[data-preset-delete],[data-install],[data-install-bundle],[data-lib-open],[data-lib-remove],[data-lib-tab],[data-lib-form],[data-agent-pick],[data-clear-chip],#more-models,#mode-btn,#model-btn,#compute-btn,[data-compute],[data-mcp-connect],[data-mcp-oauth-login],[data-mcp-oauth-logout],[data-mcp-remove],[data-mcp-file],[data-mcp-category],[data-mcp-catalog-install],#web-btn,#enhance-btn,#send-btn,#task-title-toggle,#task-export,#task-close,#todos-toggle,#aa-toggle') as HTMLElement | null;
 
   if (!target.closest('#model-menu') && !target.closest('#model-btn') && modelMenuOpen) {
     modelMenuOpen = false;
@@ -1752,6 +1796,8 @@ document.addEventListener('click', (event) => {
     return;
   }
   if (data.mcpConnect !== undefined) { post({ type: 'mcpConnect', name: data.mcpConnect || undefined }); showToast(data.mcpConnect ? `Connecting ${data.mcpConnect}…` : 'Connecting MCP servers…'); return; }
+  if (data.mcpOauthLogin) { post({ type: 'mcpOAuthLogin', name: data.mcpOauthLogin }); showToast(`OAuth login: ${data.mcpOauthLogin}…`); return; }
+  if (data.mcpOauthLogout) { post({ type: 'mcpOAuthLogout', name: data.mcpOauthLogout }); return; }
   if (data.mcpRemove) { post({ type: 'mcpRemove', name: data.mcpRemove, scope: data.scope }); return; }
   if (data.mcpFile) { post({ type: 'openMcpFile', file: data.mcpFile }); return; }
   if (data.mcpCategory && MCP_CATEGORIES.some(([id]) => id === data.mcpCategory)) {
@@ -2076,7 +2122,7 @@ input.addEventListener('keydown', (event) => {
       event.preventDefault();
       if (slashState?.items.length) {
         const entry = slashState.items[slashState.index];
-        const rest = input.value.replace(/^\/[\w-]*/, '').trim();
+        const rest = input.value.replace(/^\/[\w.:-]*/, '').trim();
         slashState = undefined;
         applySlash(entry.value, rest);
         renderPopup();

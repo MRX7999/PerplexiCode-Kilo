@@ -10,6 +10,8 @@ export * from './compaction';
 export * from './contextInspector';
 export * from './repoMapBench';
 export * from './worktree';
+export * from './mcpOAuth';
+export * from './crossReview';
 export * from './gate';
 export * from './runner';
 export * from './nodeHost';
