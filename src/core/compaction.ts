@@ -10,13 +10,13 @@ import type { ApiMessage, ModelSelection, TodoItem } from '../agent/types';
 
 export const COMPACT_INSTRUCTIONS = `You are compacting the transcript of a coding-agent session so the work can continue in a fresh context.
 Write a dense, factual Markdown summary using these four structured headings:
-## Изменённые файлы
+## Modified files
 - Every file created, modified, or deleted (exact workspace-relative paths and what changed).
-## Проверенные гипотезы
+## Verified hypotheses
 - Files inspected, commands/tests executed, exit codes, and root causes confirmed or ruled out.
-## Ограничения
+## Constraints
 - User goal, explicit instructions, architectural constraints, denied actions, and safety boundaries.
-## Статус todo
+## Todo status
 - Completed items, in-progress step, and remaining items.
 
 Do not invent anything. Do not call tools. Output only the summary.`;
@@ -136,30 +136,30 @@ function extractStructuredSections(
 
     // Carry forward facts from any earlier compacted_context block
     if (content.includes('<compacted_context')) {
-      const prevModified = /## Изменённые файлы\n([\s\S]*?)(?=\n## |\n<\/compacted_context>|$)/.exec(content);
+      const prevModified = /## (?:Modified files|Изменённые файлы)\n([\s\S]*?)(?=\n## |\n<\/compacted_context>|$)/.exec(content);
       if (prevModified) {
         for (const raw of prevModified[1].split('\n')) {
           const item = raw.replace(/^-\s*/, '').trim();
-          if (item && item !== '(нет изменённых файлов)') {
+          if (item && item !== '(no modified files)' && item !== '(нет изменённых файлов)') {
             const pathKey = item.split(':')[0].trim();
             modifiedMap.set(pathKey, item);
           }
         }
       }
-      const prevHyp = /## Проверенные гипотезы\n([\s\S]*?)(?=\n## |\n<\/compacted_context>|$)/.exec(content);
+      const prevHyp = /## (?:Verified hypotheses|Проверенные гипотезы)\n([\s\S]*?)(?=\n## |\n<\/compacted_context>|$)/.exec(content);
       if (prevHyp) {
         for (const raw of prevHyp[1].split('\n')) {
           const item = raw.replace(/^-\s*/, '').trim();
-          if (item && item !== '(нет проверенных гипотез)') {
+          if (item && item !== '(no verified hypotheses)' && item !== '(нет проверенных гипотез)') {
             addHypothesis(item);
           }
         }
       }
-      const prevCon = /## Ограничения\n([\s\S]*?)(?=\n## |\n<\/compacted_context>|$)/.exec(content);
+      const prevCon = /## (?:Constraints|Ограничения)\n([\s\S]*?)(?=\n## |\n<\/compacted_context>|$)/.exec(content);
       if (prevCon) {
         for (const raw of prevCon[1].split('\n')) {
           const item = raw.replace(/^-\s*/, '').trim();
-          if (item && item !== '(явных ограничений не зафиксировано)') {
+          if (item && item !== '(no explicit constraints recorded)' && item !== '(явных ограничений не зафиксировано)') {
             addConstraint(item);
           }
         }
@@ -170,7 +170,7 @@ function extractStructuredSections(
     if (idx === 0 && msg.role === 'user') {
       const taskMatch = /<task>\s*([\s\S]*?)\s*<\/task>/.exec(content);
       const rawGoal = taskMatch ? taskMatch[1] : content;
-      addConstraint(`Исходная задача: ${clipLine(rawGoal, 220)}`);
+      addConstraint(`Original task: ${clipLine(rawGoal, 220)}`);
     }
 
     if (msg.role === 'assistant') {
@@ -189,12 +189,12 @@ function extractStructuredSections(
       const readRegex = /<read_file>\s*[\s\S]*?<path>([^<]+)<\/path>/g;
       let readMatch: RegExpExecArray | null;
       while ((readMatch = readRegex.exec(content)) !== null) {
-        addHypothesis(`Изучен файл ${readMatch[1].trim()}`);
+        addHypothesis(`Read file ${readMatch[1].trim()}`);
       }
       const searchRegex = /<search_files>\s*[\s\S]*?<regex>([^<]+)<\/regex>/g;
       let searchMatch: RegExpExecArray | null;
       while ((searchMatch = searchRegex.exec(content)) !== null) {
-        addHypothesis(`Поиск по шаблону /${clipLine(searchMatch[1], 60)}/`);
+        addHypothesis(`Searched for /${clipLine(searchMatch[1], 60)}/`);
       }
     }
 
@@ -203,7 +203,7 @@ function extractStructuredSections(
       const appliedRegex = /The (new file was created|changes were applied) successfully:\s*([^\s(]+)\s*(\([^)]+\))?/g;
       let appMatch: RegExpExecArray | null;
       while ((appMatch = appliedRegex.exec(content)) !== null) {
-        const kind = appMatch[1] === 'new file was created' ? 'создан' : 'изменён';
+        const kind = appMatch[1] === 'new file was created' ? 'created' : 'modified';
         const filePath = appMatch[2].trim();
         const stats = appMatch[3] ? ` ${appMatch[3]}` : '';
         modifiedMap.set(filePath, `${filePath}: ${kind}${stats}`);
@@ -216,22 +216,22 @@ function extractStructuredSections(
         const cmd = clipLine(cmdMatch[1], 80);
         const exitMatch = /Exit code:\s*(-?\d+|null)/i.exec(cmdMatch[2]);
         const exitInfo = exitMatch ? ` (exit ${exitMatch[1]})` : '';
-        addHypothesis(`Команда \`${cmd}\`${exitInfo}: ${clipLine(cmdMatch[2], 90)}`);
+        addHypothesis(`Command \`${cmd}\`${exitInfo}: ${clipLine(cmdMatch[2], 90)}`);
       }
 
       // Post-edit diagnostics
       if (content.includes('New problems detected after saving the file:')) {
         const diagSnippet = content.split('New problems detected after saving the file:')[1] || '';
-        addHypothesis(`Диагностика после правки: ${clipLine(diagSnippet, 120)}`);
+        addHypothesis(`Diagnostics after edit: ${clipLine(diagSnippet, 120)}`);
       }
 
       // Explicit feedback, denials, or rule blocks
       const feedbackMatch = /<feedback>\s*([\s\S]*?)\s*<\/feedback>/.exec(content);
       if (feedbackMatch) {
-        addConstraint(`Уточнение пользователя: ${feedbackMatch[1]}`);
+        addConstraint(`User clarification: ${feedbackMatch[1]}`);
       }
       if (/Permission rule|denied this action|requires explicit confirmation|blocked by SSRF/i.test(content)) {
-        addConstraint(`Ограничение безопасности: ${clipLine(content, 150)}`);
+        addConstraint(`Safety constraint: ${clipLine(content, 150)}`);
       }
     }
   }
@@ -270,23 +270,23 @@ export function formatStructuredCompactionSummary(sections: StructuredCompaction
     items.length > 0 ? items.map((item) => `- ${item}`).join('\n') : `- ${emptyLabel}`;
 
   const raw = [
-    '## Изменённые файлы',
-    renderList(sections.modifiedFiles, '(нет изменённых файлов)'),
+    '## Modified files',
+    renderList(sections.modifiedFiles, '(no modified files)'),
     '',
-    '## Проверенные гипотезы',
-    renderList(sections.verifiedHypotheses, '(нет проверенных гипотез)'),
+    '## Verified hypotheses',
+    renderList(sections.verifiedHypotheses, '(no verified hypotheses)'),
     '',
-    '## Ограничения',
-    renderList(sections.constraints, '(явных ограничений не зафиксировано)'),
+    '## Constraints',
+    renderList(sections.constraints, '(no explicit constraints recorded)'),
     '',
-    '## Статус todo',
-    renderList(sections.todoStatus, '(список задач пуст)'),
+    '## Todo status',
+    renderList(sections.todoStatus, '(todo list is empty)'),
   ].join('\n');
 
   if (raw.length <= maxChars) {
     return raw;
   }
-  return `${raw.slice(0, Math.max(200, maxChars - 32)).trimEnd()}\n... [сводка сокращена]`;
+  return `${raw.slice(0, Math.max(200, maxChars - 32)).trimEnd()}\n... [summary truncated]`;
 }
 
 /**
@@ -295,7 +295,7 @@ export function formatStructuredCompactionSummary(sections: StructuredCompaction
  * - The last `keepSteps` steps (each step = 1 assistant turn + 1 user/tool turn, i.e. `2 * keepSteps`
  *   messages when available) are preserved verbatim without touching a single character.
  * - Older turns are replaced by a structured summary with 4 sections:
- *   Изменённые файлы, Проверенные гипотезы, Ограничения, Статус todo.
+ *   Modified files, Verified hypotheses, Constraints, Todo status.
  */
 export function structuredAutoCompact(params: {
   messages: ApiMessage[];
@@ -343,7 +343,7 @@ export function structuredAutoCompact(params: {
   const prefix: ApiMessage[] = untouchedTail[0]?.role === 'user'
     ? [
       { role: 'user', content: compactedEnvelope, ts: now },
-      { role: 'assistant', content: 'Принято. Продолжаю работу с учётом структурированной сводки контекста.', ts: now },
+      { role: 'assistant', content: 'Understood. Continuing the work from the structured context summary.', ts: now },
     ]
     : [{ role: 'user', content: compactedEnvelope, ts: now }];
 

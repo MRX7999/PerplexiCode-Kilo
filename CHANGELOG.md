@@ -2,6 +2,14 @@
 
 All notable changes to PerplexiCode Kilo. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [4.0.3] - 2026-11-27
+
+### Changed
+- **The interface is English by default everywhere.** Task state banners (`waiting for approval`, `retrying request`, `verifying result`, `needs attention`), route lines, worktree result card, Context Inspector, diagnostics preview, settings labels, Quick Edit prompts, MCP OAuth messages, model catalog notifications and `pcode` CLI output were partly in Russian and are now in English. The language the agent replies in is unchanged: `perplexicodeKilo.agent.language` (`auto` follows your message).
+- Structured auto-compaction writes English section headings (`Modified files`, `Verified hypotheses`, `Constraints`, `Todo status`); summaries made by earlier versions with Russian headings are still read.
+- Interrupted commands are marked `outcome not confirmed`; tasks saved by earlier versions with the Russian marker still resume safely.
+- README screenshots for 3.5 – 3.8 re-rendered with the English interface.
+
 ## [4.0.2] - 2026-11-27
 
 ### Fixed

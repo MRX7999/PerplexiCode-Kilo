@@ -427,7 +427,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       readSetting<string>('perplexicodeKilo.models.remoteCatalogSha256Url', DEFAULT_REMOTE_CATALOG_SHA256_URL).trim()
       || `${catalogUrl}.sha256`;
     const res = await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: 'PerplexiCode: Обновление каталога моделей…' },
+      { location: vscode.ProgressLocation.Notification, title: 'PerplexiCode: Updating the model catalog…' },
       () =>
         updateModelCatalogFromRepository({
           catalogUrl,
@@ -437,7 +437,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     );
     if (!res.updated) {
       void vscode.window.showWarningMessage(
-        `PerplexiCode: Не удалось обновить каталог моделей (${res.error || 'ошибка проверки'}). Используется встроенный снимок (${res.modelCount} моделей).`
+        `PerplexiCode: Could not update the model catalog (${res.error || 'verification failed'}). Using the built-in snapshot (${res.modelCount} models).`
       );
       return;
     }
@@ -445,7 +445,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     await controller.reloadModels();
     updateStatusBar();
     void vscode.window.showInformationMessage(
-      `PerplexiCode: Каталог моделей обновлён (${res.modelCount} моделей, снимок ${res.snapshotDate || 'remote'}).`
+      `PerplexiCode: Model catalog updated (${res.modelCount} models, snapshot ${res.snapshotDate || 'remote'}).`
     );
   });
 

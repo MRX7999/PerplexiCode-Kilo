@@ -284,19 +284,19 @@ task35.task.status = {
   askId: 'ask-35',
   askKind: 'edit',
   requestCount: 2,
-  routeLine: 'Computer (Claude 5.5 Sonnet) → Search (модель: не сообщена), план Pro не поддерживает Computer',
+  routeLine: 'Computer (Claude 5.5 Sonnet) → Search (model: not reported), Pro plan does not support Computer',
   banner: {
     phase: 'waiting_approval',
-    label: 'жду подтверждения',
-    reason: 'Защищённый конфиг (.mcp.json) всегда требует явного подтверждения.',
+    label: 'waiting for approval',
+    reason: 'Protected config (.mcp.json) always requires explicit approval.',
     rule: 'protected-config: .mcp.json',
   },
 };
 await send(task35);
 check(Boolean(await page.$('.task-state-card')), '3.5 task state card visible when banner active');
-check(await page.$eval('.task-state-card', (el) => el.textContent.includes('жду подтверждения') && el.textContent.includes('protected-config: .mcp.json')), '3.5 task state card renders label, reason and rule');
+check(await page.$eval('.task-state-card', (el) => el.textContent.includes('waiting for approval') && el.textContent.includes('protected-config: .mcp.json')), '3.5 task state card renders label, reason and rule');
 check(Boolean(await page.$('.task-route-line')), '3.5 task route line visible');
-check(await page.$eval('.task-route-line', (el) => el.textContent.includes('не сообщена') && el.textContent.includes('→')), '3.5 task route line renders fallback and unreported model');
+check(await page.$eval('.task-route-line', (el) => el.textContent.includes('not reported') && el.textContent.includes('→')), '3.5 task route line renders fallback and unreported model');
 check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), '3.5 task state card and route line have no horizontal overflow');
 await shot('27-release-35-status-card');
 
@@ -308,11 +308,11 @@ await send({
     redacted: true,
     versions: { perplexicode: '3.5.0', platform: 'linux', node: 'v22' },
     excludedData: ['cookies', 'csrf_tokens', 'http_headers', 'prompts', 'source_code', 'terminal_output'],
-    stages: [{ seq: 1, stage: 'banner:waiting_approval', decision: 'жду подтверждения', rule: 'protected-config: .mcp.json' }],
+    stages: [{ seq: 1, stage: 'banner:waiting_approval', decision: 'waiting for approval', rule: 'protected-config: .mcp.json' }],
   }, null, 2),
 });
 check(Boolean(await page.$('#diag-modal:not(.hidden)')), '3.5 diagnostics preview modal opens');
-check(await page.$eval('#diag-modal', (el) => el.textContent.includes('Скопировать диагностику') && el.textContent.includes('3.5.0')), '3.5 diagnostics modal shows preview JSON and copy button');
+check(await page.$eval('#diag-modal', (el) => el.textContent.includes('Copy Diagnostics') && el.textContent.includes('3.5.0')), '3.5 diagnostics modal shows preview JSON and copy button');
 await shot('28-release-35-diag-modal');
 check((await clickPosted('[data-action="diag-copy"]')).some((m) => m.type === 'copy' && m.text.includes('3.5.0')), '3.5 confirm button copies previewed diagnostics');
 check(Boolean(await page.$('#diag-modal.hidden')), '3.5 diagnostics modal closes after copy');
@@ -334,57 +334,57 @@ await send({
       {
         id: 'system_base',
         category: 'system',
-        label: 'Системный промпт (режим Code, правила и инструменты)',
+        label: 'System prompt and tool schemas',
         chars: 11200,
         originalChars: 11200,
         status: 'included',
         canExclude: false,
         excluded: false,
-        reason: 'Обязательные системные инструкции текущего режима; при авто-сжатии не изменяются.',
+        reason: 'Defines the mode role, XML tool format and safety rules (required)',
         preview: 'You are PerplexiCode, a highly skilled software engineer...',
       },
       {
         id: 'repo_map',
         category: 'repo_map',
-        label: 'Карта репозитория (@repo)',
+        label: 'Repository map (@repo)',
         chars: 5420,
         originalChars: 5420,
         status: 'included',
         canExclude: true,
         excluded: false,
-        reason: 'Активный файл src/agent/task.ts и текущий git diff в приоритете (бюджет 6 000 симв.).',
+        reason: 'Added automatically by repoMapEnabled (active file and current diff first)',
         preview: '# Repository map (28 files indexed) — src/agent/task.ts [active] — class AgentTask, inspectContext()',
       },
       {
         id: 'msg_1',
         category: 'compacted',
-        label: 'Структурированная сводка авто-сжатия (6 шагов)',
+        label: 'Compacted history summary (#1)',
         chars: 2890,
         originalChars: 11290,
         status: 'compacted',
         canExclude: true,
         excluded: false,
-        reason: 'Сжатая сводка предыдущих шагов (изменённые файлы, проверенные гипотезы, ограничения, статус todo)',
-        compactionDetail: 'сэкономлено 8 400 симв.',
-        preview: '## Изменённые файлы - src/agent/repoMap.ts · ## Проверенные гипотезы - npm test (exit 0)',
+        reason: 'Structured summary of earlier steps (modified files, hypotheses, constraints, todo)',
+        compactionDetail: 'Saved 8,400 chars',
+        preview: '## Modified files - src/agent/repoMap.ts · ## Verified hypotheses - npm test (exit 0)',
       },
       {
         id: 'msg_2',
         category: 'tool_result',
-        label: "Результат read_file ('src/core/compaction.ts')",
+        label: "read_file result ('src/core/compaction.ts')",
         chars: 0,
         originalChars: 5290,
         status: 'excluded',
         canExclude: true,
         excluded: true,
-        reason: 'Исключено пользователем через Инспектор контекста.',
+        reason: 'Excluded by you in the Context Inspector',
         preview: '',
       },
     ],
   },
 });
 check(Boolean(await page.$('#context-modal:not(.hidden)')), '3.6 context inspector modal opens');
-check(await page.$eval('#context-modal', (el) => el.textContent.includes('Инспектор контекста') && el.textContent.includes('Карта репозитория (@repo)') && el.textContent.includes('авто-сжатие активно')), '3.6 context inspector renders items, reasons, and compaction badge');
+check(await page.$eval('#context-modal', (el) => el.textContent.includes('Context Inspector') && el.textContent.includes('Repository map (@repo)') && el.textContent.includes('auto-compact active')), '3.6 context inspector renders items, reasons, and compaction badge');
 check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), '3.6 context inspector modal has no horizontal overflow');
 await shot('29-release-36-context-inspector');
 check((await clickPosted('[data-ctx-toggle="repo_map"]')).some((m) => m.type === 'setContextItemExcluded' && m.id === 'repo_map' && m.excluded === true), '3.6 exclude button posts setContextItemExcluded');
@@ -397,7 +397,7 @@ const empty37 = copy(fixture.empty);
 empty37.version = '3.7.0';
 empty37.worktree = {
   enabled: true,
-  preStartWarning: 'Предупреждение: в основном рабочем дереве есть незакоммиченные изменения (1: dirty.ts). Изолированный git worktree создаётся от коммита HEAD (a1b2c3d4).',
+  preStartWarning: 'Warning: the main working tree has uncommitted changes (1: dirty.ts). The isolated git worktree is created from HEAD (a1b2c3d4).',
 };
 await send(empty37);
 check(Boolean(await page.$('#worktree-btn.on')), '3.7 worktree toggle pill shows active state');
@@ -437,7 +437,7 @@ await send(task37);
 await page.click('[data-action="toggle-worktree-diff"]');
 await page.evaluate(() => { const t = document.getElementById('toast'); if (t) { t.className = 'toast hidden'; t.textContent = ''; } });
 check(Boolean(await page.$('#worktree-card:not(.hidden) .wt-card')), '3.7 worktree result card renders');
-check(await page.$eval('#worktree-card', (el) => el.textContent.includes('wt-auth-guard') && el.textContent.includes('Verify: пройдено') && el.textContent.includes('Применить') && el.textContent.includes('Отбросить') && el.textContent.includes('enforceWorktreePathIsolation')), '3.7 worktree card shows diff, verify status, Apply and Discard buttons');
+check(await page.$eval('#worktree-card', (el) => el.textContent.includes('wt-auth-guard') && el.textContent.includes('Verify: passed') && el.textContent.includes('Apply') && el.textContent.includes('Discard') && el.textContent.includes('enforceWorktreePathIsolation')), '3.7 worktree card shows diff, verify status, Apply and Discard buttons');
 check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), '3.7 worktree result card has no horizontal overflow');
 await shot('30-release-37-worktree-card');
 check((await clickPosted('[data-action="apply-worktree"]')).some((m) => m.type === 'applyWorktree'), '3.7 Apply button posts applyWorktree');
@@ -447,10 +447,10 @@ check((await clickPosted('[data-action="discard-worktree"]')).some((m) => m.type
 const conflict37 = copy(task37);
 conflict37.task.status.worktreeCard.state = 'conflict';
 conflict37.task.status.worktreeCard.conflictFiles = ['src/core/worktree.ts'];
-conflict37.task.status.worktreeCard.statusMessage = 'Конфликт при применении worktree: основное дерево не изменено.';
+conflict37.task.status.worktreeCard.statusMessage = 'Conflict while applying the worktree: the main tree was not changed.';
 await send(conflict37);
 await page.evaluate(() => { const t = document.getElementById('toast'); if (t) { t.className = 'toast hidden'; t.textContent = ''; } });
-check(await page.$eval('#worktree-card', (el) => el.textContent.includes('Конфликт') && el.textContent.includes('src/core/worktree.ts')), '3.7 conflict state displays conflicting file list cleanly');
+check(await page.$eval('#worktree-card', (el) => el.textContent.includes('Conflict') && el.textContent.includes('src/core/worktree.ts')), '3.7 conflict state displays conflicting file list cleanly');
 await shot('31-release-37-worktree-conflict');
 
 // 3.8: MCP OAuth Login/Logout controls (F21), /server:skill slash menu (F22), and Cross-Model Review settings (F24).

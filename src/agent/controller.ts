@@ -273,14 +273,14 @@ export class AgentController implements vscode.Disposable {
   async quickEditSelection(editorArg?: vscode.TextEditor): Promise<void> {
     const editor = editorArg || vscode.window.activeTextEditor;
     if (!editor || editor.selection.isEmpty) {
-      void vscode.window.showInformationMessage('PerplexiCode: Выделите фрагмент кода в редакторе для быстрой правки (Cmd/Ctrl+I).');
+      void vscode.window.showInformationMessage('PerplexiCode: Select some code in the editor to use Quick Edit (Cmd/Ctrl+I).');
       return;
     }
 
     const instruction = await vscode.window.showInputBox({
-      title: 'PerplexiCode: Быстрая правка выделения (Cmd/Ctrl+I)',
-      prompt: 'Опишите, как изменить выделенный фрагмент кода',
-      placeHolder: 'Например: перепиши на async/await и добавь обработку ошибок',
+      title: 'PerplexiCode: Quick Edit Selection (Cmd/Ctrl+I)',
+      prompt: 'Describe how to change the selected code',
+      placeHolder: 'For example: rewrite with async/await and add error handling',
     });
     if (!instruction || !instruction.trim()) {
       return;
@@ -316,7 +316,7 @@ export class AgentController implements vscode.Disposable {
       await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
-          title: `PerplexiCode: Правка ${relPath}…`,
+          title: `PerplexiCode: Editing ${relPath}…`,
           cancellable: true,
         },
         async (progress, token) => {
@@ -335,7 +335,7 @@ export class AgentController implements vscode.Disposable {
             onStreamSnapshot: (snap) => {
               this.quickEditDocs.set(afterUri.toString(), snap.previewFullDocument);
               emitter.fire(afterUri);
-              progress.report({ message: `+${snap.added} / -${snap.removed} строк` });
+              progress.report({ message: `+${snap.added} / -${snap.removed} lines` });
             },
           });
           if (!abort.signal.aborted) {
@@ -350,11 +350,11 @@ export class AgentController implements vscode.Disposable {
       }
 
       const choice = await vscode.window.showInformationMessage(
-        `PerplexiCode: Применить быструю правку к ${relPath} (${diffStatsLabel})?`,
-        'Применить правку',
-        'Отменить'
+        `PerplexiCode: Apply the quick edit to ${relPath} (${diffStatsLabel})?`,
+        'Apply Edit',
+        'Cancel'
       );
-      if (choice === 'Применить правку') {
+      if (choice === 'Apply Edit') {
         const wsEdit = new vscode.WorkspaceEdit();
         wsEdit.replace(doc.uri, selectionRange, finalReplacement);
         await vscode.workspace.applyEdit(wsEdit);
@@ -450,28 +450,28 @@ export class AgentController implements vscode.Disposable {
     const extraConfigs = readSetting<string[]>('perplexicodeKilo.mcp.extraConfigs', []);
     const servers = loadMcpServers(cwd, { extraConfigs }).filter((s) => s.type !== 'stdio' && Boolean(s.url));
     if (servers.length === 0) {
-      void vscode.window.showInformationMessage('PerplexiCode: нет настроенных HTTP/SSE MCP-серверов для OAuth входа.');
+      void vscode.window.showInformationMessage('PerplexiCode: no HTTP/SSE MCP servers are configured for OAuth sign-in.');
       return;
     }
     let targetName = name;
     if (!targetName) {
       const picked = await vscode.window.showQuickPick(
         servers.map((s) => ({ label: s.name, description: s.url, detail: `${s.type} · ${s.scope}` })),
-        { placeHolder: 'Выберите HTTP/SSE MCP-сервер для OAuth входа' }
+        { placeHolder: 'Pick an HTTP/SSE MCP server to sign in with OAuth' }
       );
       if (!picked) return;
       targetName = picked.label;
     }
     const server = servers.find((s) => s.name === targetName);
     if (!server || !server.url) {
-      void vscode.window.showErrorMessage(`PerplexiCode: HTTP/SSE MCP-сервер '${targetName}' не найден.`);
+      void vscode.window.showErrorMessage(`PerplexiCode: HTTP/SSE MCP server '${targetName}' not found.`);
       return;
     }
     try {
       await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
-          title: `PerplexiCode: OAuth вход в MCP '${server.name}' (ожидание браузера)…`,
+          title: `PerplexiCode: OAuth sign-in to MCP '${server.name}' (waiting for the browser)…`,
           cancellable: true,
         },
         async (_progress, cancellationToken) => {
@@ -490,12 +490,12 @@ export class AgentController implements vscode.Disposable {
         }
       );
       this.mcpOAuthAuthenticated.add(`${server.name}::${server.url}`);
-      void vscode.window.showInformationMessage(`PerplexiCode: OAuth токен для MCP '${server.name}' сохранён в SecretStorage.`);
+      void vscode.window.showInformationMessage(`PerplexiCode: OAuth token for MCP '${server.name}' saved to SecretStorage.`);
       await this.mcpConnect(server.name);
     } catch (error) {
       const msg = (error as Error).message || String(error);
       this.output.appendLine(`[mcp-oauth] login error (${server.name}): ${msg}`);
-      void vscode.window.showErrorMessage(`PerplexiCode: OAuth вход в '${server.name}' не удался: ${msg}`);
+      void vscode.window.showErrorMessage(`PerplexiCode: OAuth sign-in to '${server.name}' failed: ${msg}`);
     } finally {
       this.postState();
     }
@@ -507,14 +507,14 @@ export class AgentController implements vscode.Disposable {
     const extraConfigs = readSetting<string[]>('perplexicodeKilo.mcp.extraConfigs', []);
     const servers = loadMcpServers(cwd, { extraConfigs }).filter((s) => s.type !== 'stdio' && Boolean(s.url));
     if (servers.length === 0) {
-      void vscode.window.showInformationMessage('PerplexiCode: нет настроенных HTTP/SSE MCP-серверов.');
+      void vscode.window.showInformationMessage('PerplexiCode: no HTTP/SSE MCP servers are configured.');
       return;
     }
     let targetName = name;
     if (!targetName) {
       const picked = await vscode.window.showQuickPick(
         servers.map((s) => ({ label: s.name, description: s.url, detail: `${s.type} · ${s.scope}` })),
-        { placeHolder: 'Выберите HTTP/SSE MCP-сервер для удаления OAuth токена' }
+        { placeHolder: 'Pick an HTTP/SSE MCP server to remove its OAuth token' }
       );
       if (!picked) return;
       targetName = picked.label;
@@ -523,7 +523,7 @@ export class AgentController implements vscode.Disposable {
     if (!server || !server.url) return;
     await this.mcpOAuthStore.remove(server.name, server.url);
     this.mcpOAuthAuthenticated.delete(`${server.name}::${server.url}`);
-    void vscode.window.showInformationMessage(`PerplexiCode: OAuth токен для MCP '${server.name}' удалён из SecretStorage.`);
+    void vscode.window.showInformationMessage(`PerplexiCode: OAuth token for MCP '${server.name}' removed from SecretStorage.`);
     this.postState();
   }
 
@@ -533,7 +533,7 @@ export class AgentController implements vscode.Disposable {
     await this.restoreMcpCredentials(cwd);
     const registry = this.mcpFor(cwd);
     if (!registry) {
-      void vscode.window.showErrorMessage('PerplexiCode: MCP отключён (perplexicodeKilo.mcp.enabled).');
+      void vscode.window.showErrorMessage('PerplexiCode: MCP is turned off (perplexicodeKilo.mcp.enabled).');
       return;
     }
     try {
@@ -545,7 +545,7 @@ export class AgentController implements vscode.Disposable {
     } catch (error) {
       const msg = (error as Error).message || String(error);
       this.output.appendLine(`[mcp-prompt] ${serverName}:${promptName} failed: ${msg}`);
-      void vscode.window.showErrorMessage(`PerplexiCode: ошибка MCP-промпта ${serverName}:${promptName}: ${msg}`);
+      void vscode.window.showErrorMessage(`PerplexiCode: MCP prompt ${serverName}:${promptName} failed: ${msg}`);
     }
   }
 
@@ -1716,7 +1716,7 @@ export class AgentController implements vscode.Disposable {
         }
         const handle = this.taskWorktrees.get(task.id);
         if (!handle) {
-          this.post({ type: 'toast', text: 'Worktree для этой задачи уже закрыт или не найден' }, webview);
+          this.post({ type: 'toast', text: 'The worktree for this task is already closed or missing' }, webview);
           break;
         }
         try {
@@ -1751,7 +1751,7 @@ export class AgentController implements vscode.Disposable {
         }
         const handle = this.taskWorktrees.get(task.id);
         if (!handle) {
-          this.post({ type: 'toast', text: 'Worktree для этой задачи уже удалён' }, webview);
+          this.post({ type: 'toast', text: 'The worktree for this task is already removed' }, webview);
           break;
         }
         try {

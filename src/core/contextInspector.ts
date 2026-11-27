@@ -73,8 +73,8 @@ function describeMessageLabelAndReason(
   if (content.includes('<compacted_context')) {
     return {
       category: 'compacted',
-      label: `Сжатая сводка истории (#${index})`,
-      reason: 'Структурированная сводка предыдущих шагов (изменённые файлы, гипотезы, ограничения, todo)',
+      label: `Compacted history summary (#${index})`,
+      reason: 'Structured summary of earlier steps (modified files, hypotheses, constraints, todo)',
       canExclude: true,
     };
   }
@@ -82,8 +82,8 @@ function describeMessageLabelAndReason(
   if (index === 0) {
     return {
       category: 'message',
-      label: 'Исходная задача (#0)',
-      reason: 'Постановка задачи и стартовый контекст рабочей директории',
+      label: 'Original task (#0)',
+      reason: 'Task statement and starting context of the working directory',
       canExclude: false,
     };
   }
@@ -97,12 +97,12 @@ function describeMessageLabelAndReason(
     const target = toolResultMatch[2] ? ` (${toolResultMatch[2]})` : '';
     return {
       category: 'tool_result',
-      label: `Результат ${toolName}${target} (#${index})`,
+      label: `${toolName} result${target} (#${index})`,
       reason: isVeryLastUserTurn
-        ? 'Актуальный результат последнего инструмента для следующего шага'
+        ? 'Latest tool result for the next step'
         : isRecentTail
-          ? `Входит в последние ${keepSteps} шагов (не сжимается автоматически)`
-          : 'Исторический результат вызова инструмента в окне контекста',
+          ? `Within the last ${keepSteps} steps (never auto-compacted)`
+          : 'Earlier tool result inside the context window',
       canExclude: !isVeryLastUserTurn,
     };
   }
@@ -112,20 +112,20 @@ function describeMessageLabelAndReason(
     const callHint = toolCallMatch ? `: ${toolCallMatch[1]}` : '';
     return {
       category: 'message',
-      label: `Ответ агента${callHint} (#${index})`,
+      label: `Agent reply${callHint} (#${index})`,
       reason: isRecentTail
-        ? `Входит в последние ${keepSteps} шагов (сохраняется дословно)`
-        : 'Предыдущий шаг рассуждений и вызова инструмента агента',
+        ? `Within the last ${keepSteps} steps (kept verbatim)`
+        : 'Earlier agent reasoning and tool call',
       canExclude: true,
     };
   }
 
   return {
     category: 'message',
-    label: `Сообщение пользователя (#${index})`,
+    label: `User message (#${index})`,
     reason: isVeryLastUserTurn
-      ? 'Текущий запрос пользователя к модели'
-      : 'Уточнение пользователя в ходе диалога',
+      ? 'Current user request to the model'
+      : 'User clarification during the conversation',
     canExclude: !isVeryLastUserTurn,
   };
 }
@@ -163,11 +163,11 @@ export function assembleAndInspectPrompt(inputs: PromptAssemblyInputs): {
   items.push({
     id: 'system_base',
     category: 'system',
-    label: 'Системный промпт и схемы инструментов',
+    label: 'System prompt and tool schemas',
     chars: pureBaseLen,
     originalChars: pureBaseLen,
     status: 'included',
-    reason: 'Определяет роль режима, формат XML-инструментов и правила безопасности (обязателен)',
+    reason: 'Defines the mode role, XML tool format and safety rules (required)',
     canExclude: false,
     excluded: false,
     preview: safePreview(inputs.baseSystemPrompt),
@@ -183,13 +183,13 @@ export function assembleAndInspectPrompt(inputs: PromptAssemblyInputs): {
     items.push({
       id: 'rules',
       category: 'rules',
-      label: 'Правила проекта и инструкции (CLAUDE.md / rules)',
+      label: 'Project rules and instructions (CLAUDE.md / rules)',
       chars: isExcluded ? 0 : rawLen,
       originalChars: rawLen,
       status: isExcluded ? 'excluded' : 'included',
       reason: isExcluded
-        ? 'Исключено пользователем через инспектор контекста'
-        : 'Локальные правила репозитория, навыки и пользовательские инструкции',
+        ? 'Excluded by you in the Context Inspector'
+        : 'Local repository rules, skills and custom instructions',
       canExclude: true,
       excluded: isExcluded,
       preview: safePreview(inputs.rulesBlock),
@@ -206,13 +206,13 @@ export function assembleAndInspectPrompt(inputs: PromptAssemblyInputs): {
     items.push({
       id: 'mcp',
       category: 'mcp',
-      label: 'Инструменты и ресурсы MCP',
+      label: 'MCP tools and resources',
       chars: isExcluded ? 0 : rawLen,
       originalChars: rawLen,
       status: isExcluded ? 'excluded' : 'included',
       reason: isExcluded
-        ? 'Исключено пользователем через инспектор контекста'
-        : 'Схемы подключённых MCP-серверов',
+        ? 'Excluded by you in the Context Inspector'
+        : 'Schemas of connected MCP servers',
       canExclude: true,
       excluded: isExcluded,
       preview: safePreview(inputs.mcpSection),
@@ -244,15 +244,15 @@ export function assembleAndInspectPrompt(inputs: PromptAssemblyInputs): {
     items.push({
       id: 'repo_map',
       category: 'repo_map',
-      label: 'Карта репозитория (@repo)',
+      label: 'Repository map (@repo)',
       chars: repoMapExcluded ? 0 : wrappedRepo.length,
       originalChars: wrappedRepo.length,
       status: repoMapExcluded ? 'excluded' : omittedFiles > 0 ? 'compacted' : 'included',
       reason: repoMapExcluded
-        ? 'Исключено пользователем через инспектор контекста'
-        : inputs.repoMapReason || 'Символы, сигнатуры, импорты и связанные тесты с приоритетом активного файла и diff',
+        ? 'Excluded by you in the Context Inspector'
+        : inputs.repoMapReason || 'Symbols, signatures, imports and related tests, active file and diff first',
       compactionDetail: !repoMapExcluded && omittedFiles > 0
-        ? `Скрыто ${omittedFiles} низкоприоритетных файлов по жёсткому бюджету карты`
+        ? `${omittedFiles} low-priority files hidden by the map budget`
         : undefined,
       canExclude: true,
       excluded: repoMapExcluded,
@@ -342,7 +342,7 @@ export function assembleAndInspectPrompt(inputs: PromptAssemblyInputs): {
         chars: 0,
         originalChars: rawLen,
         status: 'excluded',
-        reason: 'Исключено пользователем через инспектор контекста',
+        reason: 'Excluded by you in the Context Inspector',
         canExclude: true,
         excluded: true,
         preview: safePreview(msg.content),
@@ -359,8 +359,8 @@ export function assembleAndInspectPrompt(inputs: PromptAssemblyInputs): {
         chars: 0,
         originalChars: rawLen,
         status: 'omitted',
-        reason: 'Пропущено окном бюджета maxPromptChars (старый шаг вне лимита)',
-        compactionDetail: `Сэкономлено ${rawLen} симв.`,
+        reason: 'Skipped by the maxPromptChars window (older step outside the limit)',
+        compactionDetail: `Saved ${rawLen} chars`,
         canExclude: meta.canExclude,
         excluded: false,
         preview: safePreview(msg.content),
@@ -381,11 +381,11 @@ export function assembleAndInspectPrompt(inputs: PromptAssemblyInputs): {
     if (isCompactedSummary && inputs.lastCompactionStats) {
       const saved = Math.max(0, inputs.lastCompactionStats.before - inputs.lastCompactionStats.after);
       compactedCharsSaved += saved;
-      compactionDetail = `Сжато ${inputs.lastCompactionStats.compactedMessages} сообщ. (${inputs.lastCompactionStats.before} → ${inputs.lastCompactionStats.after} симв.)`;
+      compactionDetail = `Compacted ${inputs.lastCompactionStats.compactedMessages} messages (${inputs.lastCompactionStats.before} → ${inputs.lastCompactionStats.after} chars)`;
     } else if (rendered.wasMiddleTruncated) {
       const saved = Math.max(0, rawLen - rendered.formatted.length);
       compactedCharsSaved += saved;
-      compactionDetail = `Усечена середина длинного сообщения (${rawLen} → ${rendered.formatted.length} симв.)`;
+      compactionDetail = `Middle of a long message truncated (${rawLen} → ${rendered.formatted.length} chars)`;
     }
 
     items.push({
@@ -448,25 +448,25 @@ function formatTurn(speaker: string, content: string): string {
 export function formatContextReportForCli(report: ContextInspectionReport): string {
   const pct = Math.round(report.usageRatio * 100);
   const lines: string[] = [
-    `Инспектор контекста: ${report.totalChars} / ${report.maxPromptChars} симв. (${pct}%), порог авто-сжатия: ${report.autoCompactThresholdChars} симв.`,
+    `Context Inspector: ${report.totalChars} / ${report.maxPromptChars} chars (${pct}%), auto-compact threshold: ${report.autoCompactThresholdChars} chars`,
   ];
   if (report.compactedCharsSaved > 0) {
-    lines.push(`Сэкономлено сжатием/окном: ${report.compactedCharsSaved} симв.`);
+    lines.push(`Saved by compaction/window: ${report.compactedCharsSaved} chars`);
   }
   lines.push('');
   for (const item of report.items) {
     const statusLabel = item.status === 'included'
-      ? 'включено'
+      ? 'included'
       : item.status === 'compacted'
-        ? 'сжато'
+        ? 'compacted'
         : item.status === 'excluded'
-          ? 'исключено'
-          : 'пропущено';
-    const exclTag = item.canExclude ? ` [можно исключить: ${item.id}]` : ' [обязательно]';
-    lines.push(`- [${statusLabel}] ${item.id} (${item.chars} симв.) — ${item.label}${exclTag}`);
-    lines.push(`    почему: ${item.reason}`);
+          ? 'excluded'
+          : 'skipped';
+    const exclTag = item.canExclude ? ` [can exclude: ${item.id}]` : ' [required]';
+    lines.push(`- [${statusLabel}] ${item.id} (${item.chars} chars) — ${item.label}${exclTag}`);
+    lines.push(`    why: ${item.reason}`);
     if (item.compactionDetail) {
-      lines.push(`    сжатие: ${item.compactionDetail}`);
+      lines.push(`    compaction: ${item.compactionDetail}`);
     }
   }
   return lines.join('\n');

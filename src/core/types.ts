@@ -79,7 +79,7 @@ export type CoreEvent =
   | { type: 'denied'; tool: string; reason: string; source: string }
   | { type: 'command_start'; command: string; cwd: string }
   | { type: 'command_end'; command: string; exitCode: number | null; timedOut: boolean; outputTail: string }
-  | { type: 'command_unconfirmed'; command: string; status: 'результат не подтверждён' }
+  | { type: 'command_unconfirmed'; command: string; status: 'outcome not confirmed' }
   | { type: 'banner'; phase: 'waiting_approval' | 'retrying' | 'verifying' | 'needs_attention'; label: string; reason: string; rule: string }
   | { type: 'file_edit'; path: string; created: boolean; added: number; removed: number; checkpoint: number }
   | { type: 'rewind'; checkpoint: number; restoredFiles: number; apiMessagesAfter: number }

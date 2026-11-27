@@ -601,7 +601,7 @@ test('F02: interrupted command is marked "результат не подтвер
       if (turn === 1) {
         text = `<execute_command><command>${cmd}</command></execute_command>`;
       } else if (turn === 2) {
-        assert.match(req.fullPrompt, /результат не подтверждён/i, 'blocked re-run must cite unconfirmed status');
+        assert.match(req.fullPrompt, /outcome not confirmed/i, 'blocked re-run must cite unconfirmed status');
         text = '<read_file><path>state.txt</path></read_file>';
       } else {
         assert.match(req.fullPrompt, /deployed/, 'read_file output must show actual state');
@@ -652,7 +652,7 @@ test('F02: interrupted command is marked "результат не подтвер
   const eventsAfter = SessionJournal.events(taskId, journalDir);
   const unconfirmedEvent = eventsAfter.find((e) => e.type === 'command_unconfirmed');
   assert.ok(unconfirmedEvent && unconfirmedEvent.type === 'command_unconfirmed', 'journal must record command_unconfirmed');
-  assert.match(unconfirmedEvent.status, /результат не подтверждён/);
+  assert.match(unconfirmedEvent.status, /outcome not confirmed/);
 });
 
 // -------------------------------------------------------------------------------------------
@@ -772,17 +772,17 @@ test('F03: task banner & CLI status line expose all 4 Russian states with concre
   await blockedTask.start('Trigger intervention');
 
   const labels = new Set(seenBanners.map((b) => b.label));
-  assert.ok(labels.has('повторяю запрос'), `missing повторяю запрос in ${JSON.stringify(seenBanners)}`);
-  assert.ok(labels.has('жду подтверждения'), `missing жду подтверждения in ${JSON.stringify(seenBanners)}`);
-  assert.ok(labels.has('проверяю результат'), `missing проверяю результат in ${JSON.stringify(seenBanners)}`);
-  assert.ok(labels.has('нужно вмешательство'), `missing нужно вмешательство in ${JSON.stringify(seenBanners)}`);
+  assert.ok(labels.has('retrying request'), `missing retrying request in ${JSON.stringify(seenBanners)}`);
+  assert.ok(labels.has('waiting for approval'), `missing waiting for approval in ${JSON.stringify(seenBanners)}`);
+  assert.ok(labels.has('verifying result'), `missing verifying result in ${JSON.stringify(seenBanners)}`);
+  assert.ok(labels.has('needs attention'), `missing needs attention in ${JSON.stringify(seenBanners)}`);
 
   for (const b of seenBanners) {
     assert.ok(b.reason.length > 0, `banner ${b.label} must include concrete reason`);
     assert.ok(b.rule.length > 0, `banner ${b.label} must include rule name`);
     const cliLine = formatCliStatusLine(b);
     assert.match(cliLine, new RegExp(b.label));
-    assert.match(cliLine, /правило:/);
+    assert.match(cliLine, /rule:/);
   }
 });
 
@@ -800,7 +800,7 @@ test('F04: routeLine reports "не сообщена" when backend omits actual m
     requestedModelLabel: 'Claude 5.5 Sonnet',
     reportedModel: undefined,
   });
-  assert.match(unreported.line, /не сообщена/, 'missing reportedModel must explicitly say "не сообщена"');
+  assert.match(unreported.line, /not reported/, 'missing reportedModel must explicitly say "not reported"');
   assert.match(unreported.line, /→/);
 
   // 2. Fallback route summary when Pro account requests `computer` mode with `stopOnFallback: false`
@@ -830,7 +830,7 @@ test('F04: routeLine reports "не сообщена" when backend omits actual m
   });
   assert.ok(resAllowed.route?.fallbackUsed, 'Pro account requesting computer mode must mark fallbackUsed');
   assert.match(resAllowed.route!.line, /Computer.*→.*Search/i);
-  assert.match(resAllowed.route!.line, /не сообщена/);
+  assert.match(resAllowed.route!.line, /not reported/);
 
   // 3. Same Pro pool with `stopOnFallback: true` MUST throw TransportError('...', 'fallback_blocked') before sending query!
   const clientNeverCalled = new SseReplayClient([]);
@@ -1143,7 +1143,7 @@ test('F08: diagnostics bundle & `pcode doctor --bundle` include versions/stages/
   journal.append({
     type: 'banner',
     phase: 'waiting_approval',
-    label: 'жду подтверждения',
+    label: 'waiting for approval',
     reason: `Команда требует подтверждения (${TOXIC.csrf})`,
     rule: 'permissions.ask',
   });
@@ -1198,7 +1198,7 @@ test('F08: diagnostics bundle & `pcode doctor --bundle` include versions/stages/
   assert.ok(bundle.stages.some((s) => s.stage === 'request_end' && s.durationMs === 412));
   assert.ok(bundle.stages.some((s) => s.stage === 'denied:execute_command' && s.decision === 'deny'));
   assert.ok(bundle.stages.some((s) => s.stage === 'command_end' && typeof s.durationMs === 'number'));
-  assert.ok(bundle.stages.some((s) => s.stage === 'banner:waiting_approval' && s.decision === 'жду подтверждения'));
+  assert.ok(bundle.stages.some((s) => s.stage === 'banner:waiting_approval' && s.decision === 'waiting for approval'));
 
   const cliJs = path.resolve(process.cwd(), 'out', 'cli.js');
   const outPath = path.join(home, 'diag-out.json');
@@ -1207,7 +1207,7 @@ test('F08: diagnostics bundle & `pcode doctor --bundle` include versions/stages/
     env: { HOME: home, USERPROFILE: home, PERPLEXICODE_HOME: perpHome },
   });
   assert.equal(cliRun.code, 0, cliRun.stderr);
-  assert.match(cliRun.stderr, /Предпросмотр пакета диагностики/, 'CLI must display preview before exporting');
+  assert.match(cliRun.stderr, /Diagnostics bundle preview/, 'CLI must display preview before exporting');
   const exported = fs.readFileSync(outPath, 'utf8');
   const parsedExport = JSON.parse(exported);
   assert.equal(parsedExport.redacted, true);

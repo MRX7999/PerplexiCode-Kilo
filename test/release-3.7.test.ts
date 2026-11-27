@@ -122,7 +122,7 @@ test('F16: inspectMainCheckoutDirty detects uncommitted edits and untracked file
     assert.equal(dirty.dirty, true);
     assert.ok(dirty.dirtyFiles.includes('src/app.ts'));
     assert.ok(dirty.dirtyFiles.includes('src/uncommitted.ts'));
-    assert.match(dirty.warningMessage || '', /незакоммиченные изменения/);
+    assert.match(dirty.warningMessage || '', /uncommitted changes/);
 
     // Worktree is created from HEAD (VERSION = 1, without uncommitted draft) and carries warning
     const handle = await createIsolatedWorktree({ cwd: repo, name: 'feat-iso' });

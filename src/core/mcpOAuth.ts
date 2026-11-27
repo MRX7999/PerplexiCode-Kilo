@@ -295,7 +295,7 @@ export class SystemKeychainMcpOAuthStore implements McpOAuthTokenStore {
     }
 
     if (!this.allowFileFallback) {
-      throw new Error('Системное хранилище ключей недоступно, а файловый fallback отключён.');
+      throw new Error('The system keychain is unavailable and the file fallback is disabled.');
     }
     const map = this.readFallbackMap();
     map[account] = serialized;
@@ -583,7 +583,7 @@ export async function performMcpOAuthLogin(options: McpOAuthLoginOptions): Promi
         return;
       }
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end('<html><body><h3>PerplexiCode: вход выполнен</h3><p>Окно браузера можно закрыть.</p></body></html>');
+      res.end('<html><body><h3>PerplexiCode: signed in</h3><p>You can close this browser window.</p></body></html>');
       resolveCallback(code.trim());
     } catch (err) {
       res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });

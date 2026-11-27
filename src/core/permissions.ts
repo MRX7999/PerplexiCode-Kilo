@@ -668,7 +668,7 @@ export function evaluatePermission(config: PermissionConfig, tool: GateToolCall,
     if (protectedHit) {
       return {
         decision: 'ask',
-        reason: `Защищённый конфиг (${protectedHit}) всегда требует явного подтверждения.`,
+        reason: `Protected config (${protectedHit}) always requires explicit approval.`,
         source: `protected-config: ${protectedHit}`,
       };
     }
@@ -678,7 +678,7 @@ export function evaluatePermission(config: PermissionConfig, tool: GateToolCall,
     if (protectedCmdHit) {
       return {
         decision: 'ask',
-        reason: `Команда затрагивает защищённый конфиг (${protectedCmdHit}) и требует явного подтверждения.`,
+        reason: `The command touches a protected config (${protectedCmdHit}) and requires explicit approval.`,
         source: `protected-config: ${protectedCmdHit}`,
       };
     }
@@ -686,7 +686,7 @@ export function evaluatePermission(config: PermissionConfig, tool: GateToolCall,
     if (!shellAnalysis || !shellAnalysis.valid) {
       return {
         decision: 'ask',
-        reason: shellAnalysis?.reason || 'Неразборчивый синтаксис shell-команды требует ручного подтверждения.',
+        reason: shellAnalysis?.reason || 'Unparseable shell syntax requires manual approval.',
         source: 'shell.unparseable',
       };
     }

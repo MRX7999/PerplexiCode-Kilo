@@ -332,8 +332,8 @@ test('F12: assembleAndInspectPrompt reports reasons, compacted state, and applie
   assert.equal(afterExclude.report.excludedCount, 2);
 
   const cliText = formatContextReportForCli(afterExclude.report);
-  assert.match(cliText, /Инспектор контекста:/);
-  assert.match(cliText, /исключено/i);
+  assert.match(cliText, /Context Inspector:/);
+  assert.match(cliText, /excluded/i);
 });
 
 // -----------------------------------------------------------------------------------------------
@@ -383,12 +383,12 @@ test('F13: structuredAutoCompact triggers at threshold of maxPromptChars, emits 
 
   assert.ok(compacted.compactedMessages > 0);
   // Required 4 sections in Russian:
-  assert.match(compacted.summary, /## Изменённые файлы/);
+  assert.match(compacted.summary, /## Modified files/);
   assert.match(compacted.summary, /src\/pricing\.ts/);
-  assert.match(compacted.summary, /## Проверенные гипотезы/);
+  assert.match(compacted.summary, /## Verified hypotheses/);
   assert.match(compacted.summary, /npm test/);
-  assert.match(compacted.summary, /## Ограничения/);
-  assert.match(compacted.summary, /## Статус todo/);
+  assert.match(compacted.summary, /## Constraints/);
+  assert.match(compacted.summary, /## Todo status/);
   assert.match(compacted.summary, /Fix src\/pricing\.ts/);
   assert.match(compacted.summary, /Verify edge cases/);
 

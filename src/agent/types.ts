@@ -166,7 +166,7 @@ export interface ModelSelection {
 }
 
 export type TaskBannerPhase = 'waiting_approval' | 'retrying' | 'verifying' | 'needs_attention';
-export type TaskBannerLabel = 'жду подтверждения' | 'повторяю запрос' | 'проверяю результат' | 'нужно вмешательство';
+export type TaskBannerLabel = 'waiting for approval' | 'retrying request' | 'verifying result' | 'needs attention';
 
 export interface TaskStateBanner {
   phase: TaskBannerPhase;
@@ -182,7 +182,7 @@ export interface TaskStatus {
   requestCount: number;
   /** F03: Transparent task state banner with concrete reason and rule. */
   banner?: TaskStateBanner;
-  /** F04: Last request route line: "<запрошенный режим> → <фактический>, <причина>". */
+  /** F04: Last request route line: "<requested mode> → <actual>, <reason>". */
   routeLine?: string;
   /** F16/F17: Active isolated worktree name when task runs inside a git worktree. */
   worktreeName?: string;
