@@ -911,10 +911,22 @@ function renderAutoApprove(): void {
     const idx = enabledNames.indexOf('Commands');
     if (idx >= 0) enabledNames[idx] = 'All commands';
   }
+  const fullAuto = Boolean(state.settings.fullAuto);
+  const fullAutoPill = `<button class="pill fa-pill ${fullAuto ? 'on' : ''}" data-action="toggle-full-auto" aria-pressed="${fullAuto}" title="${fullAuto ? 'Full Auto is on: nothing waits for you. Click to turn it off.' : 'Full Auto: run the whole task without asking. Commands, edits and tools run on their own, the agent answers its own questions and installs clean skills it finds.'}">${icons.preset}<span>Full Auto</span></button>`;
+  if (fullAuto) {
+    el.innerHTML = `
+    <div class="aa-head">
+      <button class="aa-toggle" id="aa-toggle"><span>Full Auto:</span> <span class="muted">nothing waits for you</span>${autoApproveOpen ? icons.chevronDown : icons.chevronRight}</button>
+      ${fullAutoPill}
+    </div>
+    ${autoApproveOpen ? `<div class="aa-body"><div class="aa-note muted">Commands, edits, MCP tools and web fetches run without approval. The agent answers its own questions, extends the request limit twice and installs up to 3 skills it finds when their scan is clean.<br>Still refused: deny and ask rules, denied commands, sudo, protected agent configs, secrets, edits outside the workspace.</div></div>` : ''}`;
+    return;
+  }
   el.innerHTML = `
     <div class="aa-head">
       <label class="switch small" title="Enable auto-approve"><input type="checkbox" data-setting="autoApprove.enabled" ${auto.enabled ? 'checked' : ''}><span></span></label>
       <button class="aa-toggle" id="aa-toggle"><span>Auto-approve:</span> <span class="muted">${auto.enabled ? (enabledNames.join(', ') || 'None') : 'Off'}</span>${autoApproveOpen ? icons.chevronDown : icons.chevronRight}</button>
+      ${fullAutoPill}
     </div>
     ${autoApproveOpen ? `<div class="aa-body">${AUTO_APPROVE_ITEMS.map(([key, label, description]) => `
       <label class="aa-item" title="${escapeHtml(description)}"><input type="checkbox" data-setting="autoApprove.${key}" ${auto[key] ? 'checked' : ''}> ${escapeHtml(label)}</label>`).join('')}
@@ -1375,6 +1387,7 @@ function renderSettings(): void {
       break;
     case 'autoApprove':
       body = `
+        ${field('fullAuto', 'Full Auto', 'Never wait for me: run commands, edits and tools without approval, answer questions on its own and install clean skills it finds. Deny rules, denied commands, sudo, protected configs, secrets and edits outside the workspace are refused instead of asked', checkbox('fullAuto', Boolean(s.fullAuto)))}
         ${field('autoApprove.enabled', 'Enable auto-approve', 'Master switch for every rule below', checkbox('autoApprove.enabled', s.autoApprove.enabled))}
         ${AUTO_APPROVE_ITEMS.map(([key, label, description]) => field(`autoApprove.${key}`, label, description, checkbox(`autoApprove.${key}`, s.autoApprove[key]))).join('')}
         ${field('maxRequestsPerTask', 'Max requests', 'Ask before continuing after this many consecutive requests', number('maxRequestsPerTask', s.maxRequests, 1, 500))}`;
@@ -1994,6 +2007,9 @@ document.addEventListener('click', (event) => {
     case 'openSettingsJson': post({ type: 'openSettingsJson' }); break;
     case 'copyDiagnostics': post({ type: 'requestDiagnosticsPreview', taskId: state?.task?.id }); break;
     case 'inspectContext': post({ type: 'requestContextInspection', taskId: state?.task?.id }); break;
+    case 'toggle-full-auto':
+      post({ type: 'toggleFullAuto', enabled: !state?.settings?.fullAuto });
+      break;
     case 'toggle-worktree': {
       const next = !(state?.worktree?.enabled || state?.settings?.worktreeEnabled);
       post({ type: 'toggleWorktree', enabled: next });

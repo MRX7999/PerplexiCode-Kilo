@@ -148,6 +148,8 @@ export interface CliOptions {
   crossModelReviewModel?: string;
   /** 4.1 Auto Skill. */
   autoSkills?: boolean;
+  /** 4.2 Full Auto: only this flag turns it on; settings files in a repository cannot. */
+  fullAuto?: boolean;
   skillAs?: string;
   force?: boolean;
   allowRisky?: boolean;
@@ -377,6 +379,8 @@ export function parseArgs(argv: string[]): CliOptions {
       case '--cross-review-model': options.crossModelReviewModel = value(); break;
       case '--auto-skills': options.autoSkills = true; break;
       case '--no-auto-skills': options.autoSkills = false; break;
+      case '--full-auto': options.fullAuto = true; break;
+      case '--no-full-auto': options.fullAuto = false; break;
       case '--as': options.skillAs = value().trim(); break;
       case '--force': options.force = true; break;
       case '--allow-risky': options.allowRisky = true; break;
@@ -445,6 +449,9 @@ Options:
   --max-rpm <n>               per-account requests-per-minute cap (default: 12)
   -w, --worktree [name]       isolate the task in a detached git worktree from HEAD (blocks symlink & git -C escapes)
   --auto-skills               let the agent search ClawHub / skills.sh and install a skill (every install asks)
+  --full-auto                 never wait for a person: tools and commands run without approval, the agent answers
+                              its own questions and installs clean skills it finds; deny rules, denied commands,
+                              protected configs and secrets are refused instead of asked
   --max-parallel-subtasks <n> max concurrent Orchestrator subagents (1..16, default 3)
   --cwd <dir>                 workspace folder (default: current)
   --trust-project             run hooks and project MCP servers from project settings in headless mode
@@ -749,6 +756,7 @@ async function buildSession(options: CliOptions, ui: SessionUi): Promise<Session
     crossModelReview: options.crossModelReview ?? settings.crossModelReview ?? false,
     crossModelReviewModel: options.crossModelReviewModel ?? settings.crossModelReviewModel,
     autoSkills: options.autoSkills ?? settings.autoSkills ?? false,
+    fullAuto: Boolean(options.fullAuto),
     skillRegistries: settings.skillRegistries,
   };
   let sessionRef: CoreSession | undefined;

@@ -2,6 +2,26 @@
 
 All notable changes to PerplexiCode Kilo. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [4.2.0] - 2026-11-28
+
+### Added
+- **Full Auto.** One opt-in switch for unattended tasks: `perplexicodeKilo.agent.fullAuto` (default `false`, application scope, so only user settings can enable it), the **Full Auto** button above the composer, **PerplexiCode: Toggle Full Auto**, and `pcode --full-auto`. Nothing waits for a person: commands (including shell syntax the parser cannot check, such as `"$bin" --version`, `case`, functions, `[[ … ]]`), edits, MCP tools, web fetches, mode switches and subtasks run without approval; `ask_followup_question` is answered by the agent (first suggestion, otherwise "decide and state the assumption"); a plain mid-task reply is followed by a "continue" reminder; the request limit is extended twice; API errors are retried and one mistake recovery is automatic.
+- Guardrails are **refused instead of asked** in Full Auto, with a visible `Blocked` entry and a final `[DENIED] [Full Auto]` result for the model: `permissions.ask` rules, hooks that answer `ask`, denied command prefixes, `sudo` without an explicit allow, writes to protected agent / MCP / hooks configs, secrets in commands and edits outside the workspace. `permissions.deny`, the secrets list and plan mode are unchanged.
+- Skills in Full Auto: `find_skill` and `install_skill` are available without `autoSkills` (also in Orchestrator). An install needs no approval only when the source was returned by `find_skill` in the same task and the scan verdict is `clean`, at most 3 per task; everything else is refused.
+- `find_skill` lists matching skills from the bundled catalog as `catalog:<id>`; `install_skill` accepts `catalog:<id>` (no download).
+- With Full Auto on, a task preset installs its missing bundled subagents and skills without the dialog.
+- A waiting approval is released when Full Auto is switched on, unless Full Auto would refuse it.
+- README: "What's new · 4.2" section, `docs/visuals/full-auto` diagram, settings, command and troubleshooting rows. SECURITY.md: Full Auto in the threat model.
+
+### Fixed
+- Explained and documented why a command could still ask with auto-approve and **All commands (\*)** on: the rule `shell.unparseable` for commands whose program is chosen at run time. The rule is unchanged outside Full Auto.
+
+### Security
+- The deny checks used by Full Auto look at every place a command can start, including `if … then`, loops, `$(…)`, backticks, `{ …; }`, `bash -c "…"` and `eval`, so a denied prefix or `sudo` hidden in control flow is refused.
+- `permissions.deny` and `permissions.ask` rules (`.claude/settings.json`, `.perplexicode/settings.json`, `--disallowedTools`) are matched against the same command positions, in every mode. `if true; then git push; fi` is now denied by `Bash(git push:*)`; before it fell through to the generic `shell.unparseable` question.
+- A command with shell syntax the parser cannot check that also hits an ask rule or mentions a secret is refused in Full Auto (it still asks otherwise).
+- Project files (`.perplexicode/settings.json`, `.claude/settings.json`, workspace settings) cannot enable Full Auto.
+
 ## [4.1.0] - 2026-11-27
 
 ### Added

@@ -477,6 +477,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     controller.refreshLibrary();
     controller.showView('library');
   });
+  register('perplexicodeKilo.toggleFullAuto', async () => {
+    await controller.setFullAuto(!controller.getSettings().fullAuto);
+    controller.postState();
+  });
   register('perplexicodeKilo.installSkillFromSource', async (source?: unknown) => {
     const value = typeof source === 'string' && source.trim() ? source.trim() : await vscode.window.showInputBox({
       title: 'Install skill from source',

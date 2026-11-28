@@ -131,6 +131,12 @@ export interface AgentSettings {
   crossModelReviewModel?: string;
   /** 4.1 Auto Skill: offer find_skill / install_skill so the agent can pull skills from public sources. Default false. */
   autoSkills?: boolean;
+  /**
+   * 4.2 Full Auto: the task never waits for a person. Tools and commands run without approval,
+   * questions are answered by the agent itself and matching skills are installed on their own.
+   * Guardrails that exist to get a human yes are refused instead of skipped.
+   */
+  fullAuto?: boolean;
   /** 4.1 Auto Skill: registries find_skill searches (clawhub, skills-sh). Default both. */
   skillRegistries?: Array<'clawhub' | 'skills-sh'>;
 }

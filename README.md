@@ -5,7 +5,7 @@
 <img src="docs/visuals/hero.png" alt="PerplexiCode Kilo: one agent core for the IDE and pcode CLI, with MCP integrations and configurable approvals" width="100%" />
 
 [![Release](https://img.shields.io/github/v/release/MRX7999/PerplexiCode-Kilo?label=release&color=20b8cd)](https://github.com/MRX7999/PerplexiCode-Kilo/releases/latest)
-[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-4.1.0-007acc)](https://marketplace.visualstudio.com/items?itemName=MRX7999.perplexicode-kilo)
+[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-4.2.0-007acc)](https://marketplace.visualstudio.com/items?itemName=MRX7999.perplexicode-kilo)
 [![Open VSX](https://img.shields.io/open-vsx/v/MRX7999/perplexicode-kilo?label=Open%20VSX&color=a60ee5)](https://open-vsx.org/extension/MRX7999/perplexicode-kilo)
 [![Open VSX downloads](https://img.shields.io/open-vsx/dt/MRX7999/perplexicode-kilo?label=installs&color=5eead4)](https://open-vsx.org/extension/MRX7999/perplexicode-kilo)
 [![CI](https://img.shields.io/github/actions/workflow/status/MRX7999/PerplexiCode-Kilo/ci.yml?branch=master&label=CI)](https://github.com/MRX7999/PerplexiCode-Kilo/actions/workflows/ci.yml)
@@ -14,7 +14,7 @@
 [![Antigravity IDE](https://img.shields.io/badge/Antigravity%20IDE-supported-4285f4)](https://antigravity.google/download)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-[Overview](#features) · [Install](#install) · [Auto Skill · 4.1](#41-auto-skill) · [What's new in 4.0](#40-remote-core-lsp-repl--quick-edit) · [3.5–3.8](#38-mcp-oauth-slash-prompts--cross-model-review) · [Interface & agents](#31-agents-skills--presets) · [MCP catalog](#34-mcp-catalog-security-and-parrot-os) · [MCP & compute](#33-mcp-servers-and-compute-modes) · [CLI](#30-headless-core--pcode-cli) · [Models](#models) · [Commands](#commands-and-shortcuts) · [Settings](#settings) · [Migrating to 4.0](#migrating-to-40) · [Build](#build-from-source) · [Help](#troubleshooting)
+[Overview](#features) · [Install](#install) · [Full Auto · 4.2](#42-full-auto) · [Auto Skill · 4.1](#41-auto-skill) · [What's new in 4.0](#40-remote-core-lsp-repl--quick-edit) · [3.5–3.8](#38-mcp-oauth-slash-prompts--cross-model-review) · [Interface & agents](#31-agents-skills--presets) · [MCP catalog](#34-mcp-catalog-security-and-parrot-os) · [MCP & compute](#33-mcp-servers-and-compute-modes) · [CLI](#30-headless-core--pcode-cli) · [Models](#models) · [Commands](#commands-and-shortcuts) · [Settings](#settings) · [Migrating to 4.0](#migrating-to-40) · [Build](#build-from-source) · [Help](#troubleshooting)
 
 [Core reference](docs/CORE-3.0.md) · [Security policy & threat model](SECURITY.md) · [Security & Parrot OS guide](docs/MCP-SECURITY-PARROT.md)
 
@@ -40,6 +40,7 @@ Plan, write, run and debug code with GPT-6.2 Sol, Claude Opus 5.5, Gemini 4 Carb
 | **Six modes** | Code, Architect, Ask, Debug, Orchestrator and Review, each with its own prompt and tool permissions. |
 | **Diff approvals** | Every edit is shown as an inline diff with **Save** / **Reject**; commands get **Run** / **Reject**. |
 | **Auto-approve** | Separate toggles for reads, writes, commands (allow and deny prefixes), mode switches, subtasks, todo updates and retries, plus a request limit. |
+| **Full Auto** | One switch for unattended tasks: nothing waits for approval, the agent answers its own questions, gathers skills and finishes. Guardrails are refused instead of asked. |
 | **Checkpoints** | A checkpoint after every edit with one-click **Restore**. |
 | **Context mentions** | `@repo` (structural symbol/import/test map), `@/path/to/file`, `@/folder/`, `@problems`, `@git-changes`, `@selection`. |
 | **Editor actions** | Explain / Fix / Improve / Add to Context from the context menu and lightbulb quick fixes; terminal selection to context. |
@@ -187,9 +188,54 @@ Sessions are kept in the editor's [SecretStorage](https://code.visualstudio.com/
 
 </details>
 
+<a id="42-full-auto"></a>
+<a id="whats-new-in-42"></a>
+<details open>
+<summary><strong>What's new · 4.2</strong> · Full Auto: give it the task, it gathers skills, decides and finishes</summary>
+
+<img src="docs/visuals/full-auto.png" alt="Full Auto flow: one prompt, find_skill and install with a clean scan only (max 3), work with no approvals and self-answered questions, finish with tests, lint, build and a list of assumptions. Runs without asking: commands including dynamic shell syntax, edits, MCP tools, web, subtasks. Refused, never asked: deny and ask rules, denied commands, sudo, protected configs, secrets, files outside the workspace. Stops by itself after 3 times the request limit, repeated API or tool errors, or the Stop button" width="100%" />
+
+**Why it exists.** Auto-approve with every box ticked, **All commands (\*)** included, still stopped on some commands. A script like `for name in testssl.sh testssl; do if bin=$(command -v "$name"); then "$bin" --version; fi; done` runs a program whose name is only known at run time, so the shell parser cannot check it against the allow and deny lists and the rule `shell.unparseable` asks. The same happens with `case … esac`, shell functions, `[[ … ]]` and `{ …; }` groups. Protected configs and skill installs also always ask. That is the right default when you are watching, and it makes an unattended run impossible.
+
+**Full Auto** is one switch for the other case: you give the task and leave.
+
+| Without Full Auto | With Full Auto |
+| --- | --- |
+| Commands the parser cannot reduce to plain commands ask, even with `*` | They run |
+| Edits, MCP tools, web fetches, mode switches and subtasks follow the auto-approve boxes | They run, whatever the boxes say |
+| `ask_followup_question` waits for you | Answered by the agent: its own first suggestion, otherwise "decide and state the assumption". Every such answer is shown in the chat |
+| A plain reply in the middle of a task waits for you | The agent is told to continue with a tool or finish |
+| The request limit asks **Continue?** | Extended on its own twice (3 × `maxRequestsPerTask` in total), then the task stops and asks |
+| API errors and repeated tool mistakes ask unless **Retry** is ticked | Retried up to 4 times, one automatic mistake recovery, then the task stops and asks |
+| `find_skill` / `install_skill` need `autoSkills`, every install asks | Both tools are on (also in Orchestrator). Installs need no approval, with the limits below |
+| A task preset with missing subagents or skills opens a dialog | The bundled subagents and skills are installed and the preset starts |
+
+**Still refused.** These exist to get a human yes. With nobody to ask, Full Auto answers no, shows the refusal in the chat and tells the model the result is final (`[DENIED] [Full Auto] Not done: …`), so the task goes on by another route instead of hanging:
+
+- `permissions.deny` rules, the built-in secrets list (`.env`, keys) and plan mode: unchanged, still denied.
+- `permissions.ask` rules, commands that mention a secret, and hooks that answer `ask`.
+- Denied command prefixes (`perplexicodeKilo.agent.deniedCommands`) and `sudo` without an explicit `sudo …` entry in the allowed commands.
+- Wrapping does not help: deny rules, ask rules, denied prefixes and `sudo` are checked at every place a command can start, including `if … then`, loops, `$(…)`, `{ …; }`, `bash -c "…"` and `eval`. `if true; then git push; fi` is refused by `Bash(git push:*)`.
+- Writes to agent, MCP and hooks configs (`.claude/**`, `.mcp.json`, `.perplexicode/settings*.json`, hooks), by an edit tool or a shell command. The agent cannot widen its own permissions.
+- Edits outside the workspace, unless a permission rule allows the path.
+
+**Skills.** The agent looks at the installed skills first. If none fits it calls `find_skill`, which now also lists matching skills from the bundled catalog as `catalog:<id>` (no download). `install_skill` then works without a prompt only when all of this holds: the source was returned by `find_skill` in this task (a link pasted from a web page or a file is refused), the [static scan](#41-auto-skill) verdict is **clean** (*review* and *blocked* are refused), and no more than 3 skills were installed in this task. Installs are pinned and recorded in `skills-lock.json` like manual ones; skill scripts are never run by the installer.
+
+**Turn it on**
+
+| Where | How |
+| --- | --- |
+| IDE | The **Full Auto** button next to *Auto-approve* above the composer, or **PerplexiCode: Toggle Full Auto**, or Settings → Auto-approve → **Full Auto**. A dialog confirms once per switch-on. An approval that is already waiting is released as soon as the switch is on |
+| Setting | `perplexicodeKilo.agent.fullAuto` (default `false`). It is application-scoped: only your user settings can enable it, a workspace or a repository file cannot |
+| CLI | `pcode --full-auto "migrate the tests to vitest and make them pass"`. `.perplexicode/settings.json` and `.claude/settings.json` cannot switch it on |
+
+Full Auto does not commit, push or merge on its own initiative, but it will run whatever commands the task needs. Use it on a clean branch or with [worktree isolation](#37-worktree-isolation--parallel-subagents) (`--worktree`), keep `deniedCommands` up to date (for example `git push`), and read the result: it lists what ran, what passed and every assumption the agent made. The scan lowers the risk of a third-party skill, it does not remove it: a skill is instructions the agent will follow.
+
+</details>
+
 <a id="41-auto-skill"></a>
 <a id="whats-new-in-41"></a>
-<details open>
+<details>
 <summary><strong>What's new · 4.1</strong> · Auto Skill: find and install skills from ClawHub, skills.sh and GitHub</summary>
 
 <img src="docs/visuals/auto-skill.png" alt="Auto Skill flow: find on ClawHub or skills.sh, pin to a commit or archive, static scan (clean, review, blocked), approval that always asks; installed skills go to .perplexicode/skills with a skills-lock.json entry, declined installs write nothing, blocked skills are not installed" width="100%" />
@@ -610,7 +656,7 @@ Exit codes of `pcode -p`, stable for CI:
 | `64` | Invalid arguments (including a secret passed as an argument) |
 | `130` | Interrupted (`Ctrl+C`) |
 
-Other flags added in 3.5 – 4.0: `--stop-on-fallback`, `--repo-map` / `--no-repo-map`, `--repo-map-chars <n>`, `--max-rpm <n>`, `--max-parallel-subtasks <n>`, `--cross-review`, `--cross-review-model <id>`. Full list: `pcode --help`.
+Other flags added in 3.5 – 4.2: `--full-auto`, `--auto-skills`, `--stop-on-fallback`, `--repo-map` / `--no-repo-map`, `--repo-map-chars <n>`, `--max-rpm <n>`, `--max-parallel-subtasks <n>`, `--cross-review`, `--cross-review-model <id>`. Full list: `pcode --help`.
 
 See [docs/CORE-3.0.md](docs/CORE-3.0.md) for the full reference and [examples/claude-code-compat](examples/claude-code-compat) for a working configuration.
 
@@ -674,6 +720,7 @@ Max models unlock automatically for Max accounts. If a Max model is picked on a 
 | PerplexiCode: Remote Core: Connect to pcode serve… · Disconnect | Command Palette | Command Palette |
 | PerplexiCode: Update Model Catalog from Repository | Command Palette | Command Palette |
 | PerplexiCode: Install Skill from Source… | Command Palette, Library → Skills | Command Palette, Library → Skills |
+| PerplexiCode: Toggle Full Auto | Command Palette, **Full Auto** button above the composer | Command Palette, **Full Auto** button above the composer |
 | PerplexiCode: Compact Current Task · Set Permission Mode | Command Palette | Command Palette |
 | PerplexiCode: Share Accounts with CLI (pcode) | Command Palette | Command Palette |
 | PerplexiCode: Task History · Settings · Open in Editor Tab | view title bar | view title bar |
@@ -726,6 +773,7 @@ Max models unlock automatically for Max accounts. If a Max model is picked on a 
 | `perplexicodeKilo.agent.crossModelReview` | `false` | Run an independent review of the git diff and `verify` status using a model from a different family before `attempt_completion`. |
 | `perplexicodeKilo.agent.crossModelReviewModel` | `""` | Optional preferred reviewer model ID for cross-model review (empty auto-selects another model family). |
 | `perplexicodeKilo.agent.autoSkills` | `false` | Auto Skill: offer `find_skill` / `install_skill` to the agent. Every install asks. |
+| `perplexicodeKilo.agent.fullAuto` | `false` | Full Auto: never wait for approval or answers; guardrails are refused instead of asked; clean skills found by `find_skill` are installed (max 3 per task). User settings only. |
 | `perplexicodeKilo.agent.skillRegistries` | `["clawhub", "skills-sh"]` | Registries used by `find_skill` and Library → Skills → Search online. |
 | `perplexicodeKilo.rotation.maxRequestsPerMinute` | `12` | Conservative per-account RPM cap before rotating or throttling. |
 | `perplexicodeKilo.agent.language` | `auto` | Reply language, e.g. `en`, `ru`. |
@@ -820,6 +868,8 @@ docs/                   CORE-3.0.md, screenshots and diagrams
 | The CLI says `NOT registered` | Harmless Antigravity warning; check `--list-extensions --show-versions`. |
 | Install script cannot find the editor | Pass `--vsix` with a downloaded file, or use **Install from VSIX…**. |
 | Agent stops after many steps | Raise `perplexicodeKilo.agent.maxRequestsPerTask`. |
+| A command still asks with **All commands (\*)** ticked | The command runs a program chosen at run time (`"$bin" --version`), or uses `case`, a shell function, `[[ … ]]` or `{ …; }`, so it cannot be checked against the allow and deny lists (rule `shell.unparseable`). Approve it, or turn on [Full Auto](#42-full-auto) for unattended tasks. |
+| Full Auto shows *Blocked* / `[DENIED] [Full Auto]` | A guardrail refused the action (the rule is in the message): a denied prefix, `sudo`, a protected config, a `permissions.ask` rule, an edit outside the workspace, or a skill that was not found by `find_skill` or did not scan clean. Do it yourself, or change the rule in your user settings. |
 | Task sits at *0 requests* with no folder open | Open a project folder. Since 4.0.2 a task in the home directory skips the start-up file list and the `@repo` map, so it no longer stalls on `~/Library` or iCloud folders. |
 | `Connection timed out` / `Connection failed: could not connect to www.perplexity.ai` | Your machine cannot reach `www.perplexity.ai` over TCP. Check with `curl -sv -m 20 -o /dev/null https://www.perplexity.ai/`, then your VPN, proxy or router exclusions. Since 4.0.2 network errors no longer mark the account as failed, so you will not see *No active Perplexity account* afterwards. |
 | Task stopped with *needs you* after a fallback | `stopOnFallback` is on and the requested mode or model is not available for your accounts. Pick another one or turn the setting off. |

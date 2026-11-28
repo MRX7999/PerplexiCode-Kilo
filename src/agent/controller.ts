@@ -843,8 +843,29 @@ export class AgentController implements vscode.Disposable {
       crossModelReview: config.get<boolean>('crossModelReview', false),
       crossModelReviewModel: config.get<string>('crossModelReviewModel', '').trim() || undefined,
       autoSkills: config.get<boolean>('autoSkills', false),
+      fullAuto: config.get<boolean>('fullAuto', false),
       skillRegistries: config.get<Array<'clawhub' | 'skills-sh'>>('skillRegistries', ['clawhub', 'skills-sh']),
     };
+  }
+
+  /**
+   * 4.2 Full Auto switch. Turning it on is confirmed once per click because it removes every
+   * approval; a task that is waiting on an approval Full Auto would give continues right away.
+   */
+  async setFullAuto(enabled: boolean): Promise<void> {
+    if (enabled && !this.getSettings().fullAuto) {
+      const choice = await vscode.window.showWarningMessage(
+        'PerplexiCode: turn on Full Auto?',
+        {
+          modal: true,
+          detail: 'The agent will run commands, edit files, call MCP tools, fetch web pages, answer its own questions and install clean skills it finds, all without asking you.\n\nStill refused: deny rules, denied commands, sudo, protected agent configs, secrets and edits outside the workspace. Use a git worktree or a clean branch for work you want to review first.',
+        },
+        'Turn on Full Auto',
+      );
+      if (choice !== 'Turn on Full Auto') return;
+    }
+    await this.updateSetting('fullAuto', enabled);
+    this.post({ type: 'toast', text: `Full Auto: ${enabled ? 'on' : 'off'}` });
   }
 
   private async updateSetting(key: string, value: unknown): Promise<void> {
@@ -1604,7 +1625,11 @@ export class AgentController implements vscode.Disposable {
       }
       case 'updateSetting':
         try {
-          await this.updateSetting(String(message.key), message.value);
+          if (String(message.key) === 'fullAuto') {
+            await this.setFullAuto(Boolean(message.value));
+          } else {
+            await this.updateSetting(String(message.key), message.value);
+          }
         } finally {
           // Always resync, so the checkboxes never show a value that was not saved.
           this.postState();
@@ -1714,6 +1739,10 @@ export class AgentController implements vscode.Disposable {
         }
         break;
       }
+      case 'toggleFullAuto':
+        await this.setFullAuto(typeof message.enabled === 'boolean' ? message.enabled : !this.getSettings().fullAuto);
+        this.postState();
+        break;
       case 'toggleWorktree': {
         const nextEnabled = typeof message.enabled === 'boolean' ? message.enabled : !this.getSettings().worktreeEnabled;
         await this.updateSetting('worktreeEnabled', nextEnabled);
@@ -2268,7 +2297,10 @@ export class AgentController implements vscode.Disposable {
     }
     const missingAgents = preset.missing.agents.filter((name) => library.agentPresets.some((entry) => entry.id === name));
     const missingSkills = preset.missing.skills.filter((name) => library.skillPresets.some((entry) => entry.id === name));
-    if (missingAgents.length + missingSkills.length > 0) {
+    if (missingAgents.length + missingSkills.length > 0 && this.getSettings().fullAuto) {
+      // 4.2 Full Auto: the preset's own subagents and skills ship with the extension; install them without asking.
+      await this.installBundle(missingAgents, missingSkills, this.workspaceRoot() ? 'project' : 'user');
+    } else if (missingAgents.length + missingSkills.length > 0) {
       const items = [...missingAgents, ...missingSkills].join(', ');
       const choice = await vscode.window.showInformationMessage(
         `PerplexiCode: "${preset.title}" works best with ${items}. Install them?`,

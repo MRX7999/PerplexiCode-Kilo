@@ -2,7 +2,7 @@
   "name": "perplexicode-kilo",
   "displayName": "PerplexiCode Kilo",
   "description": "Kilo Code-style autonomous coding agent (Code / Architect / Ask / Debug / Orchestrator / Review modes, tools, diffs, checkpoints, auto-approve) powered by your Perplexity Pro/Max subscription and its latest models.",
-  "version": "4.1.0",
+  "version": "4.2.0",
   "publisher": "MRX7999",
   "engines": {
     "vscode": "^1.85.0"
@@ -89,6 +89,11 @@
         "title": "Agents, Skills & Presets",
         "category": "PerplexiCode",
         "icon": "$(library)"
+      },
+      {
+        "command": "perplexicodeKilo.toggleFullAuto",
+        "title": "Toggle Full Auto",
+        "category": "PerplexiCode"
       },
       {
         "command": "perplexicodeKilo.installSkillFromSource",
@@ -738,6 +743,12 @@
           "type": "boolean",
           "default": false,
           "description": "Auto Skill: let the agent search public skill registries (find_skill) and install a matching skill (install_skill) when no installed skill covers the task. Every install shows the source, files and security scan and needs your approval."
+        },
+        "perplexicodeKilo.agent.fullAuto": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "markdownDescription": "Full Auto: the task never waits for you. Commands (including dynamic shell syntax), edits, MCP tools and web fetches run without approval, the agent answers its own questions, extends the request limit twice and installs skills it finds with `find_skill` when their security scan is clean (at most 3 per task). Still refused, never asked: `permissions.deny` and `permissions.ask` rules, denied commands, `sudo`, protected agent/MCP/hooks configs, secrets and edits outside the workspace. Only your user settings can turn this on; a workspace cannot."
         },
         "perplexicodeKilo.agent.skillRegistries": {
           "type": "array",

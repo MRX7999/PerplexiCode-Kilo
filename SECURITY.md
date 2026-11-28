@@ -47,6 +47,16 @@ PerplexiCode Kilo stores authenticated sessions for paid Perplexity accounts and
   - SSE frame parsing deduplicates repeated terminal chunks and aborts cleanly on mid-tool-call stream truncation.
   - Commands interrupted before recording an exit code are marked `outcome not confirmed` in the journal; on resume, blind re-execution of the unconfirmed command is blocked until workspace state is inspected.
 
+### 6. Unattended Runs (Full Auto, 4.2)
+- **Threat:** With `perplexicodeKilo.agent.fullAuto` / `pcode --full-auto` no person reviews commands, edits, answers to the agent's questions or skill installs, so prompt injection in a repository file, web page, MCP response or third-party skill has no approval prompt to stop at.
+- **Mitigation:**
+  - Opt-in only. The setting is application-scoped; workspace settings, `.perplexicode/settings.json` and `.claude/settings.json` cannot enable it. The IDE confirms every switch-on.
+  - Rules that exist to get a human yes are **refused**, never skipped: `permissions.ask`, hooks that answer `ask`, denied command prefixes, `sudo` without an explicit allow, secrets in commands, writes to the protected configs from section 1, and edits outside the workspace. `permissions.deny`, the secrets list, plan mode, worktree confinement and the SSRF guard are unchanged.
+  - Deny checks (`deniedCommands`, `sudo`, `permissions.deny`, `permissions.ask`, `--disallowedTools`) look at every place a command can start (`if … then`, loops, `$(…)`, backticks, `{ …; }`, `bash -c`, `eval`). This is a guardrail against mistakes, not a sandbox: a program the task legitimately runs can still do anything your user can.
+  - Skills install without approval only when the source came from `find_skill` in the same task and the static scan is `clean`, at most 3 per task, pinned in `skills-lock.json`. The scan reads text; it cannot prove a skill's instructions are benign.
+  - The request limit is extended twice and then the task stops; every refusal and every self-answered question is shown in the chat and written to the session journal.
+- **Residual risk:** an agent that runs arbitrary project commands unattended. Use a clean branch or `--worktree`, a container or VM for untrusted repositories, and add `git push`, deploy and package-publish commands to `deniedCommands`.
+
 ## Reporting a Vulnerability
 
 Please report security vulnerabilities privately via [GitHub Security Advisories](https://github.com/MRX7999/PerplexiCode-Kilo/security/advisories/new) rather than opening a public issue with exploit details. Include reproduction steps, affected version (`pcode --version`), and redacted `pcode doctor --bundle` output if applicable.
