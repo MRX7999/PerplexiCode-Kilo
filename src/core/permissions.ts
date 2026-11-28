@@ -7,7 +7,7 @@ import {
   hasFileOutputRedirection,
   isProtectedAgentConfigPath,
 } from '../agent/shellParser';
-import { resolveWorkspacePath, splitCommandChain, stripHeredocBodies, stripLeadingCommandWrappers } from '../agent/tools';
+import { resolveWorkspacePath, shellCommandPositions, splitCommandChain, stripHeredocBodies, stripLeadingCommandWrappers } from '../agent/tools';
 import { CLAUDE_TOOL_NAMES, claudeToolName, EDIT_TOOLS, GateToolCall, GateVerdict, MCP_TOOLS, META_TOOLS, PermissionMode, READ_TOOLS, WEB_TOOLS } from './types';
 
 /**
@@ -629,8 +629,10 @@ export function evaluatePermission(config: PermissionConfig, tool: GateToolCall,
 
   const shellAnalysis = target.category === 'bash' ? analyzeShellCommand(target.command || '') : undefined;
   const rawSegments = target.category === 'bash' ? splitCommandChain(target.command || '') : [];
+  // 4.2: command positions inside control flow (`if …; then X; fi`, `$(X)`, `bash -c "X"`) count too,
+  // so a deny or ask rule cannot be stepped around by wrapping the command.
   const denyCheckSegments = target.category === 'bash'
-    ? Array.from(new Set([...(shellAnalysis?.segments || []), ...rawSegments, target.command || ''].filter(Boolean)))
+    ? Array.from(new Set([...(shellAnalysis?.segments || []), ...rawSegments, ...shellCommandPositions(target.command || ''), target.command || ''].filter(Boolean)))
     : [undefined];
   const segments = target.category === 'bash'
     ? (shellAnalysis?.segments || [])
@@ -684,10 +686,13 @@ export function evaluatePermission(config: PermissionConfig, tool: GateToolCall,
     }
     // 2c. Unparseable or dynamic shell syntax ALWAYS requires interactive confirmation (F06).
     if (!shellAnalysis || !shellAnalysis.valid) {
+      const askRule = ask.find((rule) => denyCheckSegments.some((segment) => ruleMatches(rule, tool, target, cwd, segment, true)));
+      const secret = config.protectSecrets ? commandTouchesSecret(target.command || '') : undefined;
       return {
         decision: 'ask',
         reason: shellAnalysis?.reason || 'Unparseable shell syntax requires manual approval.',
         source: 'shell.unparseable',
+        humanRule: askRule ? `permissions.ask: ${askRule.raw}` : secret ? 'secrets: command' : undefined,
       };
     }
   }

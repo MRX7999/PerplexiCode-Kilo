@@ -21,6 +21,11 @@ export interface GateVerdict {
   source?: string;
   /** A hook returned "continue": false — stop the whole task. */
   stopTask?: boolean;
+  /**
+   * 4.2: set on a "shell.unparseable" ask when the command also hits an ask rule or a secret.
+   * Full Auto refuses on it instead of running the command.
+   */
+  humanRule?: string;
 }
 
 export interface GateToolCall {

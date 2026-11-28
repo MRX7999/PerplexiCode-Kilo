@@ -92,6 +92,13 @@ const suites = [
     prebuild: true,
     options: { external: ['vscode', 'puppeteer-core', 'sql.js'] },
   },
+  {
+    // 4.2 Full Auto: no approvals, guardrails refused instead of asked, self-answered questions, automatic skills.
+    entry: 'release-4.2.test.ts',
+    outfile: 'release-4.2.test.cjs',
+    prebuild: true,
+    options: { external: ['vscode', 'puppeteer-core', 'sql.js'] },
+  },
 ];
 
 const only = process.argv[2];

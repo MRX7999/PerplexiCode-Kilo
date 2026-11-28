@@ -218,6 +218,7 @@ a:hover { text-decoration: underline; }
 .aa-head { display: flex; align-items: center; gap: 6px; }
 .aa-toggle { display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0; text-align: left; }
 .aa-toggle .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aa-toggle > span:first-child { flex: none; white-space: nowrap; }
 .aa-body { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 6px 2px 2px; }
 .aa-item { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
 .aa-note { width: 100%; font-size: 0.92em; }
@@ -507,6 +508,12 @@ a:hover { text-decoration: underline; }
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
   background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.fa-pill { flex: none; border: 1px solid transparent; }
+.fa-pill.on {
+  color: var(--warning, #d29922);
+  border-color: color-mix(in srgb, var(--warning, #d29922) 55%, var(--border));
+  background: color-mix(in srgb, var(--warning, #d29922) 14%, transparent);
 }
 .wt-warn-chip {
   color: var(--warning, #d29922);

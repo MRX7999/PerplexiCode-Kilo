@@ -28,6 +28,7 @@ import {
   CommandResult,
   globFilesTool,
   insertContent,
+  fullAutoCommandBlock,
   isBroadScanRoot,
   isCommandAutoApproved,
   isInsideWorkspace,
@@ -55,6 +56,7 @@ import { collectWorkspaceReviewDiff, runCrossModelReview } from '../core/crossRe
 import { scrubSecretsFromText } from '../core/diagnostics';
 import { evaluatePermission } from '../core/permissions';
 import { describeResolvedSkill, installResolvedSkill, parseSkillSource, resolveSkillSource, scanResolvedSkill, searchSkills, SkillApiBases, SkillHttpFetch } from '../core/skillSources';
+import { installSkillPreset, SKILL_PRESETS, skillFilePath } from '../core/library';
 import { loadSettings } from '../core/settings';
 import { enforceWorktreeToolCall, runWithConcurrencyLimit } from '../core/worktree';
 import type { CoreEvent, GateContext, GateVerdict, ToolGate } from '../core/types';
@@ -170,6 +172,24 @@ export function makeId(prefix = 'm'): string {
 }
 
 const MAX_CONSECUTIVE_MISTAKES = 3;
+/** 4.2 Full Auto: the request limit is extended on its own this many times, then the task stops. */
+export const FULL_AUTO_LIMIT_EXTENSIONS = 2;
+/** 4.2 Full Auto: skills one task may install without a person. */
+export const FULL_AUTO_MAX_SKILL_INSTALLS = 3;
+const FULL_AUTO_PREFIX = '[Full Auto]';
+
+/**
+ * 4.2 Full Auto: rules that exist to get a human yes. With nobody to ask they are refused,
+ * never skipped: protected agent/MCP/hooks configs, explicit `permissions.ask` rules, secrets
+ * in commands and hooks that answer "ask".
+ */
+export function fullAutoRefuses(rule: string | undefined): boolean {
+  return Boolean(rule && /^(protected-config:|permissions\.ask:|secrets:|hook:)/.test(rule));
+}
+
+function fullAutoRefusalText(rule: string, reason: string): string {
+  return `${FULL_AUTO_PREFIX} Not done: ${reason} (rule: ${rule}). Full Auto never asks, so this is final for this task. Do not retry it or work around it; choose another approach, or finish and report it in the result.`;
+}
 
 export class AgentTask {
   readonly id: string;
@@ -197,6 +217,11 @@ export class AgentTask {
   private apiRetries = 0;
   private looping = false;
   private requestsSinceLimitPrompt = 0;
+  /** 4.2 Full Auto: automatic request-limit extensions used so far. */
+  private fullAutoLimitExtensions = 0;
+  /** 4.2 Full Auto: sources returned by find_skill in this task; only these install without a person. */
+  private foundSkillSources = new Set<string>();
+  private fullAutoSkillInstalls = 0;
   private checkpointSeq = 0;
   private completionResolvers: Array<(result: string) => void> = [];
   private rulesCache?: { mode: string; text: string };
@@ -422,7 +447,7 @@ export class AgentTask {
       return;
     }
     const settings = this.options.getSettings();
-    if (!settings.autoApprove.enabled) {
+    if (!settings.autoApprove.enabled && !settings.fullAuto) {
       return;
     }
     const pending = this.pendingAsk;
@@ -431,7 +456,19 @@ export class AgentTask {
       return;
     }
     let shouldApprove = false;
-    if (pending.kind === 'command' && message.command?.command) {
+    if (settings.fullAuto) {
+      // 4.2: switching Full Auto on releases a waiting approval that Full Auto itself would run.
+      const rule = this.gateVerdict?.humanRule || this.status.banner?.rule;
+      if (pending.kind === 'command' && message.command?.command) {
+        shouldApprove = !fullAutoRefuses(rule) && !fullAutoCommandBlock(message.command.command, settings.allowedCommands, settings.deniedCommands);
+      } else if (pending.kind === 'mode_switch' || pending.kind === 'new_task') {
+        shouldApprove = true;
+      } else if (pending.kind === 'tool' && message.tool) {
+        shouldApprove = !fullAutoRefuses(rule)
+          && message.tool.name !== 'install_skill'
+          && !(message.tool.outsideWorkspace && EDIT_TOOLS.has(message.tool.name));
+      }
+    } else if (pending.kind === 'command' && message.command?.command) {
       shouldApprove =
         settings.autoApprove.execute
         && isCommandAutoApproved(message.command.command, settings.allowedCommands, settings.deniedCommands);
@@ -687,7 +724,13 @@ export class AgentTask {
             `Reached the limit of ${this.requestsSinceLimitPrompt} requests in a row`,
             `maxRequests=${settings.maxRequests}`
           );
-          const answer = await this.ask('request_limit', {
+          const autoExtend = Boolean(settings.fullAuto) && this.fullAutoLimitExtensions < FULL_AUTO_LIMIT_EXTENSIONS;
+          if (autoExtend) {
+            this.fullAutoLimitExtensions += 1;
+            this.say({ type: 'info', text: `Full Auto: ${this.requestsSinceLimitPrompt} requests in a row, continuing (${this.fullAutoLimitExtensions}/${FULL_AUTO_LIMIT_EXTENSIONS} automatic extensions).` });
+            this.clearBanner();
+          }
+          const answer: AskResponse = autoExtend ? { response: 'yes' } : await this.ask('request_limit', {
             type: 'info',
             text: `The task has made ${this.requestsSinceLimitPrompt} requests in a row. Continue?`,
           });
@@ -782,6 +825,7 @@ export class AgentTask {
       webSearch,
       mcpSection: mcpExcluded ? '' : rawMcp,
       autoSkills: settings.autoSkills,
+      fullAuto: settings.fullAuto,
     });
 
     let repoMapBlock: string | undefined;
@@ -1009,8 +1053,7 @@ export class AgentTask {
         reqMessage.status = 'error';
         this.emit(reqMessage);
         if (
-          settings.autoApprove.enabled
-          && settings.autoApprove.retry
+          (settings.fullAuto || (settings.autoApprove.enabled && settings.autoApprove.retry))
           && typed.kind !== 'no_account'
           && typed.kind !== 'fallback_blocked'
           && this.apiRetries < 4
@@ -1092,7 +1135,7 @@ export class AgentTask {
       return this.pushToolError(tool.name, 'The tool call was cut off before its closing tag. Send the complete tool call again (for large files, split the change into several apply_diff / insert_content calls).', settings);
     }
 
-    if (!isToolAllowedForMode(tool.name, this.modeConfig) && !skillToolsForMode(this.modeConfig, Boolean(settings.autoSkills)).includes(tool.name)) {
+    if (!isToolAllowedForMode(tool.name, this.modeConfig) && !skillToolsForMode(this.modeConfig, Boolean(settings.autoSkills), Boolean(settings.fullAuto)).includes(tool.name)) {
       this.consecutiveMistakes += 1;
       return this.pushToolError(tool.name, `Tool '${tool.name}' is not available in ${this.modeConfig.name} mode. Use switch_mode to change to a mode that allows it, or use another tool.`, settings);
     }
@@ -1133,7 +1176,7 @@ export class AgentTask {
       this.appendToLastUser(`\n\n[Note: only ${batch.length > 0 ? `the first ${batch.length + 1} read-only tool calls` : 'the first tool call'} of your message ${batch.length > 0 ? 'were' : 'was'} executed. ${ignored} additional tool call(s) were ignored. Batch only read-only tools (read_file, list_files, search_files, list_code_definition_names, glob_files, lsp); use one tool per message otherwise.]`);
     }
     if (this.consecutiveMistakes >= MAX_CONSECUTIVE_MISTAKES) {
-      if (settings.autoApprove.enabled && settings.autoApprove.retry && !this.didAutoMistakeRecovery) {
+      if ((settings.fullAuto || (settings.autoApprove.enabled && settings.autoApprove.retry)) && !this.didAutoMistakeRecovery) {
         this.didAutoMistakeRecovery = true;
         this.consecutiveMistakes = 0;
         this.appendToLastUser('\n\n[System recovery: Multiple consecutive tool calls failed. Re-read the target file with read_file to inspect its current contents before editing, verify all required XML parameter tags are closed, and use smaller apply_diff or write_to_file steps.]');
@@ -1172,9 +1215,11 @@ export class AgentTask {
       || /\.\.\.\s*$/.test(tail.trim())
       || /<(read_file|write_to_file|apply_diff|insert_content|search_and_replace|execute_command|list_files|search_files|list_code_definition_names|glob_files|lsp|web_fetch|use_mcp_tool|access_mcp_resource|list_mcp_resources|mcp__[a-z0-9_-]+|update_todo_list|switch_mode|new_task|attempt_completion)\b/i.test(text);
     const hasIncompleteTodos = this.todos.some((todo) => todo.status !== 'completed');
-    if (midTask && (looksUnfinished || hasIncompleteTodos) && this.consecutiveNoTool < 2) {
+    // 4.2 Full Auto: a plain mid-task reply would wait for a person, so the agent is told to go on.
+    const fullAuto = Boolean(this.options.getSettings().fullAuto);
+    if (midTask && (fullAuto || looksUnfinished || hasIncompleteTodos) && this.consecutiveNoTool < 2) {
       this.consecutiveNoTool += 1;
-      this.apiMessages.push({ role: 'user', content: NO_TOOL_USED_REMINDER, ts: Date.now() });
+      this.apiMessages.push({ role: 'user', content: `${NO_TOOL_USED_REMINDER}${fullAuto ? '\n\nFull Auto is on: nobody will reply. Continue with a tool, or finish with attempt_completion and state your assumptions.' : ''}`, ts: Date.now() });
       return 'continue';
     }
     this.consecutiveNoTool = 0;
@@ -1445,7 +1490,19 @@ export class AgentTask {
           question.slice(0, 180),
           'ask_followup_question'
         );
-        const answer = await this.ask('followup', { type: 'followup', text: question, suggestions });
+        let answer: AskResponse;
+        if (settings.fullAuto) {
+          // 4.2 Full Auto: nobody answers questions; the agent takes its own first suggestion or decides.
+          const pick = suggestions[0]?.text;
+          answer = {
+            response: 'message',
+            text: pick || `${FULL_AUTO_PREFIX} Nobody is available to answer. Choose the most reasonable option yourself, continue, and list the assumption in the final result.`,
+          };
+          this.say({ type: 'info', text: `Full Auto answered a question on its own: "${question.slice(0, 200)}" → ${pick ? `"${pick.slice(0, 200)}"` : 'decide and state the assumption'}` });
+          this.clearBanner();
+        } else {
+          answer = await this.ask('followup', { type: 'followup', text: question, suggestions });
+        }
         if (this.abortController.signal.aborted) {
           return 'stop';
         }
@@ -2047,7 +2104,18 @@ export class AgentTask {
       && settings.autoApprove.enabled
       && settings.autoApprove.execute
       && isCommandAutoApproved(command, settings.allowedCommands, settings.deniedCommands);
-    const autoApproved = !protectedCmdHit && shellParsed.valid && (gateDecision === 'allow' || (gateDecision !== 'ask' && legacyAuto));
+    let autoApproved = !protectedCmdHit && shellParsed.valid && (gateDecision === 'allow' || (gateDecision !== 'ask' && legacyAuto));
+    if (!autoApproved && settings.fullAuto) {
+      // 4.2 Full Auto: run it, dynamic shell syntax included, unless a guardrail refuses it.
+      const gateRule = gateDecision === 'ask' ? (this.gateVerdict?.humanRule || this.gateVerdict?.source) : undefined;
+      const block = fullAutoRefuses(gateRule)
+        ? { rule: gateRule!, reason: this.gateVerdict?.humanRule ? 'The command hits a rule that needs a person to approve.' : (this.gateVerdict?.reason || 'This rule needs a person to approve.') }
+        : fullAutoCommandBlock(command, settings.allowedCommands, settings.deniedCommands);
+      if (block) {
+        return this.fullAutoRefusal(tool.name, command, { name: tool.name, title: `Blocked: \`${command.slice(0, 120)}\`` }, block.rule, block.reason);
+      }
+      autoApproved = true;
+    }
     const askId = makeId();
     const commandMessage: UiMessage = {
       id: askId,
@@ -2185,10 +2253,15 @@ export class AgentTask {
       if (this.abortController.signal.aborted) {
         return 'stop';
       }
+      for (const item of found.results) {
+        this.foundSkillSources.add(item.install.toLowerCase());
+      }
+      const catalog = this.matchCatalogSkills(query);
+      const catalogLines = catalog.map((preset) => `- ${preset.id} — source: catalog:${preset.id} · bundled with PerplexiCode, no download\n   ${preset.description}`);
       const lines = found.results.map((item, index) => `${index + 1}. ${item.name} — source: ${item.install}${item.installs !== undefined ? ` · ${item.installs} installs` : ''}${item.suspicious ? ' · FLAGGED SUSPICIOUS by the registry' : ''}\n   ${item.description || '(no description in search results)'}\n   ${item.url}`);
       const errors = found.errors.map((entry) => `[${entry.registry} unavailable] ${entry.message}`);
-      const text = lines.length
-        ? `${lines.join('\n')}${errors.length ? `\n\n${errors.join('\n')}` : ''}\n\nTo install one, call install_skill with its source. Prefer well-known publishers and skills with many installs; skip suspicious ones.`
+      const text = lines.length || catalogLines.length
+        ? `${catalogLines.length ? `Bundled catalog (prefer these when one fits):\n${catalogLines.join('\n')}\n\n` : ''}${lines.join('\n')}${errors.length ? `\n\n${errors.join('\n')}` : ''}\n\nTo install one, call install_skill with its source. Prefer well-known publishers and skills with many installs; skip suspicious ones.`
         : `No skills found for "${query}".${errors.length ? `\n${errors.join('\n')}` : ''} Continue without a skill.`;
       this.consecutiveMistakes = 0;
       message.status = 'done';
@@ -2208,9 +2281,60 @@ export class AgentTask {
     return 'continue';
   }
 
+  /** 4.2: bundled catalog skills that match the query and are not installed yet. */
+  private matchCatalogSkills(query: string): typeof SKILL_PRESETS {
+    const words = query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 3);
+    const paths = { cwd: this.options.host.cwd, home: this.options.skillHome };
+    return SKILL_PRESETS
+      .map((preset) => {
+        const haystack = `${preset.id} ${preset.tags.join(' ')} ${preset.description}`.toLowerCase();
+        return { preset, score: words.filter((word) => haystack.includes(word)).length };
+      })
+      .filter((entry) => entry.score > 0
+        && !fs.existsSync(skillFilePath(entry.preset.id, 'project', paths))
+        && !fs.existsSync(skillFilePath(entry.preset.id, 'user', paths)))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3)
+      .map((entry) => entry.preset);
+  }
+
+  /** 4.2: install a skill from the bundled catalog (`catalog:<id>`): trusted text, no download. */
+  private async runInstallCatalogSkill(tool: ParsedToolUse, settings: AgentSettings, id: string, scope: 'project' | 'user'): Promise<'continue' | 'stop'> {
+    const preset = SKILL_PRESETS.find((entry) => entry.id === id);
+    if (!preset) {
+      this.consecutiveMistakes += 1;
+      return this.pushToolError(tool.name, `Unknown catalog skill "${id}". Known: ${SKILL_PRESETS.map((entry) => entry.id).join(', ')}.`, settings);
+    }
+    const cwd = this.options.host.cwd;
+    const info: ToolInfo = { name: tool.name, title: `Install bundled skill "${preset.id}" (${scope === 'user' ? 'global' : 'project'})`, content: preset.description };
+    const approved = await this.approve('tool', false, info, settings.fullAuto ? undefined : { reason: `Installing the bundled skill ${preset.id} writes a SKILL.md to the skills folder.`, rule: 'skills.install (always ask)' });
+    if (approved.response === 'no' || this.abortController.signal.aborted) {
+      return this.denied(tool.name, `catalog:${id}`, approved.text);
+    }
+    const message = approved.message;
+    try {
+      const written = installSkillPreset(preset.id, scope, { cwd, home: this.options.skillHome });
+      this.consecutiveMistakes = 0;
+      message.status = 'done';
+      message.tool = { ...message.tool!, path: written.file };
+      this.emit(message);
+      this.pushToolResult(tool.name, `catalog:${id}`, `Installed bundled skill "${preset.id}" to ${toPosixRelative(cwd, written.file)}. Read it now with read_file and follow it.`);
+    } catch (error) {
+      const exists = (error as NodeJS.ErrnoException).code === 'EEXIST';
+      if (!exists) this.consecutiveMistakes += 1;
+      message.status = exists ? 'done' : 'error';
+      message.tool = { ...message.tool!, content: (error as Error).message };
+      this.emit(message);
+      this.pushToolResult(tool.name, `catalog:${id}`, exists ? `The bundled skill "${preset.id}" is already installed. Read its SKILL.md and follow it.` : `[ERROR] ${(error as Error).message}`);
+    }
+    return 'continue';
+  }
+
   /**
    * 4.1 Auto Skill: download, scan and install a skill. The download only reads into memory; the
    * write always asks the user (never auto-approved) and shows source, pinned commit, files and scan.
+   * 4.2 Full Auto: nobody is asked. Only sources returned by find_skill in this task with a clean
+   * scan are installed, at most FULL_AUTO_MAX_SKILL_INSTALLS per task; anything else is refused.
    */
   private async runInstallSkillTool(tool: ParsedToolUse, settings: AgentSettings, missing: (name: string) => 'continue'): Promise<'continue' | 'stop'> {
     const source = (tool.params.source || '').trim();
@@ -2219,6 +2343,19 @@ export class AgentTask {
     }
     const scope = (tool.params.scope || '').trim().toLowerCase() === 'user' ? 'user' : 'project';
     const cwd = this.options.host.cwd;
+    const fullAuto = Boolean(settings.fullAuto);
+    const skillInfo: ToolInfo = { name: tool.name, title: `Blocked: install skill from ${source.slice(0, 120)}` };
+    if (fullAuto && this.fullAutoSkillInstalls >= FULL_AUTO_MAX_SKILL_INSTALLS) {
+      return this.fullAutoRefusal(tool.name, source, skillInfo, 'skills.install limit', `Full Auto installs at most ${FULL_AUTO_MAX_SKILL_INSTALLS} skills per task.`);
+    }
+    if (/^catalog:/i.test(source)) {
+      const outcome = await this.runInstallCatalogSkill(tool, settings, source.slice('catalog:'.length).trim(), scope);
+      if (fullAuto) this.fullAutoSkillInstalls += 1;
+      return outcome;
+    }
+    if (fullAuto && !this.foundSkillSources.has(source.toLowerCase())) {
+      return this.fullAutoRefusal(tool.name, source, skillInfo, 'skills.install source', 'Full Auto installs only skills returned by find_skill in this task. Call find_skill first and use the source exactly as listed.');
+    }
     let spec;
     try {
       spec = parseSkillSource(source, cwd);
@@ -2246,7 +2383,11 @@ export class AgentTask {
     }
     const name = (tool.params.name || '').trim() || resolved.name;
     const info: ToolInfo = { name: tool.name, title: `Install skill "${name}" from ${spec.spec} (${scope === 'user' ? 'global' : 'project'})`, content: summary };
-    const approved = await this.approve('tool', false, info, { reason: `Installing a skill from ${spec.spec} writes ${resolved.files.length} file(s) to the skills folder.`, rule: 'skills.install (always ask)' });
+    if (fullAuto && scan.verdict !== 'clean') {
+      return this.fullAutoRefusal(tool.name, spec.spec, { ...info, title: `Blocked skill ${name} from ${spec.spec}` }, 'skills.install scan', `The security scan wants a person to review this skill before it is installed.\n${summary}`);
+    }
+    if (fullAuto) this.fullAutoSkillInstalls += 1;
+    const approved = await this.approve('tool', false, info, fullAuto ? undefined : { reason: `Installing a skill from ${spec.spec} writes ${resolved.files.length} file(s) to the skills folder.`, rule: 'skills.install (always ask)' });
     if (approved.response === 'no' || this.abortController.signal.aborted) {
       return this.denied(tool.name, spec.spec, approved.text);
     }
@@ -2455,6 +2596,10 @@ export class AgentTask {
     if (this.abortController.signal.aborted) {
       return 'stop';
     }
+    if (feedback?.startsWith(FULL_AUTO_PREFIX)) {
+      this.pushToolResult(toolName, detail, `[DENIED] ${feedback}`);
+      return 'continue';
+    }
     this.pushToolResult(
       toolName,
       detail,
@@ -2463,6 +2608,13 @@ export class AgentTask {
         : 'The user denied this operation.'
     );
     return 'continue';
+  }
+
+  /** 4.2 Full Auto: shows a refused action in the chat and tells the model it is final. */
+  private fullAutoRefusal(toolName: string, detail: string | undefined, info: ToolInfo, rule: string, reason: string): 'continue' | 'stop' {
+    this.say({ type: 'tool', tool: { ...info, content: `${reason}\n(Full Auto · ${rule})` }, status: 'rejected' });
+    this.emitEvent({ type: 'denied', tool: toolName, reason, source: `fullAuto: ${rule}` });
+    return this.denied(toolName, detail, fullAutoRefusalText(rule, reason));
   }
 
   private finishCompletion(result: string): void {
@@ -2500,6 +2652,27 @@ export class AgentTask {
       || (gateDecision !== 'ask' && autoApproved && settings.autoApprove.enabled)
     );
     if (auto) {
+      message.status = 'approved';
+      message.ask = { kind, resolved: true, autoApproved: true };
+      this.pushUi(message);
+      return { response: 'yes', message };
+    }
+    if (settings.fullAuto) {
+      // 4.2 Full Auto: never wait. Guardrails that need a human yes are refused; the rest runs.
+      const rule = forceAsk?.rule || (gateDecision === 'ask' ? this.gateVerdict?.source : undefined);
+      const outsideEdit = Boolean(info.outsideWorkspace) && EDIT_TOOLS.has(info.name);
+      if (fullAutoRefuses(rule) || outsideEdit) {
+        const refusedRule = fullAutoRefuses(rule) ? rule! : 'workspace.outside';
+        const reason = fullAutoRefuses(rule)
+          ? (forceAsk?.reason || this.gateVerdict?.reason || 'This rule needs a person to approve.')
+          : 'Edits outside the workspace need a person to approve (or a permission rule that allows the path).';
+        message.status = 'rejected';
+        message.ask = { kind, resolved: true, response: 'no', autoApproved: true };
+        message.tool = { ...info, content: `${reason}\n(Full Auto · ${refusedRule})` };
+        this.pushUi(message);
+        this.emitEvent({ type: 'denied', tool: info.name, reason, source: `fullAuto: ${refusedRule}` });
+        return { response: 'no', text: fullAutoRefusalText(refusedRule, reason), message };
+      }
       message.status = 'approved';
       message.ask = { kind, resolved: true, autoApproved: true };
       this.pushUi(message);

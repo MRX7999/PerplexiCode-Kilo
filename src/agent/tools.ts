@@ -938,6 +938,98 @@ export function isCommandAutoApproved(command: string, allowed: string[], denied
   );
 }
 
+/**
+ * 4.2 Full Auto: every place in a script where a command can start, control flow included
+ * (`if …; then X; fi`, `for …; do X; done`, `$(X)`, `{ X; }`, `bash -c "X"`, `eval "X"`).
+ * Quote-aware but deliberately coarse: it only feeds the deny checks, where a false positive
+ * means a refusal, never a run.
+ */
+export function shellCommandPositions(command: string, depth = 0): string[] {
+  const text = stripHeredocBodies(command).replace(/\\\r?\n/g, ' ');
+  const parts: string[] = [];
+  let current = '';
+  let quote: string | undefined;
+  const flush = () => {
+    parts.push(current);
+    current = '';
+  };
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    if (char === '\\' && quote !== '\'' && i + 1 < text.length) {
+      current += char + text[i + 1];
+      i += 1;
+      continue;
+    }
+    if (quote === '\'') {
+      current += char;
+      if (char === '\'') quote = undefined;
+      continue;
+    }
+    // Command substitution runs even inside double quotes.
+    if (char === '$' && text[i + 1] === '(') {
+      flush();
+      i += 1;
+      continue;
+    }
+    if (char === '`') {
+      flush();
+      continue;
+    }
+    if (quote === '"') {
+      current += char;
+      if (char === '"') quote = undefined;
+      continue;
+    }
+    if (char === '"' || char === '\'') {
+      quote = char;
+      current += char;
+      continue;
+    }
+    if (';&|\n(){}'.includes(char)) {
+      flush();
+      continue;
+    }
+    current += char;
+  }
+  flush();
+  const out: string[] = [];
+  for (const part of parts) {
+    const fragment = part.trim().replace(/^(?:(?:if|then|else|elif|do|while|until|exec|!)\s+)+/, '').trim();
+    if (!fragment) continue;
+    out.push(fragment);
+    const nested = /^(?:\S*\/)?(?:sh|bash|zsh|dash|ksh)\s+(?:\S+\s+)*?-[a-z]*c\s+(["'])([\s\S]*)\1/.exec(fragment)
+      || /^eval\s+(["']?)([\s\S]*)\1\s*$/.exec(fragment);
+    if (nested && depth < 2) {
+      out.push(...shellCommandPositions(nested[2], depth + 1));
+    }
+  }
+  return out;
+}
+
+/**
+ * 4.2 Full Auto: every command runs without asking, including shell syntax the parser cannot
+ * reduce to plain commands (`"$bin" --version`, `case`, functions). Returns why a command is
+ * still refused: a denied prefix, sudo without an explicit allow, or a protected agent config.
+ */
+export function fullAutoCommandBlock(command: string, allowed: string[], denied: string[]): { rule: string; reason: string } | undefined {
+  const protectedHit = commandTouchesProtectedConfig(command);
+  if (protectedHit) {
+    return { rule: `protected-config: ${protectedHit}`, reason: `The command touches a protected config (${protectedHit}).` };
+  }
+  const analysis = analyzeShellCommand(command);
+  const segments = Array.from(new Set([...analysis.segments, ...splitCommandChain(stripHeredocBodies(command)), ...shellCommandPositions(command), command.trim()].filter(Boolean)));
+  const sudoAllowed = allowed.some((entry) => entry.trim() === 'sudo' || entry.trim().startsWith('sudo '));
+  for (const segment of segments) {
+    if (matchesCommandPrefix(segment, denied)) {
+      return { rule: 'deniedCommands', reason: `'${segment.slice(0, 80)}' matches a denied command prefix.` };
+    }
+    if (!sudoAllowed && /^sudo(?:\s|$)/.test(stripLeadingCommandWrappers(segment))) {
+      return { rule: 'sudo', reason: 'sudo needs an explicit entry in the allowed commands (it would wait for a password).' };
+    }
+  }
+  return undefined;
+}
+
 /** Default shell runner used by the VS Code host. */
 export function spawnShellCommand(
   command: string,

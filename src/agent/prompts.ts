@@ -333,9 +333,29 @@ export async function loadWorkspaceRules(cwd: string, modeSlug: string): Promise
 }
 
 /** 4.1 Auto Skill tools available in a mode: find_skill everywhere, install_skill only where files may be edited. */
-export function skillToolsForMode(mode: ModeConfig, autoSkills: boolean): string[] {
-  if (!autoSkills) return [];
-  return mode.groups.some((entry) => (Array.isArray(entry) ? entry[0] : entry) === 'edit') ? ['find_skill', 'install_skill'] : ['find_skill'];
+export function skillToolsForMode(mode: ModeConfig, autoSkills: boolean, fullAuto = false): string[] {
+  if (!autoSkills && !fullAuto) return [];
+  const canEdit = mode.groups.some((entry) => (Array.isArray(entry) ? entry[0] : entry) === 'edit');
+  // 4.2 Full Auto: the Orchestrator gathers skills before it delegates.
+  return canEdit || (fullAuto && mode.slug === 'orchestrator') ? ['find_skill', 'install_skill'] : ['find_skill'];
+}
+
+/** 4.2 Full Auto: how the agent works when nobody will answer. */
+export function fullAutoSection(tools: string[]): string {
+  const skills = tools.includes('find_skill')
+    ? `\n- Skills first. Look at the installed skills. If none covers the task and a reusable playbook would help (a file format, framework, service or workflow), call find_skill once or twice with short queries${tools.includes('install_skill') ? ', install the best match with install_skill using the source exactly as listed (bundled catalog first, then well-known publishers with many installs), read its SKILL.md and follow it. Installs need no approval here: only sources returned by find_skill with a clean security scan are accepted, at most 3 per task' : ' and tell the subtask or the next mode which skill to install'}. If nothing fits, continue without a skill.`
+    : '';
+  return `====
+
+FULL AUTO
+
+Full Auto is on. Nobody is watching this task and no question will be answered, so finish it on your own.
+- Never call ask_followup_question. When something is ambiguous, choose the most reasonable option, keep going, and list every assumption in the final result.${skills}
+- Tools run without approval. A result that starts with [DENIED] is final: do not retry it and do not work around it (protected configs, secrets, denied commands, edits outside the workspace). Choose another approach or report it in the result.
+- Verify before you finish: run the project's own tests, lint or build when they exist. In the result say what ran, what passed and what you could not check.
+- Keep changes inside the task. Do not delete data, rewrite history or touch remote systems unless the task says so.
+
+`;
 }
 
 export function buildSystemPrompt(options: {
@@ -348,12 +368,14 @@ export function buildSystemPrompt(options: {
   mcpSection?: string;
   /** 4.1 Auto Skill: add find_skill (and install_skill in modes that can edit). */
   autoSkills?: boolean;
+  /** 4.2 Full Auto: skill tools everywhere they make sense plus the FULL AUTO section. */
+  fullAuto?: boolean;
 }): string {
   const { mode, cwd, settings } = options;
   const mcpSection = (options.mcpSection || '').trim();
   const tools = [
     ...getToolsForMode(mode).filter((tool) => mcpSection || !TOOL_GROUPS.mcp.includes(tool)),
-    ...skillToolsForMode(mode, Boolean(options.autoSkills)),
+    ...skillToolsForMode(mode, Boolean(options.autoSkills), Boolean(options.fullAuto)),
   ];
   const editRestriction = mode.groups.find((entry) => Array.isArray(entry) && entry[0] === 'edit');
   const toolDocs = tools.map((tool) => TOOL_DOCS[tool]).filter(Boolean).join('\n\n');
@@ -417,7 +439,7 @@ MCP SERVERS
 
 ${mcpSection}
 
-` : ''}====
+` : ''}${options.fullAuto ? fullAutoSection(tools) : ''}====
 
 MODES
 

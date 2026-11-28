@@ -556,6 +556,39 @@ for (const tabId of settingTabIds) {
 check(Boolean(await page.$('[data-setting="crossModelReview"]')), '3.8 settings view renders crossModelReview checkbox');
 check(await page.$eval('[data-setting="crossModelReview"]', (el) => el.checked === false), '3.8 crossModelReview is off by default');
 
+// 4.2 Full Auto: pill next to Auto-approve, header and settings switch
+await send({ type: 'view', view: 'chat' });
+await send(fixture.withTask);
+await page.evaluate(() => {
+  const t = document.getElementById('toast');
+  if (t) { t.className = 'toast hidden'; t.textContent = ''; }
+  const m = document.querySelector('#messages'); if (m) m.scrollTop = m.scrollHeight;
+});
+check(await page.$eval('.fa-pill', (el) => el.textContent.trim() === 'Full Auto' && !el.classList.contains('on') && el.getAttribute('aria-pressed') === 'false'), '4.2 Full Auto pill renders next to Auto-approve, off by default');
+check(await page.$eval('.aa-head', (el) => el.textContent.includes('Auto-approve:')), '4.2 Auto-approve header is unchanged while Full Auto is off');
+await shot('34-release-42-full-auto-off');
+check((await clickPosted('.fa-pill')).some((m) => m.type === 'toggleFullAuto' && m.enabled === true), '4.2 Full Auto pill posts toggleFullAuto');
+const fullAutoState = copy(fixture.withTask);
+fullAutoState.settings.fullAuto = true;
+await send(fullAutoState);
+check(await page.$eval('.fa-pill', (el) => el.classList.contains('on') && el.getAttribute('aria-pressed') === 'true'), '4.2 Full Auto pill is highlighted when on');
+check(await page.$eval('.aa-head', (el) => el.textContent.includes('Full Auto:') && el.textContent.includes('nothing waits for you') && !el.querySelector('[data-setting="autoApprove.enabled"]')), '4.2 header says Full Auto and hides the auto-approve switch');
+await page.click('#aa-toggle');
+check(await page.$eval('.aa-body', (el) => el.textContent.includes('Still refused') && el.textContent.includes('sudo')), '4.2 expanded header lists what Full Auto still refuses');
+check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), '4.2 Full Auto header has no horizontal overflow');
+await shot('35-release-42-full-auto-on');
+check((await clickPosted('.fa-pill')).some((m) => m.type === 'toggleFullAuto' && m.enabled === false), '4.2 Full Auto pill posts toggleFullAuto off');
+await page.click('#aa-toggle');
+await send(fixture.withTask);
+await send({ type: 'view', view: 'settings' });
+for (const tabId of settingTabIds) {
+  await page.click(`#view-settings [data-tab="${tabId}"]`);
+  if (await page.$('[data-setting="fullAuto"]')) break;
+}
+check(Boolean(await page.$('[data-setting="fullAuto"]')), '4.2 settings view renders the Full Auto switch');
+check(await page.$eval('[data-setting="fullAuto"]', (el) => el.checked === false), '4.2 Full Auto is off by default');
+await shot('36-release-42-full-auto-settings');
+
 const posted = await page.evaluate(() => window.__posted.map((m) => m.type));
 console.log('posted:', [...new Set(posted)].join(','));
 console.log('tabs:', tabs.length);

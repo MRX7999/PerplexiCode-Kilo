@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="700" viewBox="0 0 1600 700" fill="none" role="img" aria-labelledby="fa-title fa-desc">
+  <title id="fa-title">PerplexiCode Kilo Full Auto</title>
+  <desc id="fa-desc">Full Auto runs a task from one prompt without waiting for a person. The agent gathers skills with find_skill and installs only clean ones, works without approvals and answers its own questions, verifies the result and finishes with a list of assumptions. Deny and ask rules, denied commands, sudo, protected agent configs, secrets and edits outside the workspace are refused instead of asked. The task stops after the request limit was extended twice, after repeated API or tool errors, or when Stop is pressed.</desc>
+  <defs>
+    <pattern id="fa-grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" stroke="#26344d" stroke-opacity=".26"/>
+    </pattern>
+    <marker id="fa-arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="m1 1 5 3-5 3" stroke="#5de2e7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <marker id="fa-arrow2" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="m1 1 5 3-5 3" stroke="#a4a6ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <marker id="fa-arrow3" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="m1 1 5 3-5 3" stroke="#f5b971" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; }
+      .overline { font-size:24px; font-weight:600; letter-spacing:3px; fill:#9baac0; }
+      .title { font-size:44px; font-weight:650; letter-spacing:-1px; fill:#f3f7fc; }
+      .heading { font-size:28px; font-weight:600; fill:#f3f7fc; }
+      .body { font-size:24px; fill:#9baac0; }
+      .small { font-size:21px; fill:#9baac0; }
+      .mono { font-family: "SFMono-Regular", Menlo, Consolas, "DejaVu Sans Mono", monospace; font-size:21px; fill:#5de2e7; }
+      .pill { font-size:20px; font-weight:650; letter-spacing:1px; }
+    </style>
+  </defs>
+  <rect width="1600" height="700" rx="24" fill="#0b1020"/>
+  <rect x="1" y="1" width="1598" height="698" rx="23" stroke="#27344a"/>
+  <rect x="1" y="1" width="1598" height="698" rx="23" fill="url(#fa-grid)"/>
+  <path d="M1030 1v134c0 29 23 52 52 52h518M1102 1v94c0 29 23 52 52 52h446" stroke="#26344d" stroke-opacity=".55"/>
+  <text x="56" y="62" class="overline">WORKFLOW / FULL AUTO · 4.2</text>
+  <text x="56" y="120" class="title">Give it the task. It gathers skills, decides and finishes.</text>
+  <path d="M56 152h1488" stroke="#27344a"/>
+  <rect x="56" y="206" width="330" height="190" rx="14" fill="#0e172b" stroke="#34465d"/>
+  <circle cx="100" cy="254" r="18" fill="#16243a" stroke="#5de2e7" stroke-opacity=".7"/>
+  <text x="100" y="262" text-anchor="middle" class="pill" fill="#5de2e7">1</text>
+  <text x="134" y="264" class="heading">Task</text>
+  <text x="82" y="318" class="mono">one prompt</text>
+  <text x="82" y="358" class="small">IDE toggle · pcode --full-auto</text>
+  <path d="M386 301h52" stroke="#5de2e7" stroke-width="2" marker-end="url(#fa-arrow)"/>
+  <rect x="442" y="206" width="330" height="190" rx="14" fill="#0e172b" stroke="#5de2e7" stroke-opacity=".65" stroke-width="1.5"/>
+  <path d="M460 206h294" stroke="#5de2e7" stroke-width="3"/>
+  <circle cx="486" cy="254" r="18" fill="#16243a" stroke="#5de2e7" stroke-opacity=".7"/>
+  <text x="486" y="262" text-anchor="middle" class="pill" fill="#5de2e7">2</text>
+  <text x="520" y="264" class="heading">Skills</text>
+  <text x="468" y="318" class="mono">find_skill → install</text>
+  <text x="468" y="358" class="small">clean scan only · max 3</text>
+  <path d="M772 301h52" stroke="#5de2e7" stroke-width="2" marker-end="url(#fa-arrow)"/>
+  <rect x="828" y="206" width="330" height="190" rx="14" fill="#0e172b" stroke="#5de2e7" stroke-opacity=".65" stroke-width="1.5"/>
+  <path d="M846 206h294" stroke="#5de2e7" stroke-width="3"/>
+  <circle cx="872" cy="254" r="18" fill="#16243a" stroke="#5de2e7" stroke-opacity=".7"/>
+  <text x="872" y="262" text-anchor="middle" class="pill" fill="#5de2e7">3</text>
+  <text x="906" y="264" class="heading">Work</text>
+  <text x="854" y="318" class="mono">no approvals</text>
+  <text x="854" y="358" class="small">answers its own questions</text>
+  <path d="M1158 301h52" stroke="#5de2e7" stroke-width="2" marker-end="url(#fa-arrow)"/>
+  <rect x="1214" y="206" width="330" height="190" rx="14" fill="#0e172b" stroke="#34465d"/>
+  <circle cx="1258" cy="254" r="18" fill="#16243a" stroke="#5de2e7" stroke-opacity=".7"/>
+  <text x="1258" y="262" text-anchor="middle" class="pill" fill="#5de2e7">4</text>
+  <text x="1292" y="264" class="heading">Finish</text>
+  <text x="1240" y="318" class="mono">tests · lint · build</text>
+  <text x="1240" y="358" class="small">result lists assumptions</text>
+  <path d="M56 436h1488" stroke="#27344a"/>
+  <rect x="56.0" y="476" width="477.3" height="168" rx="14" fill="#103a40" stroke="#5de2e7" stroke-opacity=".55"/>
+  <text x="84.0" y="526" class="heading" style="fill:#5de2e7">Runs without asking</text>
+  <text x="84.0" y="568" class="small" style="fill:#d5deea">commands, even &quot;$bin&quot; --version</text>
+  <text x="84.0" y="606" class="small">edits · MCP tools · web · subtasks</text>
+  <rect x="561.3" y="476" width="477.3" height="168" rx="14" fill="#2a1d14" stroke="#f5b971" stroke-opacity=".55"/>
+  <text x="589.3" y="526" class="heading" style="fill:#f5b971">Refused, never asked</text>
+  <text x="589.3" y="568" class="small" style="fill:#d5deea">deny / ask rules · denied commands · sudo</text>
+  <text x="589.3" y="606" class="small">protected configs · secrets · outside files</text>
+  <rect x="1066.7" y="476" width="477.3" height="168" rx="14" fill="#1c2240" stroke="#a4a6ff" stroke-opacity=".55"/>
+  <text x="1094.7" y="526" class="heading" style="fill:#a4a6ff">Stops by itself</text>
+  <text x="1094.7" y="568" class="small" style="fill:#d5deea">after 3 × the request limit</text>
+  <text x="1094.7" y="606" class="small">repeated API or tool errors · Stop button</text>
+</svg>
